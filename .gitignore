@@ -1,0 +1,20 @@
+# 运行时数据与日志
+data/
+data_test/
+*.db
+*.db-wal
+*.db-shm
+*.log
+
+# 配置
+.env
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# 本地冒烟测试数据
+data_smoketest*/

@@ -1,0 +1,546 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#1a1816">
+<link rel="manifest" href="/manifest.json">
+<link rel="apple-touch-icon" href="/icon-192.png">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.19.0/dist/tabler-icons.min.css">
+<title>Claude Code Bridge</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400&family=Noto+Sans+SC:wght@300;400&display=swap');
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  :root {
+    --bg: #1a1816;
+    --surface: rgba(255,255,255,0.05);
+    --border: rgba(255,255,255,0.12);
+    --border-light: rgba(255,255,255,0.20);
+    --text: rgba(245,240,235,0.96);
+    --text2: rgba(235,228,220,0.72);
+    --text3: rgba(255,255,255,0.40);
+    --text4: rgba(255,255,255,0.26);
+    --accent: #d97757;
+    --accent-dim: rgba(217,119,87,0.55);
+    --accent-glow: rgba(217,119,87,0.9);
+    --accent-bg: rgba(217,119,87,0.10);
+    --accent-border: rgba(217,119,87,0.22);
+    --red: #e87272;
+    --font: 'JetBrains Mono', monospace;
+    --font-cn: 'Noto Sans SC', sans-serif;
+    --safe-bottom: env(safe-area-inset-bottom, 0px);
+  }
+
+  body { font-family: var(--font); background: var(--bg); color: var(--text);
+         height: 100dvh; display: flex; flex-direction: column; overflow: hidden;
+         -webkit-font-smoothing: antialiased; }
+
+  .vignette { position: fixed; inset: 0; pointer-events: none; z-index: 0;
+              background: radial-gradient(ellipse at 50% 30%, transparent 40%, rgba(0,0,0,0.45) 100%); }
+
+  /* ---- Sidebar ---- */
+  .overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 90;
+             opacity: 0; pointer-events: none; transition: opacity .25s; }
+  .overlay.open { opacity: 1; pointer-events: auto; }
+
+  .sidebar { position: fixed; left: 0; top: 0; bottom: 0; width: 300px; max-width: 85vw;
+             background: var(--bg); z-index: 100; transform: translateX(-100%);
+             transition: transform .25s ease; display: flex; flex-direction: column;
+             border-right: 1px solid var(--border); }
+  .sidebar.open { transform: translateX(0); }
+  .sidebar-header { padding: 16px; border-bottom: 1px solid var(--border);
+                    display: flex; align-items: center; gap: 10px; }
+  .sidebar-header h2 { font-family: var(--font-cn); font-size: 16px; font-weight: 400; flex: 1; }
+  .new-chat-btn { display: flex; align-items: center; gap: 6px; padding: 8px 14px;
+                  background: var(--accent-bg); color: var(--accent); border: 1px solid var(--accent-border);
+                  border-radius: 10px; font-size: 13px; cursor: pointer; font-family: var(--font-cn); }
+  .new-chat-btn:active { background: rgba(217,119,87,0.18); }
+  .session-list { flex: 1; overflow-y: auto; padding: 8px; }
+  .session-item { padding: 10px 12px; border-radius: 10px; cursor: pointer; margin-bottom: 2px; }
+  .session-item:active, .session-item.active { background: var(--surface); }
+  .session-item .s-title { font-family: var(--font-cn); font-size: 14px; color: var(--text);
+                           overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .session-item .s-meta { font-size: 12px; color: var(--text4); margin-top: 2px; }
+
+  /* ---- Layout ---- */
+  .main { flex: 1; overflow: hidden; display: flex; flex-direction: column; position: relative; z-index: 1; }
+
+  .topbar { padding: 16px 20px 0; display: flex; align-items: center; justify-content: space-between; min-height: 52px; }
+  .topbar-left { display: flex; align-items: center; gap: 8px; }
+  .status-dot { width: 5px; height: 5px; border-radius: 50%; flex-shrink: 0; background: var(--text4); }
+  .status-dot.on { background: var(--accent); box-shadow: 0 0 7px var(--accent-glow); }
+  .status-dot.off { background: var(--red); box-shadow: 0 0 7px rgba(232,114,114,0.5); }
+  .topbar-label { font-size: 12px; color: var(--accent-dim); letter-spacing: 0.12em; }
+  .topbar-right { display: flex; gap: 14px; align-items: center; }
+  .topbar-icon { color: rgba(255,255,255,0.22); font-size: 19px; cursor: pointer; background: none; border: none; padding: 4px; }
+  .topbar-icon:active { color: rgba(255,255,255,0.5); }
+  .divider-top { margin: 14px 20px 0; height: 1px; background: rgba(255,255,255,0.08); }
+  .model-select { appearance: none; -webkit-appearance: none; background: transparent;
+                  border: 1px solid var(--border-light); border-radius: 8px; color: var(--text3);
+                  font-size: 11px; font-family: var(--font); padding: 4px 8px; cursor: pointer; outline: none; }
+  .model-select option { background: var(--bg); color: var(--text); }
+
+  /* ---- Greeting ---- */
+  .greeting-area { flex: 1; display: flex; flex-direction: column; align-items: center;
+                   justify-content: center; padding: 32px 24px; }
+  .avatar-ring { width: 68px; height: 68px; border-radius: 50%; border: 1px solid var(--accent-border);
+                 display: flex; align-items: center; justify-content: center; margin-bottom: 22px; position: relative; }
+  .avatar-ring::after { content: ''; position: absolute; inset: -10px; border-radius: 50%; border: 1px solid rgba(217,119,87,0.08); }
+  .avatar-inner { width: 50px; height: 50px; border-radius: 50%; background: var(--accent-bg);
+                  border: 1px solid var(--accent-border); display: flex; align-items: center;
+                  justify-content: center; font-size: 20px; color: var(--accent); }
+  .greeting-name { font-family: var(--font-cn); font-size: 24px; font-weight: 300; margin-bottom: 7px; letter-spacing: 0.08em; }
+  .greeting-meta { font-family: var(--font-cn); font-size: 12px; color: var(--text3); }
+
+  /* ---- Messages ---- */
+  .messages { flex: 1; overflow-y: auto; padding: 20px 16px 8px; display: none;
+              flex-direction: column; gap: 18px; -webkit-overflow-scrolling: touch; }
+  .messages::-webkit-scrollbar { width: 0; }
+  .msg-row { display: flex; flex-direction: column; gap: 4px; }
+  .msg-row.user { align-items: flex-end; }
+  .msg-row.assistant { align-items: flex-start; }
+  .msg-bubble { max-width: 85%; font-size: 15px; line-height: 1.7;
+                white-space: pre-wrap; word-break: break-word; }
+  .msg-bubble.user { background: var(--accent-bg); border: 1px solid var(--accent-border);
+                     border-radius: 12px 12px 3px 12px; padding: 10px 14px;
+                     font-family: var(--font-cn); color: var(--text); }
+  .msg-bubble.assistant { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08);
+                          border-radius: 12px 12px 12px 3px; padding: 10px 14px;
+                          font-family: var(--font-cn); font-weight: 300; color: var(--text2); }
+  .msg-user-wrap { display: flex; align-items: flex-start; gap: 6px; max-width: 100%; }
+  .retry-btn { background: none; border: none; color: var(--text4); cursor: pointer;
+               font-size: 13px; padding: 6px 2px 0; flex-shrink: 0; }
+  .retry-btn:active { color: var(--accent); }
+
+  .time-divider { align-self: center; font-size: 11px; color: var(--text4);
+                  font-family: var(--font-cn); padding: 4px 0; }
+  .history-notice { align-self: center; font-size: 12px; color: var(--text4); font-family: var(--font-cn); }
+
+  .chip-row { display: flex; gap: 8px; flex-wrap: wrap; }
+  .chip { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-family: var(--font-cn);
+          color: var(--text3); background: var(--surface); border: 1px solid var(--border);
+          border-radius: 8px; padding: 4px 9px; cursor: pointer; }
+  .chip.tool { color: var(--accent-dim); }
+  .usage-bar { align-self: flex-start; font-size: 11px; color: var(--text4); font-family: var(--font);
+               display: flex; gap: 8px; padding: 0 4px; }
+  .typing { align-self: flex-start; color: var(--text4); font-size: 13px; font-family: var(--font-cn); padding: 0 6px; }
+
+  /* ---- Input ---- */
+  .input-area { padding: 10px 14px calc(12px + var(--safe-bottom)); }
+  .input-bar { display: flex; align-items: flex-end; gap: 8px; background: var(--surface);
+               border: 1px solid var(--border); border-radius: 16px; padding: 6px 6px 6px 14px; }
+  #input { flex: 1; background: none; border: none; outline: none; resize: none; color: var(--text);
+           font-family: var(--font-cn); font-size: 15px; line-height: 1.5; max-height: 120px; padding: 6px 0; }
+  .send-btn { width: 36px; height: 36px; flex-shrink: 0; border-radius: 50%; border: none; cursor: pointer;
+              background: var(--accent); color: #1a1816; font-size: 18px; display: flex;
+              align-items: center; justify-content: center; }
+  .send-btn:disabled { background: var(--surface); color: var(--text4); }
+
+  /* ---- Thinking sheet ---- */
+  .sheet-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 110;
+                   opacity: 0; pointer-events: none; transition: opacity .2s; }
+  .sheet-overlay.open { opacity: 1; pointer-events: auto; }
+  .sheet { position: fixed; left: 0; right: 0; bottom: 0; z-index: 120; background: var(--bg);
+           border-top: 1px solid var(--border); border-radius: 18px 18px 0 0; max-height: 70vh;
+           transform: translateY(100%); transition: transform .25s ease; display: flex; flex-direction: column; }
+  .sheet.open { transform: translateY(0); }
+  .sheet-header { padding: 16px 20px; display: flex; align-items: center; justify-content: space-between;
+                  font-family: var(--font-cn); border-bottom: 1px solid var(--border); }
+  .sheet-close { background: none; border: none; color: var(--text3); font-size: 20px; cursor: pointer; }
+  .sheet-body { padding: 16px 20px calc(20px + var(--safe-bottom)); overflow-y: auto;
+                white-space: pre-wrap; font-size: 13px; line-height: 1.7; color: var(--text2); }
+</style>
+</head>
+<body>
+
+<div class="vignette"></div>
+
+<!-- Sidebar -->
+<div class="overlay" id="overlay" onclick="closeSidebar()"></div>
+<div class="sidebar" id="sidebar">
+  <div class="sidebar-header">
+    <h2>对话记录</h2>
+    <button class="new-chat-btn" onclick="newConversation()"><i class="ti ti-plus"></i> 新对话</button>
+  </div>
+  <div class="session-list" id="session-list"></div>
+</div>
+
+<!-- Main -->
+<div class="main">
+  <div class="topbar">
+    <div class="topbar-left">
+      <div class="status-dot" id="dot"></div>
+      <span class="topbar-label" id="topbar-status">连接中…</span>
+    </div>
+    <div class="topbar-right">
+      <select class="model-select" id="model-select">
+        <option value="">默认</option>
+        <option value="claude-haiku-4-5-20251001">Haiku 4.5</option>
+        <option value="claude-sonnet-4-6" selected>Sonnet 4.6</option>
+        <option value="claude-opus-4-8">Opus 4.8</option>
+      </select>
+      <button class="topbar-icon" onclick="openSidebar()" aria-label="历史"><i class="ti ti-history"></i></button>
+    </div>
+  </div>
+  <div class="divider-top"></div>
+
+  <div class="greeting-area" id="greeting">
+    <div class="avatar-ring"><div class="avatar-inner"><i class="ti ti-sparkles"></i></div></div>
+    <div class="greeting-name" id="greeting-name">你好</div>
+    <div class="greeting-meta" id="greeting-meta"></div>
+  </div>
+
+  <div class="messages" id="messages"></div>
+
+  <div class="input-area">
+    <div class="input-bar">
+      <textarea id="input" rows="1" placeholder="在这里输入…"
+        onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();send();}"></textarea>
+      <button class="send-btn" id="btn" onclick="send()" aria-label="发送"><i class="ti ti-arrow-up"></i></button>
+    </div>
+  </div>
+</div>
+
+<!-- Thinking / detail sheet -->
+<div class="sheet-overlay" id="sheet-overlay" onclick="closeSheet()"></div>
+<div class="sheet" id="sheet">
+  <div class="sheet-header">
+    <span id="sheet-title">Thinking</span>
+    <button class="sheet-close" onclick="closeSheet()"><i class="ti ti-x"></i></button>
+  </div>
+  <div class="sheet-body" id="sheet-body"></div>
+</div>
+
+<script>
+/* ===== State ===== */
+let ws, busy = false, currentAssistantRow = null, assistantText = '';
+let currentSessionId = localStorage.getItem('currentSessionId') || null;
+let typingEl = null, lastMsgTime = null;
+let ASSISTANT_NAME = 'Claude', USER_NICKNAME = 'User';
+
+const $ = id => document.getElementById(id);
+const $msg = $('messages'), $input = $('input'), $btn = $('btn'),
+      $dot = $('dot'), $model = $('model-select'), $greeting = $('greeting'),
+      $status = $('topbar-status');
+
+const escHtml = s => (s || '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+/* ===== Config ===== */
+async function loadConfig() {
+  try {
+    const c = await (await fetch('/config')).json();
+    ASSISTANT_NAME = c.assistant_name || ASSISTANT_NAME;
+    USER_NICKNAME = c.user_nickname || USER_NICKNAME;
+    $('greeting-name').textContent = `${USER_NICKNAME}，你好`;
+  } catch (e) { /* keep defaults */ }
+}
+
+function setStatus(on) {
+  $dot.className = 'status-dot ' + (on ? 'on' : 'off');
+  $status.textContent = `${ASSISTANT_NAME} · ${on ? '在线' : '离线'}`;
+}
+
+/* ===== View toggles ===== */
+function showGreeting() { $greeting.style.display = 'flex'; $msg.style.display = 'none'; }
+function showMessages() { $greeting.style.display = 'none'; $msg.style.display = 'flex'; }
+function setSessionId(id) {
+  currentSessionId = id;
+  if (id) localStorage.setItem('currentSessionId', id);
+  else localStorage.removeItem('currentSessionId');
+}
+function setBusy(b) { busy = b; $btn.disabled = b; }
+
+/* ===== Sidebar ===== */
+function openSidebar() { loadSessions(); $('sidebar').classList.add('open'); $('overlay').classList.add('open'); }
+function closeSidebar() { $('sidebar').classList.remove('open'); $('overlay').classList.remove('open'); }
+
+async function loadSessions() {
+  try {
+    const sessions = await (await fetch('/sessions?limit=30')).json();
+    const list = $('session-list');
+    list.innerHTML = '';
+    sessions.forEach(s => {
+      const el = document.createElement('div');
+      el.className = 'session-item' + (s.id === currentSessionId ? ' active' : '');
+      const date = s.updated_at ? new Date(s.updated_at).toLocaleDateString('zh-CN', {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'}) : '';
+      el.innerHTML = `<div class="s-title">${escHtml(s.title || '新对话')}</div>
+                      <div class="s-meta">${s.msg_count} 条消息 · ${date}</div>`;
+      el.onclick = () => switchSession(s.id);
+      list.appendChild(el);
+    });
+  } catch (e) { console.error('loadSessions', e); }
+}
+
+async function switchSession(sid) {
+  closeSidebar();
+  if (sid === currentSessionId) return;
+  $msg.innerHTML = '';
+  setSessionId(sid);
+  currentAssistantRow = null; assistantText = '';
+  showMessages();
+  await loadHistory(sid);
+  if (ws && ws.readyState === 1) ws.send(JSON.stringify({ switch_session: sid }));
+}
+
+function newConversation() {
+  closeSidebar();
+  $msg.innerHTML = '';
+  setSessionId(null);
+  currentAssistantRow = null; assistantText = '';
+  showGreeting();
+  if (ws && ws.readyState === 1) ws.send(JSON.stringify({ switch_session: null }));
+}
+
+async function loadHistory(sid) {
+  const notice = document.createElement('div');
+  notice.className = 'history-notice';
+  notice.textContent = '加载中…';
+  $msg.appendChild(notice);
+  try {
+    const msgs = await (await fetch(`/sessions/${sid}/messages`)).json();
+    notice.remove();
+    msgs.forEach(m => {
+      if (m.role === 'user') addMsg('user', m.content);
+      else if (m.role === 'assistant') {
+        if (m.metadata && m.metadata.thinking) addThinkingChip(m.metadata.thinking);
+        addMsg('assistant', m.content);
+        if (m.metadata && m.metadata.usage)
+          addUsage({ cost_usd: m.metadata.cost_usd, duration_ms: m.metadata.duration_ms, usage: m.metadata.usage });
+      }
+    });
+  } catch (e) { notice.textContent = '加载失败'; }
+}
+
+/* ===== Time divider ===== */
+function maybeTimeDivider() {
+  const now = Date.now();
+  if (!lastMsgTime || (now - lastMsgTime) > 5 * 60 * 1000) {
+    const d = new Date();
+    const w = ['周日','周一','周二','周三','周四','周五','周六'];
+    const label = `${d.getMonth()+1}月${d.getDate()}日 ${w[d.getDay()]} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+    const div = document.createElement('div');
+    div.className = 'time-divider';
+    div.textContent = label;
+    $msg.appendChild(div);
+  }
+  lastMsgTime = now;
+}
+
+/* ===== Messages ===== */
+function addMsg(cls, text) {
+  showMessages();
+  const row = document.createElement('div');
+  row.className = 'msg-row ' + cls;
+  if (cls === 'assistant' && text) {
+    text.split(/\n\n+/).filter(Boolean).forEach(p => {
+      const b = document.createElement('div');
+      b.className = 'msg-bubble assistant';
+      b.textContent = p;
+      row.appendChild(b);
+    });
+  } else if (cls === 'user') {
+    const wrap = document.createElement('div');
+    wrap.className = 'msg-user-wrap';
+    const btn = document.createElement('button');
+    btn.className = 'retry-btn'; btn.title = '重新发送';
+    btn.innerHTML = '<i class="ti ti-refresh"></i>';
+    btn.onclick = () => retryMsg(text);
+    const bubble = document.createElement('div');
+    bubble.className = 'msg-bubble user';
+    bubble.textContent = text;
+    wrap.appendChild(btn); wrap.appendChild(bubble);
+    row.appendChild(wrap);
+  } else {
+    const b = document.createElement('div');
+    b.className = 'msg-bubble ' + cls;
+    b.textContent = text;
+    row.appendChild(b);
+  }
+  $msg.appendChild(row);
+  $msg.scrollTop = $msg.scrollHeight;
+  return row;
+}
+
+function updateAssistantBubbles(row, fullText) {
+  const paragraphs = fullText.split(/\n\n+/).filter(Boolean);
+  const bubbles = row.querySelectorAll('.msg-bubble');
+  paragraphs.forEach((p, i) => {
+    if (i < bubbles.length) bubbles[i].textContent = p;
+    else {
+      const b = document.createElement('div');
+      b.className = 'msg-bubble assistant';
+      b.textContent = p;
+      row.appendChild(b);
+    }
+  });
+  $msg.scrollTop = $msg.scrollHeight;
+}
+
+function addThinkingChip(text) {
+  const row = document.createElement('div');
+  row.className = 'chip-row';
+  const chip = document.createElement('button');
+  chip.className = 'chip';
+  chip.innerHTML = `<i class="ti ti-sparkles"></i> Thinking (${(text.length/1000).toFixed(1)}k)`;
+  chip.onclick = () => openSheet('Thinking', text);
+  row.appendChild(chip);
+  $msg.appendChild(row);
+  $msg.scrollTop = $msg.scrollHeight;
+}
+
+function addToolChip(tool, preview) {
+  const row = document.createElement('div');
+  row.className = 'chip-row';
+  const chip = document.createElement('button');
+  chip.className = 'chip tool';
+  chip.innerHTML = `<i class="ti ti-tool"></i> ${escHtml(tool)}`;
+  if (preview) chip.onclick = () => openSheet(tool, preview);
+  row.appendChild(chip);
+  $msg.appendChild(row);
+  $msg.scrollTop = $msg.scrollHeight;
+}
+
+function addUsage(data) {
+  const el = document.createElement('div');
+  el.className = 'usage-bar';
+  const dur = data.duration_ms ? `${(data.duration_ms/1000).toFixed(1)}s` : '';
+  const cost = data.cost_usd ? `$${data.cost_usd.toFixed(4)}` : '';
+  const u = data.usage || {};
+  const cache = u.cache_hit_pct !== undefined ? `缓存 ${u.cache_hit_pct}%` : '';
+  const tokens = (u.input_tokens || u.output_tokens) ? `↓${u.input_tokens} ↑${u.output_tokens}` : '';
+  const parts = [dur, cost, cache, tokens].filter(Boolean);
+  el.innerHTML = parts.map(p => `<span>${escHtml(p)}</span>`).join('');
+  $msg.appendChild(el);
+  $msg.scrollTop = $msg.scrollHeight;
+}
+
+function showTyping() {
+  removeTyping();
+  typingEl = document.createElement('div');
+  typingEl.className = 'typing';
+  typingEl.textContent = '…';
+  $msg.appendChild(typingEl);
+  $msg.scrollTop = $msg.scrollHeight;
+}
+function removeTyping() { if (typingEl) { typingEl.remove(); typingEl = null; } }
+
+/* ===== Sheet ===== */
+function openSheet(title, text) {
+  $('sheet-title').textContent = title;
+  $('sheet-body').textContent = text;
+  $('sheet-overlay').classList.add('open');
+  $('sheet').classList.add('open');
+}
+function closeSheet() {
+  $('sheet-overlay').classList.remove('open');
+  $('sheet').classList.remove('open');
+}
+
+/* ===== Send ===== */
+function send() {
+  const text = $input.value.trim();
+  if (!text || busy || !ws || ws.readyState !== 1) return;
+  maybeTimeDivider();
+  addMsg('user', text);
+  $input.value = '';
+  $input.style.height = 'auto';
+  currentAssistantRow = null; assistantText = '';
+  ws.send(JSON.stringify({ text, model: $model.value || undefined }));
+  setBusy(true);
+  showTyping();
+}
+
+function retryMsg(text) {
+  if (!text || busy || !ws || ws.readyState !== 1) return;
+  currentAssistantRow = null; assistantText = '';
+  ws.send(JSON.stringify({ text, model: $model.value || undefined }));
+  setBusy(true);
+  showTyping();
+}
+
+$input.addEventListener('input', () => {
+  $input.style.height = 'auto';
+  $input.style.height = Math.min($input.scrollHeight, 120) + 'px';
+});
+
+/* ===== WebSocket ===== */
+function connect() {
+  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+  ws = new WebSocket(`${proto}://${location.host}/ws`);
+
+  ws.onopen = () => {
+    setStatus(true);
+    if (currentSessionId) ws.send(JSON.stringify({ switch_session: currentSessionId }));
+  };
+  ws.onclose = () => { setStatus(false); setBusy(false); setTimeout(connect, 2000); };
+  ws.onerror = () => setStatus(false);
+
+  ws.onmessage = ev => {
+    let m; try { m = JSON.parse(ev.data); } catch { return; }
+    switch (m.type) {
+      case 'hello': break;
+      case 'session': setSessionId(m.session_id); break;
+      case 'session_switched': break;
+      case 'session_expired': break;
+      case 'status': break;
+      case 'memory_recall':
+        if (m.context) addThinkingChipRecall(m.context);
+        break;
+      case 'thinking':
+        // streamed thinking deltas are summarized via the result.thinking chip
+        break;
+      case 'tool_use':
+        removeTyping();
+        addToolChip(m.tool, m.input_preview);
+        break;
+      case 'text':
+        removeTyping();
+        assistantText += m.text;
+        if (!currentAssistantRow) currentAssistantRow = addMsg('assistant', '');
+        updateAssistantBubbles(currentAssistantRow, assistantText);
+        break;
+      case 'result':
+        removeTyping();
+        if (m.thinking) addThinkingChip(m.thinking);
+        if (m.text && !assistantText) { currentAssistantRow = addMsg('assistant', m.text); }
+        if (m.usage) addUsage({ cost_usd: m.cost_usd, duration_ms: m.duration_ms, usage: m.usage });
+        if (m.session_id) setSessionId(m.session_id);
+        currentAssistantRow = null; assistantText = '';
+        setBusy(false);
+        break;
+      case 'error':
+        removeTyping();
+        addMsg('system', '⚠ ' + (m.message || 'error') + (m.detail ? '\n' + m.detail : ''));
+        setBusy(false);
+        break;
+    }
+  };
+}
+
+function addThinkingChipRecall(text) {
+  const row = document.createElement('div');
+  row.className = 'chip-row';
+  const chip = document.createElement('button');
+  chip.className = 'chip';
+  chip.innerHTML = `<i class="ti ti-brain"></i> Memory`;
+  chip.onclick = () => openSheet('Memory', text);
+  row.appendChild(chip);
+  $msg.appendChild(row);
+  $msg.scrollTop = $msg.scrollHeight;
+}
+
+/* ===== Boot ===== */
+async function boot() {
+  await loadConfig();
+  if (currentSessionId) { showMessages(); await loadHistory(currentSessionId); }
+  else showGreeting();
+  connect();
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
+}
+boot();
+</script>
+</body>
+</html>

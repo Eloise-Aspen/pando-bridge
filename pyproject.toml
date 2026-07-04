@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pando"
+version = "0.1.0"
+description = "Hookified core for building Claude Code companion bridges"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.136,<1.0",
+    "uvicorn[standard]>=0.49,<1.0",
+    "requests>=2.32,<3.0",
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-asyncio"]
+
+[tool.setuptools.packages.find]
+include = ["pando*"]
