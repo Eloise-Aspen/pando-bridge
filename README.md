@@ -76,7 +76,9 @@ app = create_app({
 })
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="127.0.0.1", port=int(os.environ.get("BRIDGE_PORT", 8765)))
+    # 0.0.0.0 binds all interfaces so LAN devices (e.g. your phone) can reach it —
+    # pair this with the security note in "Reach it from your phone" below
+    uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("BRIDGE_PORT", 8765)))
 ```
 
 ```bash
