@@ -87,9 +87,8 @@ Open <http://127.0.0.1:8765> — you get the demo PWA frontend wired to the `/ws
 WebSocket. Send a message and Claude Code answers, streaming thinking/text/tool-use
 as it goes. That's the whole loop. Default port is `8765`; if it's already taken,
 set `BRIDGE_PORT` in the environment (or edit the `run.py` snippet above) instead of
-touching the package source. To expose it to your phone, put it behind a
-reverse proxy or a private tunnel (TLS terminated there, or set `SSL_CERTFILE` /
-`SSL_KEYFILE` for direct HTTPS).
+touching the package source. To use it from your phone — which is the whole point —
+see [📱 Reach it from your phone](#-reach-it-from-your-phone).
 
 See [`.env.example`](.env.example) for every configuration knob.
 
@@ -124,8 +123,108 @@ python run.py
 
 浏览器打开 <http://127.0.0.1:8765> 即是自带的 PWA 前端。默认端口 `8765`，被占用时
 设置环境变量 `BRIDGE_PORT`（或改上面 `run.py` 示例里的端口）即可，不用改包源码。
-想在手机上用，就套一层反向代理或私有隧道（Tailscale / Cloudflare Tunnel 都行），
-TLS 在那层终结，或直接配 `SSL_CERTFILE` / `SSL_KEYFILE` 让 Pando 自己起 HTTPS。
+想在手机上用，见下方 [📱 手机接入（中文）](#-手机接入中文)。
+
+---
+
+## 📱 Reach it from your phone
+
+Pando is a *mobile* gateway — this section takes you from "works on `127.0.0.1`"
+to "installed as a PWA on your phone". The recommended path is **Tailscale serve**:
+a couple of commands, and you get a valid HTTPS URL reachable only from devices
+in your own private Tailscale network (your *tailnet*).
+
+### Recommended: Tailscale serve
+
+1. **Install Tailscale on both ends** — the machine running Pando
+   ([download](https://tailscale.com/download)) and your phone
+   (App Store / Google Play).
+
+2. **Log in on both ends** with the same account, so they join the same tailnet.
+   On the machine:
+
+   ```bash
+   sudo tailscale up
+   ```
+
+   On the phone, sign in through the Tailscale app.
+
+3. **Serve Pando over HTTPS** — on the machine running Pando:
+
+   ```bash
+   tailscale serve --bg 8765
+   ```
+
+   Tailscale proxies `https://<machine-name>.<tailnet-name>.ts.net` to
+   `localhost:8765` and provisions a **valid HTTPS certificate automatically**
+   (on first use it walks you through enabling HTTPS for your tailnet).
+   `--bg` keeps it serving in the background; check the exact URL any time with
+   `tailscale serve status`. If the command complains about permissions, either
+   prefix `sudo` or run `sudo tailscale set --operator=$USER` once.
+
+4. **Open it on your phone**: visit `https://<machine-name>.<tailnet-name>.ts.net`,
+   send a message, then use the browser's *Add to Home Screen* to install the PWA.
+   Because this is real HTTPS, everything browsers gate behind a secure context —
+   PWA install, notifications, microphone — is available.
+
+### Alternative: Cloudflare Tunnel
+
+If Tailscale isn't an option, [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/)
+(`cloudflared`) can map `localhost:8765` to a hostname behind Cloudflare with valid
+HTTPS. Note the resulting URL is **publicly reachable**, so an access policy in
+front (e.g. [Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/policies/access/))
+is mandatory — see the security note below. Follow the official docs; not expanded here.
+
+### Plain LAN HTTP — what works, what doesn't
+
+With the quickstart `run.py` binding `0.0.0.0`, devices on the same LAN can open
+`http://<LAN-IP>:8765` directly. **Chat works fine.** But browsers restrict
+"powerful features" to HTTPS secure contexts, so over plain HTTP there is **no PWA
+install, no notifications, no microphone**. Good enough for a quick test from the
+couch; use Tailscale serve for the real thing.
+
+### ⚠️ Security
+
+Pando ships **no authentication** — anyone who can reach the port can drive the
+`claude` CLI inside your `CLAUDE_CWD`. Expose it only through your tailnet or a
+trusted private network. **Never** port-forward it or map it directly to the public
+internet; if you use Cloudflare Tunnel, put an access policy in front.
+
+### 📱 手机接入（中文）
+
+推荐路径 **Tailscale serve**——几条命令拿到只有自己 tailnet 内设备可达的有效 HTTPS 地址：
+
+1. **两端安装 Tailscale**：跑 Pando 的机器（[下载](https://tailscale.com/download)）
+   和手机（App Store / 应用商店）。
+2. **两端登录同一账号**，加入同一个 tailnet。机器上执行 `sudo tailscale up`，
+   手机在 Tailscale App 里登录。
+3. **把 Pando 发布为 HTTPS**——在跑 Pando 的机器上：
+
+   ```bash
+   tailscale serve --bg 8765
+   ```
+
+   Tailscale 会把 `https://<机器名>.<tailnet名>.ts.net` 反代到 `localhost:8765`，
+   并**自动签发有效的 HTTPS 证书**（首次使用会引导你为 tailnet 开启 HTTPS）。
+   `--bg` 表示后台常驻，随时用 `tailscale serve status` 查看确切地址；
+   提示权限不足时加 `sudo`，或先跑一次 `sudo tailscale set --operator=$USER`。
+4. **手机打开** `https://<机器名>.<tailnet名>.ts.net`，发一条消息确认能聊，
+   再用浏览器的"添加到主屏幕"安装 PWA。因为是真 HTTPS，浏览器限制在安全上下文
+   里的能力——PWA 安装、通知、麦克风——全部可用。
+
+**备选：Cloudflare Tunnel。**
+[Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/)（`cloudflared`）
+也能把 `localhost:8765` 映射到 Cloudflare 后面的域名并带有效 HTTPS，但该地址
+**公网可达**，必须前置访问策略（如 [Cloudflare Access](https://developers.cloudflare.com/cloudflare-one/policies/access/)），
+此处不展开，照官方文档走。
+
+**纯局域网 HTTP 的边界。** `run.py` 绑 `0.0.0.0` 后，同一局域网的设备可以直接打开
+`http://<局域网IP>:8765`——**聊天没问题**，但浏览器把 PWA 安装、通知、麦克风这类
+能力限制在 HTTPS 安全上下文里，纯 HTTP 用不了。临时测试够用，正经用走 Tailscale serve。
+
+**⚠️ 安全提示。** Pando **没有任何认证**——能连上端口的人就能驱动你机器上
+`CLAUDE_CWD` 里的 `claude` CLI。只应通过 tailnet 或可信内网暴露，**切勿**端口转发
+或直接映射到公网；用 Cloudflare Tunnel 必须前置访问策略。
 
 ---
 
