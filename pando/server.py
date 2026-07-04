@@ -13,7 +13,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -760,7 +760,10 @@ def create_app(config) -> FastAPI:
 
     @app.get("/icon-{size}.png")
     async def icon(size: str):
-        return FileResponse(static_dir / f"icon-{size}.png", media_type="image/png")
+        icon_path = static_dir / f"icon-{size}.png"
+        if not icon_path.exists():
+            raise HTTPException(status_code=404, detail="icon not found")
+        return FileResponse(icon_path, media_type="image/png")
 
     @app.get("/", response_class=HTMLResponse)
     async def index():
