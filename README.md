@@ -85,12 +85,20 @@ if __name__ == "__main__":
 python run.py
 ```
 
+> **Windows note** — everything above works as-is in PowerShell (verified on
+> Windows 11, Python 3.10). Two platform quirks: write `CLAUDE_CWD` with forward
+> slashes (`"C:/Users/you/project"` — backslashes are escape characters in Python
+> strings), and set environment variables the PowerShell way:
+> `$env:BRIDGE_PORT = "8899"; python run.py`.
+
 Open <http://127.0.0.1:8765> — you get the demo PWA frontend wired to the `/ws`
 WebSocket. Send a message and Claude Code answers, streaming thinking/text/tool-use
 as it goes. That's the whole loop. Default port is `8765`; if it's already taken,
-set `BRIDGE_PORT` in the environment (or edit the `run.py` snippet above) instead of
-touching the package source. To use it from your phone — which is the whole point —
-see [📱 Reach it from your phone](#-reach-it-from-your-phone).
+set `BRIDGE_PORT` in the environment — `BRIDGE_PORT=8899 python run.py` on
+Linux/macOS, `$env:BRIDGE_PORT = "8899"; python run.py` in PowerShell — or edit the
+`run.py` snippet above instead of touching the package source. To use it from your
+phone — which is the whole point — see
+[📱 Reach it from your phone](#-reach-it-from-your-phone).
 
 See [`.env.example`](.env.example) for every configuration knob.
 
@@ -124,8 +132,14 @@ python run.py
 ```
 
 浏览器打开 <http://127.0.0.1:8765> 即是自带的 PWA 前端。默认端口 `8765`，被占用时
-设置环境变量 `BRIDGE_PORT`（或改上面 `run.py` 示例里的端口）即可，不用改包源码。
-想在手机上用，见下方 [📱 手机接入（中文）](#-手机接入中文)。
+设置环境变量 `BRIDGE_PORT`——Linux/macOS 写 `BRIDGE_PORT=8899 python run.py`，
+PowerShell 写 `$env:BRIDGE_PORT = "8899"; python run.py`——或改上面 `run.py`
+示例里的端口即可，不用改包源码。想在手机上用，见下方
+[📱 手机接入（中文）](#-手机接入中文)。
+
+> **Windows 注记**——以上步骤在 PowerShell 里照抄即可（Windows 11 + Python 3.10
+> 实测通过）。两个平台差异：`CLAUDE_CWD` 用正斜杠写（`"C:/Users/you/project"`，
+> 反斜杠在 Python 字符串里是转义符）；环境变量用上面的 PowerShell 写法设置。
 
 ---
 
@@ -143,13 +157,15 @@ in your own private Tailscale network (your *tailnet*).
    (App Store / Google Play).
 
 2. **Log in on both ends** with the same account, so they join the same tailnet.
-   On the machine:
+   On a Linux machine:
 
    ```bash
    sudo tailscale up
    ```
 
-   On the phone, sign in through the Tailscale app.
+   On Windows or macOS there's no `sudo` step — sign in through the Tailscale
+   app (system tray / menu bar), or run `tailscale login` to get a browser
+   sign-in link. On the phone, sign in through the Tailscale app.
 
 3. **Serve Pando over HTTPS** — on the machine running Pando:
 
@@ -161,8 +177,9 @@ in your own private Tailscale network (your *tailnet*).
    `localhost:8765` and provisions a **valid HTTPS certificate automatically**
    (on first use it walks you through enabling HTTPS for your tailnet).
    `--bg` keeps it serving in the background; check the exact URL any time with
-   `tailscale serve status`. If the command complains about permissions, either
-   prefix `sudo` or run `sudo tailscale set --operator=$USER` once.
+   `tailscale serve status`. If the command complains about permissions (Linux),
+   either prefix `sudo` or run `sudo tailscale set --operator=$USER` once — on
+   Windows it works from a regular PowerShell prompt, no elevation needed.
 
 4. **Open it on your phone**: visit `https://<machine-name>.<tailnet-name>.ts.net`,
    send a message, then use the browser's *Add to Home Screen* to install the PWA.
@@ -198,8 +215,9 @@ internet; if you use Cloudflare Tunnel, put an access policy in front.
 
 1. **两端安装 Tailscale**：跑 Pando 的机器（[下载](https://tailscale.com/download)）
    和手机（App Store / 应用商店）。
-2. **两端登录同一账号**，加入同一个 tailnet。机器上执行 `sudo tailscale up`，
-   手机在 Tailscale App 里登录。
+2. **两端登录同一账号**，加入同一个 tailnet。Linux 机器执行 `sudo tailscale up`；
+   Windows/macOS 没有 `sudo` 这一步，直接在 Tailscale 应用（系统托盘/菜单栏）里
+   登录，或跑 `tailscale login` 拿浏览器登录链接。手机在 Tailscale App 里登录。
 3. **把 Pando 发布为 HTTPS**——在跑 Pando 的机器上：
 
    ```bash
@@ -209,7 +227,9 @@ internet; if you use Cloudflare Tunnel, put an access policy in front.
    Tailscale 会把 `https://<机器名>.<tailnet名>.ts.net` 反代到 `localhost:8765`，
    并**自动签发有效的 HTTPS 证书**（首次使用会引导你为 tailnet 开启 HTTPS）。
    `--bg` 表示后台常驻，随时用 `tailscale serve status` 查看确切地址；
-   提示权限不足时加 `sudo`，或先跑一次 `sudo tailscale set --operator=$USER`。
+   Linux 上提示权限不足时加 `sudo`，或先跑一次
+   `sudo tailscale set --operator=$USER`；Windows 普通 PowerShell 直接能跑，
+   无需管理员权限。
 4. **手机打开** `https://<机器名>.<tailnet名>.ts.net`，发一条消息确认能聊，
    再用浏览器的"添加到主屏幕"安装 PWA。因为是真 HTTPS，浏览器限制在安全上下文
    里的能力——PWA 安装、通知、麦克风——全部可用。
