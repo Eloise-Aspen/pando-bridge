@@ -66,7 +66,8 @@
   .session-item .s-meta { font-size: 12px; color: var(--text4); margin-top: 2px; }
 
   /* ---- Layout ---- */
-  .main { flex: 1; overflow: hidden; display: flex; flex-direction: column; position: relative; z-index: 1; }
+  .main { flex: 1; overflow: hidden; display: none; flex-direction: column; position: relative; z-index: 1; }
+  .main.active { display: flex; }
 
   .topbar { padding: 16px 20px 0; display: flex; align-items: center; justify-content: space-between; min-height: 52px; }
   .topbar-left { display: flex; align-items: center; gap: 8px; }
@@ -129,7 +130,7 @@
   .typing { align-self: flex-start; color: var(--text4); font-size: 13px; font-family: var(--font-cn); padding: 0 6px; }
 
   /* ---- Input ---- */
-  .input-area { padding: 10px 14px calc(12px + var(--safe-bottom)); }
+  .input-area { padding: 10px 14px 12px; }
   .input-bar { display: flex; align-items: flex-end; gap: 8px; background: var(--surface);
                border: 1px solid var(--border); border-radius: 16px; padding: 6px 6px 6px 14px; }
   #input { flex: 1; background: none; border: none; outline: none; resize: none; color: var(--text);
@@ -152,6 +153,58 @@
   .sheet-close { background: none; border: none; color: var(--text3); font-size: 20px; cursor: pointer; }
   .sheet-body { padding: 16px 20px calc(20px + var(--safe-bottom)); overflow-y: auto;
                 white-space: pre-wrap; font-size: 13px; line-height: 1.7; color: var(--text2); }
+
+  /* ---- Bottom tab bar ---- */
+  .tabbar { display: flex; border-top: 1px solid var(--border); background: var(--bg);
+            padding-bottom: var(--safe-bottom); position: relative; z-index: 5; }
+  .tab { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px;
+         padding: 8px 0 6px; background: none; border: none; cursor: pointer;
+         color: var(--text4); font-family: var(--font-cn); font-size: 10px; letter-spacing: 0.05em; }
+  .tab i { font-size: 20px; }
+  .tab.active { color: var(--accent); }
+  .tab.active i { filter: drop-shadow(0 0 6px var(--accent-glow)); }
+
+  /* ---- Memory / Settings views ---- */
+  .view { flex: 1; overflow-y: auto; display: none; flex-direction: column;
+          padding: 18px 16px; position: relative; z-index: 1; -webkit-overflow-scrolling: touch; }
+  .view.active { display: flex; }
+  .view::-webkit-scrollbar { width: 0; }
+  .view-title { font-family: var(--font-cn); font-size: 20px; font-weight: 300;
+                margin-bottom: 16px; letter-spacing: 0.08em; }
+
+  .mem-stat { display: flex; gap: 24px; padding: 14px 16px; background: var(--surface);
+              border: 1px solid var(--border); border-radius: 12px; margin-bottom: 14px; }
+  .mem-stat .num { font-size: 22px; color: var(--accent); font-family: var(--font); }
+  .mem-stat .lbl { font-size: 11px; color: var(--text3); font-family: var(--font-cn); margin-top: 2px; }
+  .mem-search input { width: 100%; background: var(--surface); border: 1px solid var(--border);
+                      border-radius: 10px; color: var(--text); font-family: var(--font-cn);
+                      font-size: 14px; padding: 10px 13px; outline: none; margin-bottom: 12px; }
+  .mem-search input:focus { border-color: var(--accent-border); }
+  .mem-item { padding: 11px 13px; background: var(--surface); border: 1px solid var(--border);
+              border-radius: 11px; margin-bottom: 8px; display: flex; gap: 10px; align-items: flex-start; }
+  .mem-item .body { flex: 1; font-family: var(--font-cn); font-size: 14px; line-height: 1.6;
+                    color: var(--text2); word-break: break-word; white-space: pre-wrap; }
+  .mem-item .del { background: none; border: none; color: var(--text4); cursor: pointer;
+                   font-size: 16px; flex-shrink: 0; padding: 2px 4px; }
+  .mem-item .del:active { color: var(--red); }
+  .mem-empty { text-align: center; color: var(--text4); font-family: var(--font-cn);
+               font-size: 14px; padding: 44px 24px; line-height: 1.9; }
+  .mem-empty .sub { font-size: 12px; color: var(--text4); opacity: 0.8; }
+
+  .set-group { margin-bottom: 22px; }
+  .set-label { font-family: var(--font-cn); font-size: 12px; color: var(--text3);
+               margin-bottom: 8px; letter-spacing: 0.04em; }
+  .set-input { width: 100%; background: var(--surface); border: 1px solid var(--border);
+               border-radius: 10px; color: var(--text); font-family: var(--font-cn);
+               font-size: 15px; padding: 10px 13px; outline: none; }
+  .set-input:focus { border-color: var(--accent-border); }
+  .set-row { display: flex; justify-content: space-between; gap: 12px; padding: 9px 2px;
+             border-bottom: 1px solid rgba(255,255,255,0.06); font-size: 13px; }
+  .set-row .k { color: var(--text3); font-family: var(--font-cn); flex-shrink: 0; }
+  .set-row .v { color: var(--text2); font-family: var(--font); text-align: right; word-break: break-all; }
+  .usage-model { padding: 9px 2px; border-bottom: 1px solid rgba(255,255,255,0.06); }
+  .usage-model .m { font-family: var(--font); font-size: 12px; color: var(--text2); margin-bottom: 3px; }
+  .usage-model .t { font-family: var(--font); font-size: 12px; color: var(--text4); }
 </style>
 </head>
 <body>
@@ -168,8 +221,8 @@
   <div class="session-list" id="session-list"></div>
 </div>
 
-<!-- Main -->
-<div class="main">
+<!-- Main（聊天视图） -->
+<div class="main active" id="view-chat">
   <div class="topbar">
     <div class="topbar-left">
       <div class="status-dot" id="dot"></div>
@@ -204,6 +257,25 @@
   </div>
 </div>
 
+<!-- 记忆视图 -->
+<div class="view" id="view-memory">
+  <div class="view-title">记忆</div>
+  <div id="memory-body"></div>
+</div>
+
+<!-- 设置视图 -->
+<div class="view" id="view-settings">
+  <div class="view-title">设置</div>
+  <div id="settings-body"></div>
+</div>
+
+<!-- 底部 tab 栏 -->
+<nav class="tabbar">
+  <button class="tab active" id="tab-chat" onclick="switchTab('chat')"><i class="ti ti-message-circle"></i><span>聊天</span></button>
+  <button class="tab" id="tab-memory" onclick="switchTab('memory')"><i class="ti ti-brain"></i><span>记忆</span></button>
+  <button class="tab" id="tab-settings" onclick="switchTab('settings')"><i class="ti ti-settings"></i><span>设置</span></button>
+</nav>
+
 <!-- Thinking / detail sheet -->
 <div class="sheet-overlay" id="sheet-overlay" onclick="closeSheet()"></div>
 <div class="sheet" id="sheet">
@@ -229,13 +301,17 @@ const $msg = $('messages'), $input = $('input'), $btn = $('btn'),
 const escHtml = s => (s || '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
 /* ===== Config ===== */
+// 昵称/助手名优先级：localStorage（本地覆写）> /config 路由（若插件提供）> 内置默认。
 async function loadConfig() {
+  let cfgNick = null, cfgAsst = null;
   try {
     const c = await (await fetch('/config')).json();
-    ASSISTANT_NAME = c.assistant_name || ASSISTANT_NAME;
-    USER_NICKNAME = c.user_nickname || USER_NICKNAME;
-    $('greeting-name').textContent = `${USER_NICKNAME}，你好`;
-  } catch (e) { /* keep defaults */ }
+    cfgAsst = c.assistant_name || null;
+    cfgNick = c.user_nickname || null;
+  } catch (e) { /* 无 /config 插件（demo 默认态）→ 忽略，走本地/默认 */ }
+  USER_NICKNAME = localStorage.getItem('userNickname') || cfgNick || USER_NICKNAME;
+  ASSISTANT_NAME = localStorage.getItem('assistantName') || cfgAsst || ASSISTANT_NAME;
+  $('greeting-name').textContent = `${USER_NICKNAME}，你好`;
 }
 
 function setStatus(on) {
@@ -530,6 +606,191 @@ function addThinkingChipRecall(text) {
   row.appendChild(chip);
   $msg.appendChild(row);
   $msg.scrollTop = $msg.scrollHeight;
+}
+
+/* ===== Tab bar ===== */
+const debounce = (fn, ms) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
+
+function switchTab(name) {
+  ['chat', 'memory', 'settings'].forEach(t => {
+    $('view-' + t).classList.toggle('active', t === name);
+    $('tab-' + t).classList.toggle('active', t === name);
+  });
+  if (name === 'memory') loadMemory();
+  if (name === 'settings') loadSettings();
+}
+
+/* ===== Memory tab（三态：正常 / 未配置 / 服务挂）===== */
+function memGuide(title, sub) {
+  return `<div class="mem-empty">${escHtml(title)}<br><span class="sub">${escHtml(sub)}</span></div>`;
+}
+
+async function loadMemory() {
+  const body = $('memory-body');
+  body.innerHTML = memGuide('加载中…', '');
+  let resp;
+  try {
+    resp = await fetch('/memory-admin/memory/stats');
+  } catch (e) {
+    // 网络层失败（少见）——当降级处理，聊天不受影响
+    body.innerHTML = memGuide('记忆服务连接失败', '聊天不受影响，可稍后重试');
+    return;
+  }
+  // 404：/memory-admin/* 代理路由未注册 → NullProvider（未配置记忆服务）
+  if (resp.status === 404) {
+    body.innerHTML = memGuide('未配置记忆服务',
+      '设置 MEMORY_SERVICE_URL 指向记忆服务后，即可在此浏览、搜索、删除记忆');
+    return;
+  }
+  // 502 等：配了 URL 但记忆服务挂了 → 降级提示（不是白屏/裸 500）
+  if (!resp.ok) {
+    body.innerHTML = memGuide('记忆服务暂时不可用', '已配置但连接失败（降级）·聊天不受影响');
+    return;
+  }
+  const stats = await resp.json();
+  body.innerHTML = `
+    <div class="mem-stat">
+      <div><div class="num">${stats.count ?? 0}</div><div class="lbl">条记忆</div></div>
+      <div><div class="num">${stats.total_chars ?? 0}</div><div class="lbl">总字数</div></div>
+    </div>
+    <div class="mem-search"><input id="mem-q" placeholder="搜索记忆…" autocomplete="off"></div>
+    <div id="mem-list"></div>`;
+  $('mem-q').oninput = debounce(() => refreshMemList($('mem-q').value.trim()), 300);
+  refreshMemList('');
+}
+
+async function refreshMemList(query) {
+  const list = $('mem-list');
+  if (!list) return;
+  const url = query
+    ? `/memory-admin/memory/search?q=${encodeURIComponent(query)}`
+    : '/memory-admin/memory/list';
+  let items = [];
+  try {
+    const r = await fetch(url);
+    if (r.ok) items = (await r.json()).items || [];
+  } catch (e) { /* 保底空列表 */ }
+  if (!items.length) {
+    list.innerHTML = `<div class="mem-empty">${query ? '没有匹配的记忆' : '暂无记忆'}</div>`;
+    return;
+  }
+  list.innerHTML = '';
+  items.forEach(m => {
+    const el = document.createElement('div');
+    el.className = 'mem-item';
+    const b = document.createElement('div');
+    b.className = 'body';
+    b.textContent = m.content;
+    const del = document.createElement('button');
+    del.className = 'del';
+    del.innerHTML = '<i class="ti ti-trash"></i>';
+    del.onclick = () => deleteMemory(m.id, m.content);
+    el.appendChild(b);
+    el.appendChild(del);
+    list.appendChild(el);
+  });
+}
+
+async function deleteMemory(id, preview) {
+  if (!confirm('删除这条记忆？\n\n' + (preview || '').slice(0, 60))) return;
+  try {
+    const r = await fetch(`/memory-admin/memory/${id}`, { method: 'DELETE' });
+    if (!r.ok && r.status !== 404) { alert('删除失败'); return; }
+  } catch (e) { alert('删除失败'); return; }
+  const q = $('mem-q');
+  await refreshMemList(q ? q.value.trim() : '');
+  updateMemStats();
+}
+
+async function updateMemStats() {
+  try {
+    const r = await fetch('/memory-admin/memory/stats');
+    if (!r.ok) return;
+    const s = await r.json();
+    const nums = document.querySelectorAll('#memory-body .mem-stat .num');
+    if (nums[0]) nums[0].textContent = s.count ?? 0;
+    if (nums[1]) nums[1].textContent = s.total_chars ?? 0;
+  } catch (e) { /* 忽略 */ }
+}
+
+/* ===== Settings tab ===== */
+function loadSettings() {
+  const body = $('settings-body');
+  body.innerHTML = `
+    <div class="set-group">
+      <div class="set-label">你的昵称</div>
+      <input class="set-input" id="set-nick" placeholder="User" autocomplete="off">
+    </div>
+    <div class="set-group">
+      <div class="set-label">助手名称</div>
+      <input class="set-input" id="set-asst" placeholder="Claude" autocomplete="off">
+    </div>
+    <div class="set-group">
+      <div class="set-label">服务端信息</div>
+      <div id="server-info"><div class="set-row"><span class="k">加载中…</span><span class="v"></span></div></div>
+    </div>
+    <div class="set-group">
+      <div class="set-label">用量统计</div>
+      <div id="usage-info"><div class="set-row"><span class="k">加载中…</span><span class="v"></span></div></div>
+    </div>`;
+  $('set-nick').value = localStorage.getItem('userNickname') || (USER_NICKNAME === 'User' ? '' : USER_NICKNAME);
+  $('set-asst').value = localStorage.getItem('assistantName') || (ASSISTANT_NAME === 'Claude' ? '' : ASSISTANT_NAME);
+  $('set-nick').oninput = debounce(saveIdentity, 400);
+  $('set-asst').oninput = debounce(saveIdentity, 400);
+  loadServerInfo();
+  loadUsage();
+}
+
+// 昵称/助手名写 localStorage（刷新不丢），并即时反映到问候语与状态条
+function saveIdentity() {
+  const nick = $('set-nick').value.trim();
+  const asst = $('set-asst').value.trim();
+  if (nick) localStorage.setItem('userNickname', nick); else localStorage.removeItem('userNickname');
+  if (asst) localStorage.setItem('assistantName', asst); else localStorage.removeItem('assistantName');
+  USER_NICKNAME = nick || 'User';
+  ASSISTANT_NAME = asst || 'Claude';
+  $('greeting-name').textContent = `${USER_NICKNAME}，你好`;
+  setStatus(!!(ws && ws.readyState === 1));
+}
+
+async function loadServerInfo() {
+  const box = $('server-info');
+  let health = null;
+  try { const r = await fetch('/health'); if (r.ok) health = await r.json(); } catch (e) { /* 降级 */ }
+  // 记忆服务配置状态：探测代理端点（404=未配置，200=在线，其余=已配置但离线）
+  let memStatus = '未配置';
+  try {
+    const r = await fetch('/memory-admin/memory/stats');
+    if (r.status === 404) memStatus = '未配置';
+    else if (r.ok) memStatus = '已配置 · 在线';
+    else memStatus = '已配置 · 离线';
+  } catch (e) { memStatus = '已配置 · 离线'; }
+  const rows = [
+    ['版本', health ? (health.version || '—') : '—'],
+    ['服务', health ? (health.service || '—') : '—'],
+    ['主机', health ? (health.hostname || '—') : '—'],
+    ['Claude CLI', health ? (health.claude_cli || '—') : '—'],
+    ['记忆服务', memStatus],
+  ];
+  box.innerHTML = rows.map(([k, v]) =>
+    `<div class="set-row"><span class="k">${escHtml(k)}</span><span class="v">${escHtml(v)}</span></div>`
+  ).join('');
+}
+
+async function loadUsage() {
+  const box = $('usage-info');
+  let data = null;
+  try { const r = await fetch('/usage/stats'); if (r.ok) data = await r.json(); } catch (e) { /* 降级 */ }
+  if (!data) { box.innerHTML = '<div class="set-row"><span class="k">用量数据不可用</span><span class="v"></span></div>'; return; }
+  const group = rows => rows && rows.length
+    ? rows.map(r => `<div class="usage-model">
+        <div class="m">${escHtml(r.model)}</div>
+        <div class="t">↓${r.input_tokens} ↑${r.output_tokens} · ${r.requests} 次</div>
+      </div>`).join('')
+    : '<div class="usage-model"><div class="t">暂无</div></div>';
+  box.innerHTML =
+    `<div class="set-label" style="margin:2px 0 4px">今日</div>${group(data.today)}` +
+    `<div class="set-label" style="margin:14px 0 4px">累计</div>${group(data.total)}`;
 }
 
 /* ===== Boot ===== */
