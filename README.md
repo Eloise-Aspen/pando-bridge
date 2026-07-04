@@ -183,6 +183,10 @@ in your own private Tailscale network (your *tailnet*).
 
 4. **Open it on your phone**: visit `https://<machine-name>.<tailnet-name>.ts.net`,
    send a message, then use the browser's *Add to Home Screen* to install the PWA.
+   If the phone times out (`ERR_CONNECTION_TIMED_OUT`) even though
+   `tailscale serve status` looks right, check that the machine's Tailscale
+   client isn't blocking inbound connections: `tailscale set --shields-up=false`
+   (the *Block incoming connections* toggle in the client UI).
    Because this is real HTTPS, everything browsers gate behind a secure context —
    PWA install, notifications, microphone — is available.
 
@@ -232,7 +236,10 @@ internet; if you use Cloudflare Tunnel, put an access policy in front.
    无需管理员权限。
 4. **手机打开** `https://<机器名>.<tailnet名>.ts.net`，发一条消息确认能聊，
    再用浏览器的"添加到主屏幕"安装 PWA。因为是真 HTTPS，浏览器限制在安全上下文
-   里的能力——PWA 安装、通知、麦克风——全部可用。
+   里的能力——PWA 安装、通知、麦克风——全部可用。若 `tailscale serve status`
+   正常但手机超时（`ERR_CONNECTION_TIMED_OUT`），检查机器端 Tailscale 是否开了
+   拦截入站连接：`tailscale set --shields-up=false`（客户端界面里的
+   *Block incoming connections* 开关）。
 
 **备选：Cloudflare Tunnel。**
 [Cloudflare Tunnel](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/)（`cloudflared`）
