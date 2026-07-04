@@ -8,6 +8,7 @@ import asyncio
 import importlib
 import json
 import logging
+import os
 import socket
 import sqlite3
 from datetime import datetime, timezone
@@ -30,6 +31,18 @@ def _cfg(config, key: str, default=None):
     if isinstance(config, dict):
         return config.get(key, default)
     return getattr(config, key, default)
+
+
+def _detect_lan_ip() -> str | None:
+    """UDP connect 探测本机 LAN IP：不真正发包，只借内核路由表选出口地址。
+    断网/无路由等任何失败返回 None，由调用方静默降级为只提示 localhost。"""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]
+    except OSError:
+        return None
+    return ip if ip and not ip.startswith("127.") else None
 
 
 def create_app(config) -> FastAPI:
@@ -295,6 +308,22 @@ def create_app(config) -> FastAPI:
             _call_hook(plugin, "register_session_source", session_source_registry)
         for plugin in plugin_instances:
             _call_hook(plugin, "register_routes", app)
+
+        # 启动横幅：本机 + 局域网访问地址，附手机接入指引。
+        # 端口来源：config PORT > 环境变量 BRIDGE_PORT > 默认 8765（与 README/.env.example 约定一致）——
+        # 核心拿不到 uvicorn 实际绑定的端口，此处仅作提示用途。
+        # 用 print 而非 log.info：uvicorn 默认不给应用 logger 配 handler，快速起步场景日志不可见，
+        # 而库内不应擅自修改全局 logging 配置。横幅纯属提示，任何输出异常（如终端编码不支持
+        # emoji）都不应阻断启动，整段兜底吞掉。
+        try:
+            banner_port = _cfg(config, "PORT") or os.environ.get("BRIDGE_PORT") or 8765
+            print(f"\n  Pando ready:  http://127.0.0.1:{banner_port}", flush=True)
+            lan_ip = _detect_lan_ip()
+            if lan_ip:
+                print(f"  LAN access:   http://{lan_ip}:{banner_port}", flush=True)
+            print("  📱 want it on your phone? see README → Reach it from your phone\n", flush=True)
+        except Exception:
+            pass
 
     def now_iso() -> str:
         return datetime.now(timezone.utc).isoformat()
