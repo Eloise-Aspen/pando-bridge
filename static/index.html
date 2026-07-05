@@ -79,10 +79,23 @@
   .topbar-icon { color: rgba(255,255,255,0.22); font-size: 19px; cursor: pointer; background: none; border: none; padding: 4px; }
   .topbar-icon:active { color: rgba(255,255,255,0.5); }
   .divider-top { margin: 14px 20px 0; height: 1px; background: rgba(255,255,255,0.08); }
-  .model-select { appearance: none; -webkit-appearance: none; background: transparent;
-                  border: 1px solid var(--border-light); border-radius: 8px; color: var(--text3);
-                  font-size: 11px; font-family: var(--font); padding: 4px 8px; cursor: pointer; outline: none; }
-  .model-select option { background: var(--bg); color: var(--text); }
+  /* 模型选择器:放在输入区(对齐生产服位置),按钮 + 上弹 popup */
+  .input-meta { position: relative; padding: 2px 4px 6px; display: flex; gap: 2px; }
+  .model-slot { position: relative; }
+  .model-btn { background: transparent; border: none; outline: none; cursor: pointer;
+               font-size: 11px; color: var(--text3); font-family: var(--font);
+               padding: 6px 8px; min-height: 32px; max-width: 60vw; overflow: hidden;
+               text-overflow: ellipsis; white-space: nowrap; }
+  .model-btn:active { color: var(--text2); }
+  .model-popup { position: absolute; bottom: calc(100% + 4px); left: 0;
+                 background: var(--bg); border: 1px solid var(--border-light);
+                 border-radius: 10px; padding: 4px 0; min-width: 160px; z-index: 50;
+                 box-shadow: 0 4px 16px rgba(0,0,0,0.5); }
+  .model-option { font-size: 14px; font-family: var(--font-cn); color: var(--text2);
+                  padding: 0 16px; min-height: 44px; display: flex; align-items: center; cursor: pointer; }
+  .model-option:active { background: var(--surface); }
+  .model-option.selected { color: var(--accent); }
+  .model-option.model-custom { border-top: 1px solid var(--border); color: var(--text3); }
 
   /* ---- Greeting ---- */
   .greeting-area { flex: 1; display: flex; flex-direction: column; align-items: center;
@@ -111,9 +124,16 @@
   .msg-bubble.assistant { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08);
                           border-radius: 12px 12px 12px 3px; padding: 10px 14px;
                           font-family: var(--font-cn); font-weight: 300; color: var(--text2); }
-  .msg-user-wrap { display: flex; align-items: flex-start; gap: 6px; max-width: 100%; }
-  .retry-btn { background: none; border: none; color: var(--text4); cursor: pointer;
-               font-size: 13px; padding: 6px 2px 0; flex-shrink: 0; }
+  /* 重发按钮:对齐生产服 IM 逻辑——绝对定位在气泡左侧,悬停/点触时显现。
+     隐藏态 pointer-events:none,避免手机上误触不可见按钮(对齐完成标准第 8 条)。 */
+  .msg-user-wrap { position: relative; display: inline-block; max-width: 85%; }
+  .msg-user-wrap .msg-bubble.user { max-width: 100%; }
+  .retry-btn { position: absolute; left: -46px; top: 50%; transform: translateY(-50%);
+               background: none; border: none; cursor: pointer; color: var(--text4);
+               font-size: 15px; line-height: 1; min-width: 44px; min-height: 44px;
+               display: flex; align-items: center; justify-content: center;
+               opacity: 0; pointer-events: none; transition: opacity 0.15s; }
+  .msg-row.user:hover .retry-btn, .msg-row.user:active .retry-btn { opacity: 1; pointer-events: auto; }
   .retry-btn:active { color: var(--accent); }
 
   .time-divider { align-self: center; font-size: 11px; color: var(--text4);
@@ -127,6 +147,14 @@
   .chip.tool { color: var(--accent-dim); }
   .usage-bar { align-self: flex-start; font-size: 11px; color: var(--text4); font-family: var(--font);
                display: flex; gap: 8px; padding: 0 4px; }
+
+  /* 助手回复工具条:复制 / 朗读。触达区 ≥44px 防手机误触 */
+  .msg-toolbar { align-self: flex-start; display: flex; gap: 2px; margin-top: 2px; }
+  .msg-tool-btn { background: none; border: none; color: var(--text4); cursor: pointer;
+                  min-width: 44px; min-height: 44px; padding: 10px; border-radius: 8px;
+                  display: flex; align-items: center; justify-content: center; font-size: 17px; }
+  .msg-tool-btn:active { color: var(--accent); background: var(--surface); }
+  .msg-tool-btn.speaking { color: var(--accent); }
   .typing { align-self: flex-start; color: var(--text4); font-size: 13px; font-family: var(--font-cn); padding: 0 6px; }
 
   /* ---- Input ---- */
@@ -215,8 +243,8 @@
 <div class="overlay" id="overlay" onclick="closeSidebar()"></div>
 <div class="sidebar" id="sidebar">
   <div class="sidebar-header">
-    <h2>对话记录</h2>
-    <button class="new-chat-btn" onclick="newConversation()"><i class="ti ti-plus"></i> 新对话</button>
+    <h2 data-i18n="sidebarTitle">对话记录</h2>
+    <button class="new-chat-btn" onclick="newConversation()"><i class="ti ti-plus"></i> <span data-i18n="newChat">新对话</span></button>
   </div>
   <div class="session-list" id="session-list"></div>
 </div>
@@ -225,17 +253,9 @@
 <div class="main active" id="view-chat">
   <div class="topbar">
     <div class="topbar-left">
+      <button class="topbar-icon" id="history-btn" onclick="openSidebar()" data-i18n-aria="ariaHistory" aria-label="历史"><i class="ti ti-history"></i></button>
       <div class="status-dot" id="dot"></div>
-      <span class="topbar-label" id="topbar-status">连接中…</span>
-    </div>
-    <div class="topbar-right">
-      <select class="model-select" id="model-select">
-        <option value="">默认</option>
-        <option value="claude-haiku-4-5-20251001">Haiku 4.5</option>
-        <option value="claude-sonnet-4-6" selected>Sonnet 4.6</option>
-        <option value="claude-opus-4-8">Opus 4.8</option>
-      </select>
-      <button class="topbar-icon" onclick="openSidebar()" aria-label="历史"><i class="ti ti-history"></i></button>
+      <span class="topbar-label" id="topbar-status" data-i18n="connecting">连接中…</span>
     </div>
   </div>
   <div class="divider-top"></div>
@@ -249,38 +269,51 @@
   <div class="messages" id="messages"></div>
 
   <div class="input-area">
+    <div class="input-meta">
+      <span class="model-slot">
+        <button class="model-btn" id="model-btn" onclick="toggleModelPopup()">默认 ▾</button>
+        <div class="model-popup" id="model-popup" style="display:none">
+          <div class="model-option selected" data-value="" data-i18n="modelDefault" onclick="selectModel(this)">默认</div>
+          <div class="model-option" data-value="claude-fable-5" onclick="selectModel(this)">Fable 5</div>
+          <div class="model-option" data-value="claude-opus-4-8" onclick="selectModel(this)">Opus 4.8</div>
+          <div class="model-option" data-value="claude-sonnet-5" onclick="selectModel(this)">Sonnet 5</div>
+          <div class="model-option" data-value="claude-haiku-4-5-20251001" onclick="selectModel(this)">Haiku 4.5</div>
+          <div class="model-option model-custom" data-i18n="modelCustom" onclick="selectCustomModel()">自定义…</div>
+        </div>
+      </span>
+    </div>
     <div class="input-bar">
-      <textarea id="input" rows="1" placeholder="在这里输入…"
+      <textarea id="input" rows="1" placeholder="在这里输入…" data-i18n-ph="inputPlaceholder"
         onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();send();}"></textarea>
-      <button class="send-btn" id="btn" onclick="send()" aria-label="发送"><i class="ti ti-arrow-up"></i></button>
+      <button class="send-btn" id="btn" onclick="send()" data-i18n-aria="ariaSend" aria-label="发送"><i class="ti ti-arrow-up"></i></button>
     </div>
   </div>
 </div>
 
 <!-- 记忆视图 -->
 <div class="view" id="view-memory">
-  <div class="view-title">记忆</div>
+  <div class="view-title" data-i18n="titleMemory">记忆</div>
   <div id="memory-body"></div>
 </div>
 
 <!-- 设置视图 -->
 <div class="view" id="view-settings">
-  <div class="view-title">设置</div>
+  <div class="view-title" data-i18n="titleSettings">设置</div>
   <div id="settings-body"></div>
 </div>
 
 <!-- 底部 tab 栏 -->
 <nav class="tabbar">
-  <button class="tab active" id="tab-chat" onclick="switchTab('chat')"><i class="ti ti-message-circle"></i><span>聊天</span></button>
-  <button class="tab" id="tab-memory" onclick="switchTab('memory')"><i class="ti ti-brain"></i><span>记忆</span></button>
-  <button class="tab" id="tab-settings" onclick="switchTab('settings')"><i class="ti ti-settings"></i><span>设置</span></button>
+  <button class="tab active" id="tab-chat" onclick="switchTab('chat')"><i class="ti ti-message-circle"></i><span data-i18n="tabChat">聊天</span></button>
+  <button class="tab" id="tab-memory" onclick="switchTab('memory')"><i class="ti ti-brain"></i><span data-i18n="tabMemory">记忆</span></button>
+  <button class="tab" id="tab-settings" onclick="switchTab('settings')"><i class="ti ti-settings"></i><span data-i18n="tabSettings">设置</span></button>
 </nav>
 
 <!-- Thinking / detail sheet -->
 <div class="sheet-overlay" id="sheet-overlay" onclick="closeSheet()"></div>
 <div class="sheet" id="sheet">
   <div class="sheet-header">
-    <span id="sheet-title">Thinking</span>
+    <span id="sheet-title" data-i18n="sheetThinking">Thinking</span>
     <button class="sheet-close" onclick="closeSheet()"><i class="ti ti-x"></i></button>
   </div>
   <div class="sheet-body" id="sheet-body"></div>
@@ -295,10 +328,80 @@ let ASSISTANT_NAME = 'Claude', USER_NICKNAME = 'User';
 
 const $ = id => document.getElementById(id);
 const $msg = $('messages'), $input = $('input'), $btn = $('btn'),
-      $dot = $('dot'), $model = $('model-select'), $greeting = $('greeting'),
+      $dot = $('dot'), $greeting = $('greeting'),
       $status = $('topbar-status');
 
+let currentModel = '';  // 会话内记住的模型选择,空 = 走 CLI 默认模型
+
 const escHtml = s => (s || '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+/* ===== 极简双语字典(zh 默认 / en),不引 i18n 库 =====
+   默认中文(首发受众小红书);navigator.language 非 zh 时走英文。 */
+const LANG = (navigator.language || 'zh').toLowerCase().startsWith('zh') ? 'zh' : 'en';
+const I18N = {
+  zh: {
+    sidebarTitle: '对话记录', newChat: '新对话', connecting: '连接中…',
+    online: '在线', offline: '离线', inputPlaceholder: '在这里输入…',
+    ariaHistory: '历史', ariaSend: '发送', sheetThinking: 'Thinking',
+    tabChat: '聊天', tabMemory: '记忆', tabSettings: '设置',
+    titleMemory: '记忆', titleSettings: '设置',
+    modelDefault: '默认', modelCustom: '自定义…',
+    retry: '重新发送', copy: '复制', speak: '朗读',
+    loading: '加载中…', loadFailed: '加载失败',
+    memConnFail: '记忆服务连接失败', memConnFailSub: '聊天不受影响,可稍后重试',
+    memUnconfigured: '未配置记忆服务',
+    memUnconfiguredSub: '设置 MEMORY_SERVICE_URL 指向记忆服务后,即可在此浏览、搜索、删除记忆',
+    memUnavailable: '记忆服务暂时不可用', memUnavailableSub: '已配置但连接失败(降级)·聊天不受影响',
+    memCount: '条记忆', memChars: '总字数', memSearchPlaceholder: '搜索记忆…',
+    memNoMatch: '没有匹配的记忆', memEmpty: '暂无记忆',
+    memDeleteConfirm: '删除这条记忆?', memDeleteFailed: '删除失败',
+    setNick: '你的昵称', setAsst: '助手名称', setServer: '服务端信息', setUsage: '用量统计',
+    svVersion: '版本', svService: '服务', svHost: '主机', svCli: 'Claude CLI', svMemory: '记忆服务',
+    memUnconf: '未配置', memOnline: '已配置 · 在线', memOffline: '已配置 · 离线',
+    usageUnavailable: '用量数据不可用', usageToday: '今日', usageTotal: '累计', usageNone: '暂无',
+    customModelPrompt: '输入模型 id(经 --model 透传给 Claude CLI):', greetingDefault: '你好',
+    greeting: n => `${n},你好`, status: (name, on) => `${name} · ${on ? '在线' : '离线'}`,
+    msgCount: n => `${n} 条消息`, cache: p => `缓存 ${p}%`, reqs: n => `${n} 次`,
+    thinkingChip: k => `Thinking (${k}k)`, cost: c => `$${c}`,
+  },
+  en: {
+    sidebarTitle: 'Chats', newChat: 'New chat', connecting: 'Connecting…',
+    online: 'online', offline: 'offline', inputPlaceholder: 'Type a message…',
+    ariaHistory: 'History', ariaSend: 'Send', sheetThinking: 'Thinking',
+    tabChat: 'Chat', tabMemory: 'Memory', tabSettings: 'Settings',
+    titleMemory: 'Memory', titleSettings: 'Settings',
+    modelDefault: 'Default', modelCustom: 'Custom…',
+    retry: 'Resend', copy: 'Copy', speak: 'Read aloud',
+    loading: 'Loading…', loadFailed: 'Failed to load',
+    memConnFail: 'Memory service unreachable', memConnFailSub: 'Chat is unaffected; try again later',
+    memUnconfigured: 'No memory service',
+    memUnconfiguredSub: 'Set MEMORY_SERVICE_URL to a memory service to browse, search and delete memories here',
+    memUnavailable: 'Memory service unavailable', memUnavailableSub: 'Configured but unreachable (degraded) · chat unaffected',
+    memCount: 'memories', memChars: 'total chars', memSearchPlaceholder: 'Search memories…',
+    memNoMatch: 'No matching memories', memEmpty: 'No memories yet',
+    memDeleteConfirm: 'Delete this memory?', memDeleteFailed: 'Delete failed',
+    setNick: 'Your nickname', setAsst: 'Assistant name', setServer: 'Server info', setUsage: 'Usage',
+    svVersion: 'Version', svService: 'Service', svHost: 'Host', svCli: 'Claude CLI', svMemory: 'Memory service',
+    memUnconf: 'Not configured', memOnline: 'Configured · online', memOffline: 'Configured · offline',
+    usageUnavailable: 'Usage data unavailable', usageToday: 'Today', usageTotal: 'Total', usageNone: 'None',
+    customModelPrompt: 'Enter model id (passed to the Claude CLI via --model):', greetingDefault: 'Hi',
+    greeting: n => `Hi, ${n}`, status: (name, on) => `${name} · ${on ? 'online' : 'offline'}`,
+    msgCount: n => `${n} msgs`, cache: p => `cache ${p}%`, reqs: n => `${n} reqs`,
+    thinkingChip: k => `Thinking (${k}k)`, cost: c => `$${c}`,
+  },
+};
+const t = k => { const v = I18N[LANG][k]; return v !== undefined ? v : I18N.zh[k]; };
+
+// 把带 data-i18n* 标记的静态元素按当前语言刷一遍(文本/占位符/title/aria-label)
+function applyI18n() {
+  document.documentElement.lang = LANG;
+  document.querySelectorAll('[data-i18n]').forEach(el => el.textContent = t(el.dataset.i18n));
+  document.querySelectorAll('[data-i18n-ph]').forEach(el => el.placeholder = t(el.dataset.i18nPh));
+  document.querySelectorAll('[data-i18n-title]').forEach(el => el.title = t(el.dataset.i18nTitle));
+  document.querySelectorAll('[data-i18n-aria]').forEach(el => el.setAttribute('aria-label', t(el.dataset.i18nAria)));
+  $('model-btn').textContent = t('modelDefault') + ' ▾';
+  $('greeting-name').textContent = t('greeting')(USER_NICKNAME);  // 先按默认昵称铺一遍,loadConfig 再细化
+}
 
 /* ===== Config ===== */
 // 昵称/助手名优先级：localStorage（本地覆写）> /config 路由（若插件提供）> 内置默认。
@@ -311,12 +414,12 @@ async function loadConfig() {
   } catch (e) { /* 无 /config 插件（demo 默认态）→ 忽略，走本地/默认 */ }
   USER_NICKNAME = localStorage.getItem('userNickname') || cfgNick || USER_NICKNAME;
   ASSISTANT_NAME = localStorage.getItem('assistantName') || cfgAsst || ASSISTANT_NAME;
-  $('greeting-name').textContent = `${USER_NICKNAME}，你好`;
+  $('greeting-name').textContent = t('greeting')(USER_NICKNAME);
 }
 
 function setStatus(on) {
   $dot.className = 'status-dot ' + (on ? 'on' : 'off');
-  $status.textContent = `${ASSISTANT_NAME} · ${on ? '在线' : '离线'}`;
+  $status.textContent = t('status')(ASSISTANT_NAME, on);
 }
 
 /* ===== View toggles ===== */
@@ -341,9 +444,9 @@ async function loadSessions() {
     sessions.forEach(s => {
       const el = document.createElement('div');
       el.className = 'session-item' + (s.id === currentSessionId ? ' active' : '');
-      const date = s.updated_at ? new Date(s.updated_at).toLocaleDateString('zh-CN', {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'}) : '';
-      el.innerHTML = `<div class="s-title">${escHtml(s.title || '新对话')}</div>
-                      <div class="s-meta">${s.msg_count} 条消息 · ${date}</div>`;
+      const date = s.updated_at ? new Date(s.updated_at).toLocaleDateString(LANG === 'zh' ? 'zh-CN' : 'en-US', {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'}) : '';
+      el.innerHTML = `<div class="s-title">${escHtml(s.title || t('newChat'))}</div>
+                      <div class="s-meta">${t('msgCount')(s.msg_count)} · ${date}</div>`;
       el.onclick = () => switchSession(s.id);
       list.appendChild(el);
     });
@@ -373,7 +476,7 @@ function newConversation() {
 async function loadHistory(sid) {
   const notice = document.createElement('div');
   notice.className = 'history-notice';
-  notice.textContent = '加载中…';
+  notice.textContent = t('loading');
   $msg.appendChild(notice);
   try {
     const msgs = await (await fetch(`/sessions/${sid}/messages`)).json();
@@ -382,12 +485,13 @@ async function loadHistory(sid) {
       if (m.role === 'user') addMsg('user', m.content);
       else if (m.role === 'assistant') {
         if (m.metadata && m.metadata.thinking) addThinkingChip(m.metadata.thinking);
-        addMsg('assistant', m.content);
+        const row = addMsg('assistant', m.content);
+        addAssistantToolbar(row, m.content);
         if (m.metadata && m.metadata.usage)
           addUsage({ cost_usd: m.metadata.cost_usd, duration_ms: m.metadata.duration_ms, usage: m.metadata.usage });
       }
     });
-  } catch (e) { notice.textContent = '加载失败'; }
+  } catch (e) { notice.textContent = t('loadFailed'); }
 }
 
 /* ===== Time divider ===== */
@@ -395,8 +499,16 @@ function maybeTimeDivider() {
   const now = Date.now();
   if (!lastMsgTime || (now - lastMsgTime) > 5 * 60 * 1000) {
     const d = new Date();
-    const w = ['周日','周一','周二','周三','周四','周五','周六'];
-    const label = `${d.getMonth()+1}月${d.getDate()}日 ${w[d.getDay()]} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+    const hh = String(d.getHours()).padStart(2,'0'), mm = String(d.getMinutes()).padStart(2,'0');
+    let label;
+    if (LANG === 'zh') {
+      const w = ['周日','周一','周二','周三','周四','周五','周六'];
+      label = `${d.getMonth()+1}月${d.getDate()}日 ${w[d.getDay()]} ${hh}:${mm}`;
+    } else {
+      const w = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+      const mo = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+      label = `${w[d.getDay()]} ${mo[d.getMonth()]} ${d.getDate()}, ${hh}:${mm}`;
+    }
     const div = document.createElement('div');
     div.className = 'time-divider';
     div.textContent = label;
@@ -420,14 +532,14 @@ function addMsg(cls, text) {
   } else if (cls === 'user') {
     const wrap = document.createElement('div');
     wrap.className = 'msg-user-wrap';
-    const btn = document.createElement('button');
-    btn.className = 'retry-btn'; btn.title = '重新发送';
-    btn.innerHTML = '<i class="ti ti-refresh"></i>';
-    btn.onclick = () => retryMsg(text);
     const bubble = document.createElement('div');
     bubble.className = 'msg-bubble user';
     bubble.textContent = text;
-    wrap.appendChild(btn); wrap.appendChild(bubble);
+    const btn = document.createElement('button');
+    btn.className = 'retry-btn'; btn.title = t('retry');
+    btn.innerHTML = '<i class="ti ti-refresh"></i>';
+    btn.onclick = () => retryMsg(text);
+    wrap.appendChild(bubble); wrap.appendChild(btn);
     row.appendChild(wrap);
   } else {
     const b = document.createElement('div');
@@ -455,15 +567,18 @@ function updateAssistantBubbles(row, fullText) {
   $msg.scrollTop = $msg.scrollHeight;
 }
 
-function addThinkingChip(text) {
+// beforeEl 给定时把 chip 插到该元素之前(用于实时路径把 chip 放到气泡上方,
+// 与历史路径统一——chip 一律在气泡上方)
+function addThinkingChip(text, beforeEl) {
   const row = document.createElement('div');
   row.className = 'chip-row';
   const chip = document.createElement('button');
   chip.className = 'chip';
-  chip.innerHTML = `<i class="ti ti-sparkles"></i> Thinking (${(text.length/1000).toFixed(1)}k)`;
+  chip.innerHTML = `<i class="ti ti-sparkles"></i> ${t('thinkingChip')((text.length/1000).toFixed(1))}`;
   chip.onclick = () => openSheet('Thinking', text);
   row.appendChild(chip);
-  $msg.appendChild(row);
+  if (beforeEl) $msg.insertBefore(row, beforeEl);
+  else $msg.appendChild(row);
   $msg.scrollTop = $msg.scrollHeight;
 }
 
@@ -485,12 +600,69 @@ function addUsage(data) {
   const dur = data.duration_ms ? `${(data.duration_ms/1000).toFixed(1)}s` : '';
   const cost = data.cost_usd ? `$${data.cost_usd.toFixed(4)}` : '';
   const u = data.usage || {};
-  const cache = u.cache_hit_pct !== undefined ? `缓存 ${u.cache_hit_pct}%` : '';
+  const cache = u.cache_hit_pct !== undefined ? t('cache')(u.cache_hit_pct) : '';
   const tokens = (u.input_tokens || u.output_tokens) ? `↓${u.input_tokens} ↑${u.output_tokens}` : '';
-  const parts = [dur, cost, cache, tokens].filter(Boolean);
+  const parts = [dur, cost, cache, tokens].filter(Boolean).slice(0, 3);  // 只留前三项(对齐私有仓生产前端)
   el.innerHTML = parts.map(p => `<span>${escHtml(p)}</span>`).join('');
   $msg.appendChild(el);
   $msg.scrollTop = $msg.scrollHeight;
+}
+
+/* ===== 助手回复工具条(复制 / 朗读)===== */
+let speakingBtn = null;  // 当前正在朗读的按钮,用于播放/停止切换
+
+// 在助手回复行底部挂工具条。复制/朗读各自按能力降级:
+// 复制仅在 clipboard API 可用(安全上下文)时出现,朗读仅在支持 Web Speech API 时出现。
+function addAssistantToolbar(row, text) {
+  if (!row || !text) return;
+  const bar = document.createElement('div');
+  bar.className = 'msg-toolbar';
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    const copyBtn = document.createElement('button');
+    copyBtn.className = 'msg-tool-btn';
+    copyBtn.title = t('copy');
+    copyBtn.innerHTML = '<i class="ti ti-copy"></i>';
+    copyBtn.onclick = () => copyText(text, copyBtn);
+    bar.appendChild(copyBtn);
+  }
+  if ('speechSynthesis' in window) {
+    const speakBtn = document.createElement('button');
+    speakBtn.className = 'msg-tool-btn';
+    speakBtn.title = t('speak');
+    speakBtn.innerHTML = '<i class="ti ti-volume"></i>';
+    speakBtn.onclick = () => toggleSpeak(text, speakBtn);
+    bar.appendChild(speakBtn);
+  }
+  if (bar.children.length) row.appendChild(bar);
+}
+
+async function copyText(text, btn) {
+  try {
+    await navigator.clipboard.writeText(text);
+    btn.innerHTML = '<i class="ti ti-check"></i>';
+    setTimeout(() => { btn.innerHTML = '<i class="ti ti-copy"></i>'; }, 1200);
+  } catch (e) { /* 复制失败(权限/上下文)→ 静默,不打断阅读 */ }
+}
+
+// 播放/停止切换:点正在朗读的按钮=停止;点别的=停旧的、读新的。
+// 语言跟随回复内容:含中日韩字符走 zh-CN,否则 en-US。
+function toggleSpeak(text, btn) {
+  const synth = window.speechSynthesis;
+  if (speakingBtn === btn) { synth.cancel(); resetSpeakBtn(); return; }
+  if (synth.speaking || speakingBtn) { synth.cancel(); resetSpeakBtn(); }
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = /[一-鿿぀-ヿ가-힯]/.test(text) ? 'zh-CN' : 'en-US';
+  u.onend = u.onerror = () => resetSpeakBtn();
+  speakingBtn = btn;
+  btn.classList.add('speaking');
+  btn.innerHTML = '<i class="ti ti-player-stop"></i>';
+  synth.speak(u);
+}
+function resetSpeakBtn() {
+  if (!speakingBtn) return;
+  speakingBtn.classList.remove('speaking');
+  speakingBtn.innerHTML = '<i class="ti ti-volume"></i>';
+  speakingBtn = null;
 }
 
 function showTyping() {
@@ -515,6 +687,32 @@ function closeSheet() {
   $('sheet').classList.remove('open');
 }
 
+/* ===== 模型选择器(输入区)===== */
+function toggleModelPopup() {
+  const p = $('model-popup');
+  p.style.display = p.style.display === 'none' ? 'block' : 'none';
+}
+function selectModel(el) {
+  currentModel = el.dataset.value;
+  $('model-btn').textContent = el.textContent + ' ▾';
+  document.querySelectorAll('#model-popup .model-option').forEach(o => o.classList.remove('selected'));
+  el.classList.add('selected');
+  $('model-popup').style.display = 'none';
+}
+// 自定义模型:输入任意 model id,经 WS → CLI --model 透传(旧模型不穷举,自定义兜底)
+function selectCustomModel() {
+  $('model-popup').style.display = 'none';
+  const id = (prompt(t('customModelPrompt'), currentModel) || '').trim();
+  if (!id) return;
+  currentModel = id;
+  $('model-btn').textContent = id + ' ▾';
+  document.querySelectorAll('#model-popup .model-option').forEach(o => o.classList.remove('selected'));
+}
+// 点 popup 之外的区域关闭它
+document.addEventListener('click', e => {
+  if (!e.target.closest('.model-slot')) $('model-popup').style.display = 'none';
+});
+
 /* ===== Send ===== */
 function send() {
   const text = $input.value.trim();
@@ -524,7 +722,7 @@ function send() {
   $input.value = '';
   $input.style.height = 'auto';
   currentAssistantRow = null; assistantText = '';
-  ws.send(JSON.stringify({ text, model: $model.value || undefined }));
+  ws.send(JSON.stringify({ text, model: currentModel || undefined }));
   setBusy(true);
   showTyping();
 }
@@ -532,7 +730,7 @@ function send() {
 function retryMsg(text) {
   if (!text || busy || !ws || ws.readyState !== 1) return;
   currentAssistantRow = null; assistantText = '';
-  ws.send(JSON.stringify({ text, model: $model.value || undefined }));
+  ws.send(JSON.stringify({ text, model: currentModel || undefined }));
   setBusy(true);
   showTyping();
 }
@@ -580,8 +778,11 @@ function connect() {
         break;
       case 'result':
         removeTyping();
-        if (m.thinking) addThinkingChip(m.thinking);
-        if (m.text && !assistantText) { currentAssistantRow = addMsg('assistant', m.text); }
+        // 先确保气泡存在(无流式 text 时用 result.text 建),再把 thinking chip
+        // 插到气泡上方——与历史路径统一,chip 一律在气泡上方,刷新前后位置一致
+        if (m.text && !assistantText) { currentAssistantRow = addMsg('assistant', m.text); assistantText = m.text; }
+        if (m.thinking) addThinkingChip(m.thinking, currentAssistantRow || undefined);
+        if (currentAssistantRow && assistantText) addAssistantToolbar(currentAssistantRow, assistantText);
         if (m.usage) addUsage({ cost_usd: m.cost_usd, duration_ms: m.duration_ms, usage: m.usage });
         if (m.session_id) setSessionId(m.session_id);
         currentAssistantRow = null; assistantText = '';
@@ -627,33 +828,32 @@ function memGuide(title, sub) {
 
 async function loadMemory() {
   const body = $('memory-body');
-  body.innerHTML = memGuide('加载中…', '');
+  body.innerHTML = memGuide(t('loading'), '');
   let resp;
   try {
     resp = await fetch('/memory-admin/memory/stats');
   } catch (e) {
     // 网络层失败（少见）——当降级处理，聊天不受影响
-    body.innerHTML = memGuide('记忆服务连接失败', '聊天不受影响，可稍后重试');
+    body.innerHTML = memGuide(t('memConnFail'), t('memConnFailSub'));
     return;
   }
   // 404：/memory-admin/* 代理路由未注册 → NullProvider（未配置记忆服务）
   if (resp.status === 404) {
-    body.innerHTML = memGuide('未配置记忆服务',
-      '设置 MEMORY_SERVICE_URL 指向记忆服务后，即可在此浏览、搜索、删除记忆');
+    body.innerHTML = memGuide(t('memUnconfigured'), t('memUnconfiguredSub'));
     return;
   }
   // 502 等：配了 URL 但记忆服务挂了 → 降级提示（不是白屏/裸 500）
   if (!resp.ok) {
-    body.innerHTML = memGuide('记忆服务暂时不可用', '已配置但连接失败（降级）·聊天不受影响');
+    body.innerHTML = memGuide(t('memUnavailable'), t('memUnavailableSub'));
     return;
   }
   const stats = await resp.json();
   body.innerHTML = `
     <div class="mem-stat">
-      <div><div class="num">${stats.count ?? 0}</div><div class="lbl">条记忆</div></div>
-      <div><div class="num">${stats.total_chars ?? 0}</div><div class="lbl">总字数</div></div>
+      <div><div class="num">${stats.count ?? 0}</div><div class="lbl">${t('memCount')}</div></div>
+      <div><div class="num">${stats.total_chars ?? 0}</div><div class="lbl">${t('memChars')}</div></div>
     </div>
-    <div class="mem-search"><input id="mem-q" placeholder="搜索记忆…" autocomplete="off"></div>
+    <div class="mem-search"><input id="mem-q" placeholder="${t('memSearchPlaceholder')}" autocomplete="off"></div>
     <div id="mem-list"></div>`;
   $('mem-q').oninput = debounce(() => refreshMemList($('mem-q').value.trim()), 300);
   refreshMemList('');
@@ -671,7 +871,7 @@ async function refreshMemList(query) {
     if (r.ok) items = (await r.json()).items || [];
   } catch (e) { /* 保底空列表 */ }
   if (!items.length) {
-    list.innerHTML = `<div class="mem-empty">${query ? '没有匹配的记忆' : '暂无记忆'}</div>`;
+    list.innerHTML = `<div class="mem-empty">${query ? t('memNoMatch') : t('memEmpty')}</div>`;
     return;
   }
   list.innerHTML = '';
@@ -692,11 +892,11 @@ async function refreshMemList(query) {
 }
 
 async function deleteMemory(id, preview) {
-  if (!confirm('删除这条记忆？\n\n' + (preview || '').slice(0, 60))) return;
+  if (!confirm(t('memDeleteConfirm') + '\n\n' + (preview || '').slice(0, 60))) return;
   try {
     const r = await fetch(`/memory-admin/memory/${id}`, { method: 'DELETE' });
-    if (!r.ok && r.status !== 404) { alert('删除失败'); return; }
-  } catch (e) { alert('删除失败'); return; }
+    if (!r.ok && r.status !== 404) { alert(t('memDeleteFailed')); return; }
+  } catch (e) { alert(t('memDeleteFailed')); return; }
   const q = $('mem-q');
   await refreshMemList(q ? q.value.trim() : '');
   updateMemStats();
@@ -718,20 +918,20 @@ function loadSettings() {
   const body = $('settings-body');
   body.innerHTML = `
     <div class="set-group">
-      <div class="set-label">你的昵称</div>
+      <div class="set-label">${t('setNick')}</div>
       <input class="set-input" id="set-nick" placeholder="User" autocomplete="off">
     </div>
     <div class="set-group">
-      <div class="set-label">助手名称</div>
+      <div class="set-label">${t('setAsst')}</div>
       <input class="set-input" id="set-asst" placeholder="Claude" autocomplete="off">
     </div>
     <div class="set-group">
-      <div class="set-label">服务端信息</div>
-      <div id="server-info"><div class="set-row"><span class="k">加载中…</span><span class="v"></span></div></div>
+      <div class="set-label">${t('setServer')}</div>
+      <div id="server-info"><div class="set-row"><span class="k">${t('loading')}</span><span class="v"></span></div></div>
     </div>
     <div class="set-group">
-      <div class="set-label">用量统计</div>
-      <div id="usage-info"><div class="set-row"><span class="k">加载中…</span><span class="v"></span></div></div>
+      <div class="set-label">${t('setUsage')}</div>
+      <div id="usage-info"><div class="set-row"><span class="k">${t('loading')}</span><span class="v"></span></div></div>
     </div>`;
   $('set-nick').value = localStorage.getItem('userNickname') || (USER_NICKNAME === 'User' ? '' : USER_NICKNAME);
   $('set-asst').value = localStorage.getItem('assistantName') || (ASSISTANT_NAME === 'Claude' ? '' : ASSISTANT_NAME);
@@ -749,7 +949,7 @@ function saveIdentity() {
   if (asst) localStorage.setItem('assistantName', asst); else localStorage.removeItem('assistantName');
   USER_NICKNAME = nick || 'User';
   ASSISTANT_NAME = asst || 'Claude';
-  $('greeting-name').textContent = `${USER_NICKNAME}，你好`;
+  $('greeting-name').textContent = t('greeting')(USER_NICKNAME);
   setStatus(!!(ws && ws.readyState === 1));
 }
 
@@ -758,19 +958,19 @@ async function loadServerInfo() {
   let health = null;
   try { const r = await fetch('/health'); if (r.ok) health = await r.json(); } catch (e) { /* 降级 */ }
   // 记忆服务配置状态：探测代理端点（404=未配置，200=在线，其余=已配置但离线）
-  let memStatus = '未配置';
+  let memStatus = t('memUnconf');
   try {
     const r = await fetch('/memory-admin/memory/stats');
-    if (r.status === 404) memStatus = '未配置';
-    else if (r.ok) memStatus = '已配置 · 在线';
-    else memStatus = '已配置 · 离线';
-  } catch (e) { memStatus = '已配置 · 离线'; }
+    if (r.status === 404) memStatus = t('memUnconf');
+    else if (r.ok) memStatus = t('memOnline');
+    else memStatus = t('memOffline');
+  } catch (e) { memStatus = t('memOffline'); }
   const rows = [
-    ['版本', health ? (health.version || '—') : '—'],
-    ['服务', health ? (health.service || '—') : '—'],
-    ['主机', health ? (health.hostname || '—') : '—'],
-    ['Claude CLI', health ? (health.claude_cli || '—') : '—'],
-    ['记忆服务', memStatus],
+    [t('svVersion'), health ? (health.version || '—') : '—'],
+    [t('svService'), health ? (health.service || '—') : '—'],
+    [t('svHost'), health ? (health.hostname || '—') : '—'],
+    [t('svCli'), health ? (health.claude_cli || '—') : '—'],
+    [t('svMemory'), memStatus],
   ];
   box.innerHTML = rows.map(([k, v]) =>
     `<div class="set-row"><span class="k">${escHtml(k)}</span><span class="v">${escHtml(v)}</span></div>`
@@ -781,20 +981,21 @@ async function loadUsage() {
   const box = $('usage-info');
   let data = null;
   try { const r = await fetch('/usage/stats'); if (r.ok) data = await r.json(); } catch (e) { /* 降级 */ }
-  if (!data) { box.innerHTML = '<div class="set-row"><span class="k">用量数据不可用</span><span class="v"></span></div>'; return; }
+  if (!data) { box.innerHTML = `<div class="set-row"><span class="k">${t('usageUnavailable')}</span><span class="v"></span></div>`; return; }
   const group = rows => rows && rows.length
     ? rows.map(r => `<div class="usage-model">
         <div class="m">${escHtml(r.model)}</div>
-        <div class="t">↓${r.input_tokens} ↑${r.output_tokens} · ${r.requests} 次</div>
+        <div class="t">↓${r.input_tokens} ↑${r.output_tokens} · ${t('reqs')(r.requests)}</div>
       </div>`).join('')
-    : '<div class="usage-model"><div class="t">暂无</div></div>';
+    : `<div class="usage-model"><div class="t">${t('usageNone')}</div></div>`;
   box.innerHTML =
-    `<div class="set-label" style="margin:2px 0 4px">今日</div>${group(data.today)}` +
-    `<div class="set-label" style="margin:14px 0 4px">累计</div>${group(data.total)}`;
+    `<div class="set-label" style="margin:2px 0 4px">${t('usageToday')}</div>${group(data.today)}` +
+    `<div class="set-label" style="margin:14px 0 4px">${t('usageTotal')}</div>${group(data.total)}`;
 }
 
 /* ===== Boot ===== */
 async function boot() {
+  applyI18n();  // 先按当前语言刷静态文案,再加载配置/连接
   await loadConfig();
   if (currentSessionId) { showMessages(); await loadHistory(currentSessionId); }
   else showGreeting();
