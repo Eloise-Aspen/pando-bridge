@@ -468,7 +468,7 @@ def create_app(config) -> FastAPI:
 
         cmd.append(message)
 
-        log.info("spawn: %s (session=%s)", message[:80], session_id or "new")
+        log.info("spawn: %s (session=%s, model=%s)", message[:80], session_id or "new", model or "default")
 
         proc = await asyncio.create_subprocess_exec(
             *cmd,

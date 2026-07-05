@@ -79,10 +79,23 @@
   .topbar-icon { color: rgba(255,255,255,0.22); font-size: 19px; cursor: pointer; background: none; border: none; padding: 4px; }
   .topbar-icon:active { color: rgba(255,255,255,0.5); }
   .divider-top { margin: 14px 20px 0; height: 1px; background: rgba(255,255,255,0.08); }
-  .model-select { appearance: none; -webkit-appearance: none; background: transparent;
-                  border: 1px solid var(--border-light); border-radius: 8px; color: var(--text3);
-                  font-size: 11px; font-family: var(--font); padding: 4px 8px; cursor: pointer; outline: none; }
-  .model-select option { background: var(--bg); color: var(--text); }
+  /* 模型选择器:放在输入区(对齐生产服位置),按钮 + 上弹 popup */
+  .input-meta { position: relative; padding: 2px 4px 6px; display: flex; gap: 2px; }
+  .model-slot { position: relative; }
+  .model-btn { background: transparent; border: none; outline: none; cursor: pointer;
+               font-size: 11px; color: var(--text3); font-family: var(--font);
+               padding: 6px 8px; min-height: 32px; max-width: 60vw; overflow: hidden;
+               text-overflow: ellipsis; white-space: nowrap; }
+  .model-btn:active { color: var(--text2); }
+  .model-popup { position: absolute; bottom: calc(100% + 4px); left: 0;
+                 background: var(--bg); border: 1px solid var(--border-light);
+                 border-radius: 10px; padding: 4px 0; min-width: 160px; z-index: 50;
+                 box-shadow: 0 4px 16px rgba(0,0,0,0.5); }
+  .model-option { font-size: 14px; font-family: var(--font-cn); color: var(--text2);
+                  padding: 0 16px; min-height: 44px; display: flex; align-items: center; cursor: pointer; }
+  .model-option:active { background: var(--surface); }
+  .model-option.selected { color: var(--accent); }
+  .model-option.model-custom { border-top: 1px solid var(--border); color: var(--text3); }
 
   /* ---- Greeting ---- */
   .greeting-area { flex: 1; display: flex; flex-direction: column; align-items: center;
@@ -244,14 +257,6 @@
       <div class="status-dot" id="dot"></div>
       <span class="topbar-label" id="topbar-status">连接中…</span>
     </div>
-    <div class="topbar-right">
-      <select class="model-select" id="model-select">
-        <option value="">默认</option>
-        <option value="claude-haiku-4-5-20251001">Haiku 4.5</option>
-        <option value="claude-sonnet-4-6" selected>Sonnet 4.6</option>
-        <option value="claude-opus-4-8">Opus 4.8</option>
-      </select>
-    </div>
   </div>
   <div class="divider-top"></div>
 
@@ -264,6 +269,19 @@
   <div class="messages" id="messages"></div>
 
   <div class="input-area">
+    <div class="input-meta">
+      <span class="model-slot">
+        <button class="model-btn" id="model-btn" onclick="toggleModelPopup()">默认 ▾</button>
+        <div class="model-popup" id="model-popup" style="display:none">
+          <div class="model-option selected" data-value="" onclick="selectModel(this)">默认</div>
+          <div class="model-option" data-value="claude-fable-5" onclick="selectModel(this)">Fable 5</div>
+          <div class="model-option" data-value="claude-opus-4-8" onclick="selectModel(this)">Opus 4.8</div>
+          <div class="model-option" data-value="claude-sonnet-5" onclick="selectModel(this)">Sonnet 5</div>
+          <div class="model-option" data-value="claude-haiku-4-5-20251001" onclick="selectModel(this)">Haiku 4.5</div>
+          <div class="model-option model-custom" onclick="selectCustomModel()">自定义…</div>
+        </div>
+      </span>
+    </div>
     <div class="input-bar">
       <textarea id="input" rows="1" placeholder="在这里输入…"
         onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();send();}"></textarea>
@@ -310,8 +328,10 @@ let ASSISTANT_NAME = 'Claude', USER_NICKNAME = 'User';
 
 const $ = id => document.getElementById(id);
 const $msg = $('messages'), $input = $('input'), $btn = $('btn'),
-      $dot = $('dot'), $model = $('model-select'), $greeting = $('greeting'),
+      $dot = $('dot'), $greeting = $('greeting'),
       $status = $('topbar-status');
+
+let currentModel = '';  // 会话内记住的模型选择,空 = 走 CLI 默认模型
 
 const escHtml = s => (s || '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
@@ -588,6 +608,32 @@ function closeSheet() {
   $('sheet').classList.remove('open');
 }
 
+/* ===== 模型选择器(输入区)===== */
+function toggleModelPopup() {
+  const p = $('model-popup');
+  p.style.display = p.style.display === 'none' ? 'block' : 'none';
+}
+function selectModel(el) {
+  currentModel = el.dataset.value;
+  $('model-btn').textContent = el.textContent + ' ▾';
+  document.querySelectorAll('#model-popup .model-option').forEach(o => o.classList.remove('selected'));
+  el.classList.add('selected');
+  $('model-popup').style.display = 'none';
+}
+// 自定义模型:输入任意 model id,经 WS → CLI --model 透传(旧模型不穷举,自定义兜底)
+function selectCustomModel() {
+  $('model-popup').style.display = 'none';
+  const id = (prompt('输入模型 id(经 --model 透传给 Claude CLI):', currentModel) || '').trim();
+  if (!id) return;
+  currentModel = id;
+  $('model-btn').textContent = id + ' ▾';
+  document.querySelectorAll('#model-popup .model-option').forEach(o => o.classList.remove('selected'));
+}
+// 点 popup 之外的区域关闭它
+document.addEventListener('click', e => {
+  if (!e.target.closest('.model-slot')) $('model-popup').style.display = 'none';
+});
+
 /* ===== Send ===== */
 function send() {
   const text = $input.value.trim();
@@ -597,7 +643,7 @@ function send() {
   $input.value = '';
   $input.style.height = 'auto';
   currentAssistantRow = null; assistantText = '';
-  ws.send(JSON.stringify({ text, model: $model.value || undefined }));
+  ws.send(JSON.stringify({ text, model: currentModel || undefined }));
   setBusy(true);
   showTyping();
 }
@@ -605,7 +651,7 @@ function send() {
 function retryMsg(text) {
   if (!text || busy || !ws || ws.readyState !== 1) return;
   currentAssistantRow = null; assistantText = '';
-  ws.send(JSON.stringify({ text, model: $model.value || undefined }));
+  ws.send(JSON.stringify({ text, model: currentModel || undefined }));
   setBusy(true);
   showTyping();
 }
