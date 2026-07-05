@@ -1,5 +1,7 @@
 # Pando
 
+[![test](https://github.com/Eloise-Aspen/pando-bridge/actions/workflows/test.yml/badge.svg)](https://github.com/Eloise-Aspen/pando-bridge/actions/workflows/test.yml)
+
 **简体中文 | [English](#english)**
 
 > Pando 得名于已知最大的白杨无性系群落——单一有机体在地下蔓延，地表长成整片森林。
