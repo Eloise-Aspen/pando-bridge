@@ -10,15 +10,28 @@
 """
 
 import os
+from datetime import datetime, timezone
 
 import uvicorn
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
 app = FastAPI(title="memory-stub")
 
-# 进程内存储：一堆记忆正文。重启即清空。
-_MEMORIES: list[str] = []
+# 进程内存储：每条记忆一个 dict {"id", "content", "created_at"}。重启即清空。
+# 用 dict 而非裸字符串，是为了给管理面(list/delete)提供稳定的 id——按下标删会因
+# 删除后下标平移而错删，稳定 id 才能让前端删对条目。
+_MEMORIES: list[dict] = []
+_NEXT_ID = 1
+
+
+def _add_memory(content: str) -> dict:
+    """追加一条记忆并分配稳定自增 id。"""
+    global _NEXT_ID
+    mem = {"id": _NEXT_ID, "content": content, "created_at": datetime.now(timezone.utc).isoformat()}
+    _NEXT_ID += 1
+    _MEMORIES.append(mem)
+    return mem
 
 
 class RecallIn(BaseModel):
@@ -39,7 +52,7 @@ def session_context() -> dict:
     """L0/L1：把已存的记忆全列出来（真实实现应做筛选/摘要）。"""
     if not _MEMORIES:
         return {"context": ""}
-    body = "\n".join(f"- {m}" for m in _MEMORIES[-20:])
+    body = "\n".join(f"- {m['content']}" for m in _MEMORIES[-20:])
     return {"context": f"【已知记忆】\n{body}"}
 
 
@@ -53,10 +66,10 @@ def recall(inp: RecallIn) -> dict:
     if not q:
         return {"context": ""}
     keys = set(q.split()) | {q[i:i + 2] for i in range(len(q) - 1)}
-    hits = [m for m in _MEMORIES if any(k and k in m for k in keys)]
+    hits = [m for m in _MEMORIES if any(k and k in m["content"] for k in keys)]
     if not hits:
         return {"context": ""}
-    body = "\n".join(f"- {m}" for m in hits[:3])
+    body = "\n".join(f"- {m['content']}" for m in hits[:3])
     return {"context": f"【相关记忆】\n{body}"}
 
 
@@ -91,8 +104,52 @@ def archive(inp: ArchiveIn) -> dict:
     content = (data.get("content") or "").strip()
     if len(content) < 4:
         return {"stored": 0}
-    _MEMORIES.append(content)
+    _add_memory(content)
     return {"stored": 1, "total": len(_MEMORIES)}
+
+
+# ---------------------------------------------------------------------------
+# 管理面软约定端点（provider-contract-v2.md 第 5/6 节）
+#
+# 这些端点**不属于** MemoryProvider Protocol 的 4 端点契约，而是旁路管理链路：
+# bridge 通过 MemoryPlugin 的 /memory-admin/* 透传代理转发到这里（前端调
+# /memory-admin/memory/stats → 代理去掉前缀 → 命中本服务 /memory/stats）。
+# 路径按生产 memory_service 的 /memory/* 形状对齐;真实实现换成自己的存储即可。
+# ---------------------------------------------------------------------------
+
+
+@app.get("/memory/stats")
+def memory_stats() -> dict:
+    """统计头:条数 + 总字数。"""
+    return {"count": len(_MEMORIES), "total_chars": sum(len(m["content"]) for m in _MEMORIES)}
+
+
+@app.get("/memory/list")
+def memory_list(limit: int = 50, offset: int = 0) -> dict:
+    """按新到旧列出记忆(分页)。total 为全量条数,供前端显示总数/翻页。"""
+    ordered = list(reversed(_MEMORIES))
+    page = ordered[offset:offset + limit]
+    return {"items": page, "total": len(_MEMORIES)}
+
+
+@app.get("/memory/search")
+def memory_search(q: str = "") -> dict:
+    """子串搜索(真实实现请用向量检索)。q 为空返回空列表。"""
+    q = q.strip()
+    if not q:
+        return {"items": [], "total": 0}
+    hits = [m for m in reversed(_MEMORIES) if q in m["content"]]
+    return {"items": hits, "total": len(hits)}
+
+
+@app.delete("/memory/{mem_id}")
+def memory_delete(mem_id: int) -> dict:
+    """按稳定 id 删除单条;不存在返回 404。"""
+    for i, m in enumerate(_MEMORIES):
+        if m["id"] == mem_id:
+            _MEMORIES.pop(i)
+            return {"deleted": 1, "id": mem_id}
+    raise HTTPException(status_code=404, detail="memory not found")
 
 
 @app.get("/health")

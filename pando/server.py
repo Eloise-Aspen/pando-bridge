@@ -191,7 +191,20 @@ def create_app(config) -> FastAPI:
                 FOREIGN KEY (session_id) REFERENCES sessions(id)
             );
             CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
+            CREATE TABLE IF NOT EXISTS usage (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT DEFAULT '',
+                model TEXT DEFAULT '',
+                input_tokens INTEGER DEFAULT 0,
+                output_tokens INTEGER DEFAULT 0,
+                cache_read INTEGER DEFAULT 0,
+                cache_create INTEGER DEFAULT 0,
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_usage_created ON usage(created_at);
         """)
+        # 旧库兼容：last_archived_id 是历史加列;usage 表用 CREATE TABLE IF NOT EXISTS,
+        # 旧库首次启动自动补建,无需额外迁移语句。
         try:
             conn.execute("ALTER TABLE sessions ADD COLUMN last_archived_id INTEGER DEFAULT 0")
         except Exception:
@@ -293,6 +306,59 @@ def create_app(config) -> FastAPI:
         conn.close()
         return msgs
 
+    def record_usage(session_id: str | None, model: str, usage: dict):
+        """把一次 result 的 token 用量落 usage 表,供 /usage/stats 聚合。
+        model 为空(用户选「默认」)时归到 'default' 名下,避免分组丢失。
+        用量统计属旁路观测,任何写库异常都只记日志、不阻断聊天主流程。"""
+        try:
+            conn = _chat_conn()
+            conn.execute(
+                "INSERT INTO usage (session_id, model, input_tokens, output_tokens, "
+                "cache_read, cache_create, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (
+                    session_id or "",
+                    model or "default",
+                    int(usage.get("input_tokens", 0) or 0),
+                    int(usage.get("output_tokens", 0) or 0),
+                    int(usage.get("cache_read", 0) or 0),
+                    int(usage.get("cache_create", 0) or 0),
+                    now_iso(),
+                ),
+            )
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            log.error("record_usage failed: %s", e)
+
+    def usage_stats() -> dict:
+        """按模型分组的 token 用量,分「今日」与「累计」两组。
+        今日以 UTC 日界判定(date('now') 用 UTC,与 created_at 存储的 UTC ISO 一致,
+        避免时区错位导致今日统计对不上)。每项含 model / token 数 / 请求次数。"""
+        conn = _chat_conn()
+
+        def _grouped(where: str) -> list[dict]:
+            cur = conn.execute(
+                "SELECT model, SUM(input_tokens), SUM(output_tokens), "
+                "SUM(cache_read), SUM(cache_create), COUNT(*) "
+                f"FROM usage {where} GROUP BY model "
+                "ORDER BY SUM(input_tokens) + SUM(output_tokens) DESC"
+            )
+            return [{
+                "model": r[0] or "default",
+                "input_tokens": r[1] or 0,
+                "output_tokens": r[2] or 0,
+                "cache_read": r[3] or 0,
+                "cache_create": r[4] or 0,
+                "requests": r[5] or 0,
+            } for r in cur.fetchall()]
+
+        result = {
+            "today": _grouped("WHERE date(created_at) = date('now')"),
+            "total": _grouped(""),
+        }
+        conn.close()
+        return result
+
     # -----------------------------------------------------------------------
     # App lifecycle
     # -----------------------------------------------------------------------
@@ -362,6 +428,11 @@ def create_app(config) -> FastAPI:
     async def api_session_messages(session_id: str):
         return get_session_messages(session_id)
 
+    @app.get("/usage/stats")
+    async def api_usage_stats():
+        """只读:按模型分组的 token 用量(今日/累计),供设置页用量区展示。"""
+        return usage_stats()
+
     # -----------------------------------------------------------------------
     # Claude Code subprocess wrapper
     # -----------------------------------------------------------------------
@@ -411,6 +482,9 @@ def create_app(config) -> FastAPI:
         full_text = ""
         thinking_text = ""
         result_meta = {}
+        # 实际使用的模型名以 init 事件为准(用户选「默认」时 model 参数为空,
+        # CC 回报的 model 才是真实模型),用量落库时按它分组。
+        init_model = model or ""
 
         try:
             async for raw_line in proc.stdout:
@@ -427,6 +501,7 @@ def create_app(config) -> FastAPI:
 
                 if etype == "system" and event.get("subtype") == "init":
                     new_session_id = event.get("session_id", new_session_id)
+                    init_model = event.get("model") or init_model
                     if not silent:
                         save_session(new_session_id, model or "")
                         await ws.send_text(json.dumps({
@@ -484,6 +559,9 @@ def create_app(config) -> FastAPI:
                     }
 
                     if not silent:
+                        # 用量落库:只记用户可见的对话轮次(silent=True 的自动存档轮不计),
+                        # 保证「发一条消息 → 统计数字增长」的可验证链路清晰可归因。
+                        record_usage(new_session_id, init_model, result_meta["usage"])
                         await ws.send_text(json.dumps({
                             "type": "result",
                             "text": full_text,
