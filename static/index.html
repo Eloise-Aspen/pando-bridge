@@ -127,6 +127,14 @@
   .chip.tool { color: var(--accent-dim); }
   .usage-bar { align-self: flex-start; font-size: 11px; color: var(--text4); font-family: var(--font);
                display: flex; gap: 8px; padding: 0 4px; }
+
+  /* 助手回复工具条:复制 / 朗读。触达区 ≥44px 防手机误触 */
+  .msg-toolbar { align-self: flex-start; display: flex; gap: 2px; margin-top: 2px; }
+  .msg-tool-btn { background: none; border: none; color: var(--text4); cursor: pointer;
+                  min-width: 44px; min-height: 44px; padding: 10px; border-radius: 8px;
+                  display: flex; align-items: center; justify-content: center; font-size: 17px; }
+  .msg-tool-btn:active { color: var(--accent); background: var(--surface); }
+  .msg-tool-btn.speaking { color: var(--accent); }
   .typing { align-self: flex-start; color: var(--text4); font-size: 13px; font-family: var(--font-cn); padding: 0 6px; }
 
   /* ---- Input ---- */
@@ -382,7 +390,8 @@ async function loadHistory(sid) {
       if (m.role === 'user') addMsg('user', m.content);
       else if (m.role === 'assistant') {
         if (m.metadata && m.metadata.thinking) addThinkingChip(m.metadata.thinking);
-        addMsg('assistant', m.content);
+        const row = addMsg('assistant', m.content);
+        addAssistantToolbar(row, m.content);
         if (m.metadata && m.metadata.usage)
           addUsage({ cost_usd: m.metadata.cost_usd, duration_ms: m.metadata.duration_ms, usage: m.metadata.usage });
       }
@@ -493,6 +502,63 @@ function addUsage(data) {
   $msg.scrollTop = $msg.scrollHeight;
 }
 
+/* ===== 助手回复工具条(复制 / 朗读)===== */
+let speakingBtn = null;  // 当前正在朗读的按钮,用于播放/停止切换
+
+// 在助手回复行底部挂工具条。复制/朗读各自按能力降级:
+// 复制仅在 clipboard API 可用(安全上下文)时出现,朗读仅在支持 Web Speech API 时出现。
+function addAssistantToolbar(row, text) {
+  if (!row || !text) return;
+  const bar = document.createElement('div');
+  bar.className = 'msg-toolbar';
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    const copyBtn = document.createElement('button');
+    copyBtn.className = 'msg-tool-btn';
+    copyBtn.title = '复制';
+    copyBtn.innerHTML = '<i class="ti ti-copy"></i>';
+    copyBtn.onclick = () => copyText(text, copyBtn);
+    bar.appendChild(copyBtn);
+  }
+  if ('speechSynthesis' in window) {
+    const speakBtn = document.createElement('button');
+    speakBtn.className = 'msg-tool-btn';
+    speakBtn.title = '朗读';
+    speakBtn.innerHTML = '<i class="ti ti-volume"></i>';
+    speakBtn.onclick = () => toggleSpeak(text, speakBtn);
+    bar.appendChild(speakBtn);
+  }
+  if (bar.children.length) row.appendChild(bar);
+}
+
+async function copyText(text, btn) {
+  try {
+    await navigator.clipboard.writeText(text);
+    btn.innerHTML = '<i class="ti ti-check"></i>';
+    setTimeout(() => { btn.innerHTML = '<i class="ti ti-copy"></i>'; }, 1200);
+  } catch (e) { /* 复制失败(权限/上下文)→ 静默,不打断阅读 */ }
+}
+
+// 播放/停止切换:点正在朗读的按钮=停止;点别的=停旧的、读新的。
+// 语言跟随回复内容:含中日韩字符走 zh-CN,否则 en-US。
+function toggleSpeak(text, btn) {
+  const synth = window.speechSynthesis;
+  if (speakingBtn === btn) { synth.cancel(); resetSpeakBtn(); return; }
+  if (synth.speaking || speakingBtn) { synth.cancel(); resetSpeakBtn(); }
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = /[一-鿿぀-ヿ가-힯]/.test(text) ? 'zh-CN' : 'en-US';
+  u.onend = u.onerror = () => resetSpeakBtn();
+  speakingBtn = btn;
+  btn.classList.add('speaking');
+  btn.innerHTML = '<i class="ti ti-player-stop"></i>';
+  synth.speak(u);
+}
+function resetSpeakBtn() {
+  if (!speakingBtn) return;
+  speakingBtn.classList.remove('speaking');
+  speakingBtn.innerHTML = '<i class="ti ti-volume"></i>';
+  speakingBtn = null;
+}
+
 function showTyping() {
   removeTyping();
   typingEl = document.createElement('div');
@@ -581,7 +647,8 @@ function connect() {
       case 'result':
         removeTyping();
         if (m.thinking) addThinkingChip(m.thinking);
-        if (m.text && !assistantText) { currentAssistantRow = addMsg('assistant', m.text); }
+        if (m.text && !assistantText) { currentAssistantRow = addMsg('assistant', m.text); assistantText = m.text; }
+        if (currentAssistantRow && assistantText) addAssistantToolbar(currentAssistantRow, assistantText);
         if (m.usage) addUsage({ cost_usd: m.cost_usd, duration_ms: m.duration_ms, usage: m.usage });
         if (m.session_id) setSessionId(m.session_id);
         currentAssistantRow = null; assistantText = '';
