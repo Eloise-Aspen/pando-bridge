@@ -567,7 +567,9 @@ function updateAssistantBubbles(row, fullText) {
   $msg.scrollTop = $msg.scrollHeight;
 }
 
-function addThinkingChip(text) {
+// beforeEl 给定时把 chip 插到该元素之前(用于实时路径把 chip 放到气泡上方,
+// 与历史路径统一——chip 一律在气泡上方)
+function addThinkingChip(text, beforeEl) {
   const row = document.createElement('div');
   row.className = 'chip-row';
   const chip = document.createElement('button');
@@ -575,7 +577,8 @@ function addThinkingChip(text) {
   chip.innerHTML = `<i class="ti ti-sparkles"></i> ${t('thinkingChip')((text.length/1000).toFixed(1))}`;
   chip.onclick = () => openSheet('Thinking', text);
   row.appendChild(chip);
-  $msg.appendChild(row);
+  if (beforeEl) $msg.insertBefore(row, beforeEl);
+  else $msg.appendChild(row);
   $msg.scrollTop = $msg.scrollHeight;
 }
 
@@ -599,7 +602,7 @@ function addUsage(data) {
   const u = data.usage || {};
   const cache = u.cache_hit_pct !== undefined ? t('cache')(u.cache_hit_pct) : '';
   const tokens = (u.input_tokens || u.output_tokens) ? `↓${u.input_tokens} ↑${u.output_tokens}` : '';
-  const parts = [dur, cost, cache, tokens].filter(Boolean);
+  const parts = [dur, cost, cache, tokens].filter(Boolean).slice(0, 3);  // 只留前三项(对齐私有仓生产前端)
   el.innerHTML = parts.map(p => `<span>${escHtml(p)}</span>`).join('');
   $msg.appendChild(el);
   $msg.scrollTop = $msg.scrollHeight;
@@ -775,8 +778,10 @@ function connect() {
         break;
       case 'result':
         removeTyping();
-        if (m.thinking) addThinkingChip(m.thinking);
+        // 先确保气泡存在(无流式 text 时用 result.text 建),再把 thinking chip
+        // 插到气泡上方——与历史路径统一,chip 一律在气泡上方,刷新前后位置一致
         if (m.text && !assistantText) { currentAssistantRow = addMsg('assistant', m.text); assistantText = m.text; }
+        if (m.thinking) addThinkingChip(m.thinking, currentAssistantRow || undefined);
         if (currentAssistantRow && assistantText) addAssistantToolbar(currentAssistantRow, assistantText);
         if (m.usage) addUsage({ cost_usd: m.cost_usd, duration_ms: m.duration_ms, usage: m.usage });
         if (m.session_id) setSessionId(m.session_id);
