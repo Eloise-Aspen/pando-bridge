@@ -111,9 +111,16 @@
   .msg-bubble.assistant { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08);
                           border-radius: 12px 12px 12px 3px; padding: 10px 14px;
                           font-family: var(--font-cn); font-weight: 300; color: var(--text2); }
-  .msg-user-wrap { display: flex; align-items: flex-start; gap: 6px; max-width: 100%; }
-  .retry-btn { background: none; border: none; color: var(--text4); cursor: pointer;
-               font-size: 13px; padding: 6px 2px 0; flex-shrink: 0; }
+  /* 重发按钮:对齐生产服 IM 逻辑——绝对定位在气泡左侧,悬停/点触时显现。
+     隐藏态 pointer-events:none,避免手机上误触不可见按钮(对齐完成标准第 8 条)。 */
+  .msg-user-wrap { position: relative; display: inline-block; max-width: 85%; }
+  .msg-user-wrap .msg-bubble.user { max-width: 100%; }
+  .retry-btn { position: absolute; left: -42px; top: 50%; transform: translateY(-50%);
+               background: none; border: none; cursor: pointer; color: var(--text4);
+               font-size: 15px; line-height: 1; min-width: 40px; min-height: 40px;
+               display: flex; align-items: center; justify-content: center;
+               opacity: 0; pointer-events: none; transition: opacity 0.15s; }
+  .msg-row.user:hover .retry-btn, .msg-row.user:active .retry-btn { opacity: 1; pointer-events: auto; }
   .retry-btn:active { color: var(--accent); }
 
   .time-divider { align-self: center; font-size: 11px; color: var(--text4);
@@ -429,14 +436,14 @@ function addMsg(cls, text) {
   } else if (cls === 'user') {
     const wrap = document.createElement('div');
     wrap.className = 'msg-user-wrap';
+    const bubble = document.createElement('div');
+    bubble.className = 'msg-bubble user';
+    bubble.textContent = text;
     const btn = document.createElement('button');
     btn.className = 'retry-btn'; btn.title = '重新发送';
     btn.innerHTML = '<i class="ti ti-refresh"></i>';
     btn.onclick = () => retryMsg(text);
-    const bubble = document.createElement('div');
-    bubble.className = 'msg-bubble user';
-    bubble.textContent = text;
-    wrap.appendChild(btn); wrap.appendChild(bubble);
+    wrap.appendChild(bubble); wrap.appendChild(btn);
     row.appendChild(wrap);
   } else {
     const b = document.createElement('div');
