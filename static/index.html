@@ -288,9 +288,11 @@
   .sc-label { font-family: var(--font-cn); font-size: 12px; color: var(--text3);
               letter-spacing: 0.04em; display: flex; align-items: center; gap: 6px; }
   .sc-label .status-dot { position: relative; top: 0; }
-  .sc-value { font-family: var(--font-cn); font-size: 17px; color: var(--text); margin-top: auto; }
+  /* 大字紧跟 label(固定间距,不 bottom-align),四卡 value 基线一致,不受小字行数影响 */
+  .sc-value { font-family: var(--font-cn); font-size: 17px; color: var(--text); margin-top: 8px; }
   .sc-value.num { font-family: var(--font); color: var(--accent); }
-  .sc-sub { font-family: var(--font); font-size: 11px; color: var(--text4); margin-top: 4px; }
+  /* min-height 恒占一行:四卡都留出小字行的位置,大字基线对齐(不因有无小字而错位) */
+  .sc-sub { font-family: var(--font); font-size: 11px; color: var(--text4); margin-top: 4px; min-height: 14px; }
   .status-cta { margin-top: 16px; }
   .reconnect-btn { width: 100%; padding: 12px; border-radius: 12px; cursor: pointer;
                    background: var(--accent-bg); color: var(--accent); border: 1px solid var(--accent-border);
@@ -1253,15 +1255,17 @@ async function loadStatus() {
       <div class="status-card">
         <div class="sc-label">${t('scMemory')}</div>
         <div class="sc-value ${memFitted ? 'num' : ''}">${escHtml(memValue)}</div>
-        ${memHint ? `<div class="sc-sub">${escHtml(memHint)}</div>` : ''}
+        <div class="sc-sub">${escHtml(memHint)}</div>
       </div>
       <div class="status-card">
         <div class="sc-label">${t('scModel')}</div>
         <div class="sc-value">${escHtml(modelText)}</div>
+        <div class="sc-sub"></div>
       </div>
       <div class="status-card disabled">
         <div class="sc-label">${t('scEmotion')}</div>
         <div class="sc-value">${t('scUnfitted')}</div>
+        <div class="sc-sub"></div>
       </div>
     </div>
     ${connected ? '' : `<div class="status-cta"><button class="reconnect-btn" onclick="connect()">${t('scReconnect')}</button></div>`}`;
