@@ -65,7 +65,23 @@
                            overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .session-item .s-meta { font-size: 12px; color: var(--text4); margin-top: 2px; }
 
+  /* 分隔线 + 记忆/状态/设置 三入口 + 版本铭牌(会话列表 flex:1 撑开,导航与铭牌沉底) */
+  .sidebar-divider { height: 1px; background: var(--border); margin: 4px 12px; flex-shrink: 0; }
+  .sidebar-nav { padding: 6px 8px; display: flex; flex-direction: column; gap: 2px; flex-shrink: 0; }
+  .nav-item { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
+              padding: 10px 12px; border-radius: 10px; background: none; border: none; cursor: pointer;
+              color: var(--text2); font-family: var(--font-cn); font-size: 14px; }
+  .nav-item i { font-size: 18px; color: var(--text3); }
+  .nav-item:active, .nav-item.active { background: var(--surface); color: var(--text); }
+  .nav-item.active i { color: var(--accent); }
+  .sidebar-footer { padding: 10px 16px calc(10px + var(--safe-bottom)); flex-shrink: 0;
+                    font-family: var(--font); font-size: 11px; color: var(--text4);
+                    border-top: 1px solid var(--border); letter-spacing: 0.04em; }
+
   /* ---- Layout ---- */
+  /* app = 侧边栏 + 内容区。移动端侧边栏是抽屉(fixed 覆盖),桌面态 ≥768px 变常驻左栏(见媒体查询) */
+  .app { flex: 1; display: flex; overflow: hidden; position: relative; z-index: 1; min-height: 0; }
+  .content { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-width: 0; position: relative; }
   .main { flex: 1; overflow: hidden; display: none; flex-direction: column; position: relative; z-index: 1; }
   .main.active { display: flex; }
 
@@ -182,23 +198,32 @@
   .sheet-body { padding: 16px 20px calc(20px + var(--safe-bottom)); overflow-y: auto;
                 white-space: pre-wrap; font-size: 13px; line-height: 1.7; color: var(--text2); }
 
-  /* ---- Bottom tab bar ---- */
-  .tabbar { display: flex; border-top: 1px solid var(--border); background: var(--bg);
-            padding-bottom: var(--safe-bottom); position: relative; z-index: 5; }
-  .tab { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px;
-         padding: 8px 0 6px; background: none; border: none; cursor: pointer;
-         color: var(--text4); font-family: var(--font-cn); font-size: 10px; letter-spacing: 0.05em; }
-  .tab i { font-size: 20px; }
-  .tab.active { color: var(--accent); }
-  .tab.active i { filter: drop-shadow(0 0 6px var(--accent-glow)); }
-
-  /* ---- Memory / Settings views ---- */
+  /* ---- 子页面(记忆 / 状态 / 设置)---- */
+  /* 全屏推入 + 左上 ← 返回聊天。移动端从右侧滑入,桌面常驻侧边栏时即时切换 */
   .view { flex: 1; overflow-y: auto; display: none; flex-direction: column;
-          padding: 18px 16px; position: relative; z-index: 1; -webkit-overflow-scrolling: touch; }
-  .view.active { display: flex; }
+          padding: 0 0 18px; position: relative; z-index: 1; -webkit-overflow-scrolling: touch; }
+  .view.active { display: flex; animation: pushin .22s ease; }
   .view::-webkit-scrollbar { width: 0; }
-  .view-title { font-family: var(--font-cn); font-size: 20px; font-weight: 300;
-                margin-bottom: 16px; letter-spacing: 0.08em; }
+  @keyframes pushin { from { transform: translateX(24px); opacity: 0; } to { transform: none; opacity: 1; } }
+  @media (prefers-reduced-motion: reduce) { .view.active { animation: none; } }
+  .view-header { display: flex; align-items: center; gap: 6px; padding: 14px 16px 10px;
+                 position: sticky; top: 0; background: var(--bg); z-index: 2; }
+  .back-btn { background: none; border: none; color: var(--text2); cursor: pointer;
+              min-width: 40px; min-height: 40px; display: flex; align-items: center;
+              justify-content: center; font-size: 20px; padding: 0; margin-left: -8px; }
+  .back-btn:active { color: var(--accent); }
+  .view-body { padding: 0 16px; }
+  .view-title { font-family: var(--font-cn); font-size: 20px; font-weight: 300; letter-spacing: 0.08em; }
+
+  /* ---- 桌面态 ≥768px:侧边栏常驻左栏,取消抽屉/遮罩/汉堡键 ---- */
+  @media (min-width: 768px) {
+    .overlay { display: none !important; }
+    .sidebar { position: relative; transform: none !important; width: 280px; max-width: none;
+               z-index: 1; flex-shrink: 0; }
+    #history-btn { display: none; }
+    .back-btn { display: none; }
+    .view { max-width: 760px; width: 100%; margin: 0 auto; }
+  }
 
   .mem-stat { display: flex; gap: 24px; padding: 14px 16px; background: var(--surface);
               border: 1px solid var(--border); border-radius: 12px; margin-bottom: 14px; }
@@ -254,13 +279,22 @@
 
 <!-- Sidebar -->
 <div class="overlay" id="overlay" onclick="closeSidebar()"></div>
+<div class="app">
 <div class="sidebar" id="sidebar">
   <div class="sidebar-header">
     <h2 data-i18n="sidebarTitle">对话记录</h2>
     <button class="new-chat-btn" onclick="newConversation()"><i class="ti ti-plus"></i> <span data-i18n="newChat">新对话</span></button>
   </div>
   <div class="session-list" id="session-list"></div>
+  <div class="sidebar-divider"></div>
+  <nav class="sidebar-nav">
+    <button class="nav-item" data-page="memory" onclick="openPage('memory')"><i class="ti ti-brain"></i><span data-i18n="navMemory">记忆</span></button>
+    <button class="nav-item" data-page="status" onclick="openPage('status')"><i class="ti ti-activity"></i><span data-i18n="navStatus">状态</span></button>
+    <button class="nav-item" data-page="settings" onclick="openPage('settings')"><i class="ti ti-settings"></i><span data-i18n="navSettings">设置</span></button>
+  </nav>
+  <div class="sidebar-footer" id="sidebar-version"></div>
 </div>
+<div class="content">
 
 <!-- Main（聊天视图） -->
 <div class="main active" id="view-chat">
@@ -305,22 +339,33 @@
 
 <!-- 记忆视图 -->
 <div class="view" id="view-memory">
-  <div class="view-title" data-i18n="titleMemory">记忆</div>
-  <div id="memory-body"></div>
+  <div class="view-header">
+    <button class="back-btn" onclick="openPage('chat')" data-i18n-aria="ariaBack" aria-label="返回聊天"><i class="ti ti-arrow-left"></i></button>
+    <div class="view-title" data-i18n="titleMemory">记忆</div>
+  </div>
+  <div class="view-body" id="memory-body"></div>
+</div>
+
+<!-- 状态视图（仪表盘） -->
+<div class="view" id="view-status">
+  <div class="view-header">
+    <button class="back-btn" onclick="openPage('chat')" data-i18n-aria="ariaBack" aria-label="返回聊天"><i class="ti ti-arrow-left"></i></button>
+    <div class="view-title" data-i18n="titleStatus">状态</div>
+  </div>
+  <div class="view-body" id="status-body"></div>
 </div>
 
 <!-- 设置视图 -->
 <div class="view" id="view-settings">
-  <div class="view-title" data-i18n="titleSettings">设置</div>
-  <div id="settings-body"></div>
+  <div class="view-header">
+    <button class="back-btn" onclick="openPage('chat')" data-i18n-aria="ariaBack" aria-label="返回聊天"><i class="ti ti-arrow-left"></i></button>
+    <div class="view-title" data-i18n="titleSettings">设置</div>
+  </div>
+  <div class="view-body" id="settings-body"></div>
 </div>
 
-<!-- 底部 tab 栏 -->
-<nav class="tabbar">
-  <button class="tab active" id="tab-chat" onclick="switchTab('chat')"><i class="ti ti-message-circle"></i><span data-i18n="tabChat">聊天</span></button>
-  <button class="tab" id="tab-memory" onclick="switchTab('memory')"><i class="ti ti-brain"></i><span data-i18n="tabMemory">记忆</span></button>
-  <button class="tab" id="tab-settings" onclick="switchTab('settings')"><i class="ti ti-settings"></i><span data-i18n="tabSettings">设置</span></button>
-</nav>
+</div><!-- /.content -->
+</div><!-- /.app -->
 
 <!-- Thinking / detail sheet -->
 <div class="sheet-overlay" id="sheet-overlay" onclick="closeSheet()"></div>
@@ -355,9 +400,9 @@ const I18N = {
   zh: {
     sidebarTitle: '对话记录', newChat: '新对话', connecting: '连接中…',
     online: '在线', offline: '离线', inputPlaceholder: '在这里输入…',
-    ariaHistory: '历史', ariaSend: '发送', sheetThinking: 'Thinking',
-    tabChat: '聊天', tabMemory: '记忆', tabSettings: '设置',
-    titleMemory: '记忆', titleSettings: '设置',
+    ariaHistory: '历史', ariaSend: '发送', ariaBack: '返回聊天', sheetThinking: 'Thinking',
+    navMemory: '记忆', navStatus: '状态', navSettings: '设置',
+    titleMemory: '记忆', titleStatus: '状态', titleSettings: '设置',
     modelDefault: '默认', modelCustom: '自定义…',
     retry: '重新发送', copy: '复制', speak: '朗读',
     loading: '加载中…', loadFailed: '加载失败',
@@ -381,9 +426,9 @@ const I18N = {
   en: {
     sidebarTitle: 'Chats', newChat: 'New chat', connecting: 'Connecting…',
     online: 'online', offline: 'offline', inputPlaceholder: 'Type a message…',
-    ariaHistory: 'History', ariaSend: 'Send', sheetThinking: 'Thinking',
-    tabChat: 'Chat', tabMemory: 'Memory', tabSettings: 'Settings',
-    titleMemory: 'Memory', titleSettings: 'Settings',
+    ariaHistory: 'History', ariaSend: 'Send', ariaBack: 'Back to chat', sheetThinking: 'Thinking',
+    navMemory: 'Memory', navStatus: 'Status', navSettings: 'Settings',
+    titleMemory: 'Memory', titleStatus: 'Status', titleSettings: 'Settings',
     modelDefault: 'Default', modelCustom: 'Custom…',
     retry: 'Resend', copy: 'Copy', speak: 'Read aloud',
     loading: 'Loading…', loadFailed: 'Failed to load',
@@ -824,15 +869,18 @@ function addThinkingChipRecall(text) {
   $msg.scrollTop = $msg.scrollHeight;
 }
 
-/* ===== Tab bar ===== */
+/* ===== 页面导航(聊天为家,子页全屏推入 + ← 返回)===== */
 const debounce = (fn, ms) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
 
-function switchTab(name) {
-  ['chat', 'memory', 'settings'].forEach(t => {
-    $('view-' + t).classList.toggle('active', t === name);
-    $('tab-' + t).classList.toggle('active', t === name);
-  });
+const PAGES = ['chat', 'memory', 'status', 'settings'];
+// 聊天永远是"家";记忆/状态/设置从侧边栏进,子页全屏推入,← 或选"聊天"回家。
+function openPage(name) {
+  PAGES.forEach(p => $('view-' + p).classList.toggle('active', p === name));
+  document.querySelectorAll('.sidebar-nav .nav-item').forEach(b =>
+    b.classList.toggle('active', b.dataset.page === name));  // 聊天无 nav 项 → 三项全熄
+  closeSidebar();  // 移动端:选完收起抽屉;桌面常驻态 closeSidebar 是空操作
   if (name === 'memory') loadMemory();
+  if (name === 'status') loadStatus();
   if (name === 'settings') loadSettings();
 }
 
@@ -1039,10 +1087,38 @@ async function fallbackUsage() {
     `<div class="usage-note">${t('usageQuotaNeedLogin')}</div>`;
 }
 
+/* ===== 状态页(仪表盘)—— Task 3 填充四卡,此处为占位 ===== */
+function loadStatus() { /* Task 3 实现:连接 / 记忆 / 模型 / 情感 四卡 + 断连 CTA */ }
+
+/* ===== 侧边栏版本铭牌 ===== */
+async function loadVersion() {
+  try {
+    const r = await fetch('/health');
+    if (r.ok) { const h = await r.json(); $('sidebar-version').textContent = h.version ? 'Pando v' + h.version : 'Pando'; }
+  } catch (e) { /* 拿不到版本 → 铭牌留空,不报错 */ }
+}
+
+/* ===== 移动端左缘右滑呼出侧边栏(桌面常驻态不需要)===== */
+let edgeX = null, edgeY = null;
+document.addEventListener('touchstart', e => {
+  if (window.innerWidth >= 768) return;
+  const p = e.touches[0];
+  if (p.clientX <= 24 && !$('sidebar').classList.contains('open')) { edgeX = p.clientX; edgeY = p.clientY; }
+  else edgeX = null;
+}, { passive: true });
+document.addEventListener('touchend', e => {
+  if (edgeX === null) return;
+  const p = e.changedTouches[0];
+  if (p.clientX - edgeX > 60 && Math.abs(p.clientY - edgeY) < 50) openSidebar();  // 右滑够远、竖向漂移小
+  edgeX = null;
+}, { passive: true });
+
 /* ===== Boot ===== */
 async function boot() {
   applyI18n();  // 先按当前语言刷静态文案,再加载配置/连接
   await loadConfig();
+  loadVersion();
+  loadSessions();  // 桌面常驻侧边栏开屏即填充(移动端抽屉打开时会再刷一次)
   if (currentSessionId) { showMessages(); await loadHistory(currentSessionId); }
   else showGreeting();
   connect();
