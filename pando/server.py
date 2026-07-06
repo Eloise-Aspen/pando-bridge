@@ -9,6 +9,7 @@ import importlib
 import json
 import logging
 import os
+import shutil
 import socket
 import sqlite3
 import time
@@ -473,7 +474,10 @@ def create_app(config) -> FastAPI:
 
     @app.get("/health")
     async def health():
-        claude_ok = Path(claude_exe).exists()
+        # CLAUDE_EXE 默认是命令名 "claude"（靠 PATH 解析），也允许配相对/绝对路径。
+        # which 兜命令名（在 PATH 里找得到即算装好），exists 兜显式路径，两者其一即 found，
+        # 否则旧写法对命令名恒 missing（Path("claude").exists() 永远 False）。
+        claude_ok = shutil.which(claude_exe) is not None or Path(claude_exe).exists()
         return {
             "status": "ok",
             "service": service_name,
