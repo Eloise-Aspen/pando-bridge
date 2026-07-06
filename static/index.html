@@ -510,7 +510,8 @@ const I18N = {
     memCount: '条记忆', memChars: '总字数', memSearchPlaceholder: '搜索记忆…',
     memNoMatch: '没有匹配的记忆', memEmpty: '暂无记忆',
     memDeleteConfirm: '删除这条记忆?', memDeleteFailed: '删除失败',
-    setNick: '你的昵称', setAsst: '助手名称', setServer: '服务端信息', setUsage: '用量统计',
+    setNick: '你的昵称', setAsst: '助手名称', setTheme: '主题', setServer: '服务端信息', setUsage: '用量统计',
+    themeDefault: '简洁(默认)', themeSmoke: '占位主题(验证用)',
     svVersion: '版本', svService: '服务', svHost: '主机', svCli: 'Claude CLI', svMemory: '记忆服务',
     memUnconf: '未配置', memOnline: '已配置 · 在线', memOffline: '已配置 · 离线',
     usage5h: '5 小时窗', usage7d: '周限额', usageResets: r => `${r} 重置`,
@@ -549,7 +550,8 @@ const I18N = {
     memCount: 'memories', memChars: 'total chars', memSearchPlaceholder: 'Search memories…',
     memNoMatch: 'No matching memories', memEmpty: 'No memories yet',
     memDeleteConfirm: 'Delete this memory?', memDeleteFailed: 'Delete failed',
-    setNick: 'Your nickname', setAsst: 'Assistant name', setServer: 'Server info', setUsage: 'Usage',
+    setNick: 'Your nickname', setAsst: 'Assistant name', setTheme: 'Theme', setServer: 'Server info', setUsage: 'Usage',
+    themeDefault: 'Simple (default)', themeSmoke: 'Placeholder (test)',
     svVersion: 'Version', svService: 'Service', svHost: 'Host', svCli: 'Claude CLI', svMemory: 'Memory service',
     memUnconf: 'Not configured', memOnline: 'Configured · online', memOffline: 'Configured · offline',
     usage5h: '5-hour window', usage7d: 'Weekly limit', usageResets: r => `Resets ${r}`,
@@ -1102,6 +1104,13 @@ function loadSettings() {
       <input class="set-input" id="set-asst" placeholder="Claude" autocomplete="off">
     </div>
     <div class="set-group">
+      <div class="set-label">${t('setTheme')}</div>
+      <select class="set-input" id="set-theme" onchange="onThemeChange(this.value)">
+        <option value="">${t('themeDefault')}</option>
+        <option value="_smoke">${t('themeSmoke')}</option>
+      </select>
+    </div>
+    <div class="set-group">
       <div class="set-label">${t('setServer')}</div>
       <div id="server-info"><div class="set-row"><span class="k">${t('loading')}</span><span class="v"></span></div></div>
     </div>
@@ -1111,6 +1120,7 @@ function loadSettings() {
     </div>`;
   $('set-nick').value = localStorage.getItem('userNickname') || (USER_NICKNAME === 'User' ? '' : USER_NICKNAME);
   $('set-asst').value = localStorage.getItem('assistantName') || (ASSISTANT_NAME === 'Claude' ? '' : ASSISTANT_NAME);
+  $('set-theme').value = localStorage.getItem('theme') || '';
   $('set-nick').oninput = debounce(saveIdentity, 400);
   $('set-asst').oninput = debounce(saveIdentity, 400);
   loadServerInfo();
@@ -1248,6 +1258,31 @@ async function loadStatus() {
     ${connected ? '' : `<div class="status-cta"><button class="reconnect-btn" onclick="connect()">${t('scReconnect')}</button></div>`}`;
 }
 
+/* ===== 主题切换机制(可切换主题,非前端插件)=====
+   约定:static/themes/<名>/theme.css 用 :root 覆盖 CSS 变量(设计 token);
+   可选同目录 theme.js = I18N 覆盖 + 启动模块挂点(本 spec 只留约定,不加载执行)。
+   默认「简洁」= 不挂任何 <link>,故默认态零 themes/ 请求。 */
+function applyTheme(name) {
+  let link = document.getElementById('theme-css');
+  if (!name) {                       // 简洁(默认):移除主题 link,不发 themes/ 请求
+    if (link) link.remove();
+    return;
+  }
+  if (!link) {                       // 首次挂载:<link> 追加到 head 末尾,晚于主 <style> → 覆盖生效
+    link = document.createElement('link');
+    link.id = 'theme-css'; link.rel = 'stylesheet';
+    document.head.appendChild(link);
+  }
+  link.href = `/themes/${name}/theme.css`;
+  // 挂点:此处可按约定再加载 themes/<name>/theme.js(文案包/启动模块),本 spec 不实现。
+}
+
+// 设置页选择器回调:写 localStorage 记住,立即应用(刷新后 boot 复原)
+function onThemeChange(name) {
+  if (name) localStorage.setItem('theme', name); else localStorage.removeItem('theme');
+  applyTheme(name);
+}
+
 /* ===== 签名行(顶栏名字下:最新一条记忆摘要)===== */
 // 纯展示不可点(spec 开工默认值 #1,跳转留给主题包/v0.2)。
 // NullProvider(404)/服务失联 → 不渲染,顶栏收缩(hidden 从布局移除)。
@@ -1345,6 +1380,7 @@ function obFinish() { $('onboarding').hidden = true; }
 
 /* ===== Boot ===== */
 async function boot() {
+  applyTheme(localStorage.getItem('theme') || '');  // 复原上次主题(默认简洁则零 themes/ 请求)
   applyI18n();  // 先按当前语言刷静态文案,再加载配置/连接
   await loadConfig();
   loadVersion();

@@ -1,0 +1,10 @@
+/* _smoke —— 主题机制验证用主题。
+   约定:static/themes/<名>/theme.css 用 :root 覆盖设计 token(CSS 变量),
+   由设置页选择器动态挂 <link> 生效。这里只改强调色一两个变量,证明覆盖链路通;
+   真正的皮肤(赛博朋克)在 feat-demo-cyberpunk-theme 另案。
+   可选的同目录 theme.js(I18N 覆盖 + 启动模块挂点)本 spec 只留约定不实现。
+   验完可删,或留作范例。 */
+:root {
+  --accent: #5ad1c4;
+  --accent-glow: rgba(90, 209, 196, 0.9);
+}

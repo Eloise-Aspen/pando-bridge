@@ -978,6 +978,19 @@ def create_app(config) -> FastAPI:
             raise HTTPException(status_code=404, detail="icon not found")
         return FileResponse(icon_path, media_type="image/png")
 
+    @app.get("/themes/{name}/{filename}")
+    async def theme_asset(name: str, filename: str):
+        # 主题资源:themes/<名>/theme.css（CSS 变量覆盖）或可选 theme.js（文案包/启动模块）。
+        # 只放行这两个固定文件名,并把解析后的路径限制在 themes/ 目录内,挡路径穿越（../ 等）。
+        if filename not in ("theme.css", "theme.js"):
+            raise HTTPException(status_code=404, detail="theme asset not found")
+        themes_root = (static_dir / "themes").resolve()
+        target = (themes_root / name / filename).resolve()
+        if themes_root not in target.parents or not target.is_file():
+            raise HTTPException(status_code=404, detail="theme asset not found")
+        media = "text/css" if filename.endswith(".css") else "application/javascript"
+        return FileResponse(target, media_type=media)
+
     @app.get("/", response_class=HTMLResponse)
     async def index():
         p = static_dir / "index.html"
