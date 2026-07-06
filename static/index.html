@@ -296,6 +296,34 @@
                    background: var(--accent-bg); color: var(--accent); border: 1px solid var(--accent-border);
                    font-family: var(--font-cn); font-size: 14px; min-height: 44px; }
   .reconnect-btn:active { background: rgba(217,119,87,0.18); }
+
+  /* ---- 首航流程(零会话:自检 + 双向取名)---- */
+  .onboarding { position: fixed; inset: 0; z-index: 200; background: var(--bg);
+                display: flex; align-items: center; justify-content: center; padding: 24px; }
+  .onboarding[hidden] { display: none; }
+  .ob-card { width: 100%; max-width: 420px; display: flex; flex-direction: column; }
+  .ob-title { font-family: var(--font-cn); font-size: 22px; font-weight: 300; letter-spacing: 0.06em; }
+  .ob-sub { font-family: var(--font-cn); font-size: 13px; color: var(--text3); margin: 8px 0 20px; }
+  .ob-check-row { display: flex; gap: 12px; align-items: flex-start; padding: 12px 0;
+                  border-bottom: 1px solid rgba(255,255,255,0.06); }
+  .ob-chk-icon { font-family: var(--font); font-size: 15px; width: 18px; text-align: center; flex-shrink: 0; }
+  .ob-check-row.ok .ob-chk-icon { color: #1DED83; }
+  .ob-check-row.bad .ob-chk-icon { color: var(--red); }
+  .ob-check-row.neutral .ob-chk-icon { color: var(--text4); }
+  .ob-chk-label { font-family: var(--font-cn); font-size: 15px; color: var(--text); }
+  .ob-chk-guide { font-family: var(--font-cn); font-size: 12px; color: var(--text3); margin-top: 3px; line-height: 1.5; }
+  .ob-field { margin-top: 18px; }
+  .ob-field label { display: block; font-family: var(--font-cn); font-size: 14px; color: var(--text2); margin-bottom: 8px; }
+  .ob-field input { width: 100%; background: var(--surface); border: 1px solid var(--border);
+                    border-radius: 10px; color: var(--text); font-family: var(--font-cn);
+                    font-size: 16px; padding: 11px 13px; outline: none; }
+  .ob-field input:focus { border-color: var(--accent-border); }
+  .ob-btn { margin-top: 24px; padding: 13px; border-radius: 12px; cursor: pointer; border: none;
+            background: var(--accent); color: #1a1816; font-family: var(--font-cn); font-size: 15px; min-height: 48px; }
+  .ob-btn:active { opacity: 0.85; }
+  .ob-skip { margin-top: 10px; padding: 10px; background: none; border: none; cursor: pointer;
+             color: var(--text4); font-family: var(--font-cn); font-size: 13px; min-height: 40px; }
+  .ob-skip:active { color: var(--text2); }
 </style>
 </head>
 <body>
@@ -407,6 +435,32 @@
   <div class="sheet-body" id="sheet-body"></div>
 </div>
 
+<!-- 首航流程(零会话首启:自检 → 双向取名 → 进聊天;可跳过) -->
+<div class="onboarding" id="onboarding" hidden>
+  <div class="ob-card">
+    <div class="ob-step" id="ob-check">
+      <div class="ob-title" data-i18n="obCheckTitle">开始之前</div>
+      <div class="ob-sub" data-i18n="obCheckSub">先看看运行环境</div>
+      <div id="ob-check-list"></div>
+      <button class="ob-btn" onclick="obNext()" data-i18n="obContinue">继续</button>
+      <button class="ob-skip" onclick="obFinish()" data-i18n="obSkip">跳过</button>
+    </div>
+    <div class="ob-step" id="ob-name" hidden>
+      <div class="ob-title" data-i18n="obNameTitle">互相认识一下</div>
+      <div class="ob-field">
+        <label for="ob-nick" data-i18n="obAskUser">我该怎么称呼你?</label>
+        <input id="ob-nick" autocomplete="off">
+      </div>
+      <div class="ob-field">
+        <label for="ob-asst" data-i18n="obAskAsst">你想怎么称呼我?</label>
+        <input id="ob-asst" autocomplete="off">
+      </div>
+      <button class="ob-btn" onclick="obFinishNames()" data-i18n="obStart">开始</button>
+      <button class="ob-skip" onclick="obFinish()" data-i18n="obSkip">跳过</button>
+    </div>
+  </div>
+</div>
+
 <script>
 /* ===== State ===== */
 let ws, busy = false, currentAssistantRow = null, assistantText = '';
@@ -437,6 +491,15 @@ const I18N = {
     scOnline: '在线', scOffline: '离线', scReconnect: '重新连接',
     scCliReady: 'CLI 已就绪', scCliMissing: 'CLI 未找到', scUnfitted: '未装配',
     scModelDefault: '默认', scMemFmt: (c, ch) => `${c} 条 · ${ch} 字`,
+    obCheckTitle: '开始之前', obCheckSub: '先看看运行环境',
+    obChkService: '服务连接', obChkCli: 'Claude CLI 授权', obChkMemory: '记忆服务',
+    obGuideService: '连不上本机服务,确认桥进程还在运行',
+    obGuideCli: '在电脑上运行一次 claude 登录后,回来重试',
+    obGuideMemory: '记忆服务已配置但连不上,可以先跳过',
+    obMemOptional: '未配置(可选,不影响聊天)',
+    obContinue: '继续', obSkip: '跳过',
+    obNameTitle: '互相认识一下',
+    obAskUser: '我该怎么称呼你?', obAskAsst: '你想怎么称呼我?', obStart: '开始',
     modelDefault: '默认', modelCustom: '自定义…',
     retry: '重新发送', copy: '复制', speak: '朗读',
     loading: '加载中…', loadFailed: '加载失败',
@@ -467,6 +530,15 @@ const I18N = {
     scOnline: 'Online', scOffline: 'Offline', scReconnect: 'Reconnect',
     scCliReady: 'CLI ready', scCliMissing: 'CLI not found', scUnfitted: 'Not fitted',
     scModelDefault: 'Default', scMemFmt: (c, ch) => `${c} · ${ch} chars`,
+    obCheckTitle: 'Before we start', obCheckSub: 'A quick look at your setup',
+    obChkService: 'Service connection', obChkCli: 'Claude CLI login', obChkMemory: 'Memory service',
+    obGuideService: 'Can\'t reach the local service — check the bridge is still running',
+    obGuideCli: 'Run the claude login on your computer, then come back and retry',
+    obGuideMemory: 'Memory service is configured but unreachable — you can skip for now',
+    obMemOptional: 'Not configured (optional, chat still works)',
+    obContinue: 'Continue', obSkip: 'Skip',
+    obNameTitle: 'Let\'s get acquainted',
+    obAskUser: 'What should I call you?', obAskAsst: 'What would you like to call me?', obStart: 'Start',
     modelDefault: 'Default', modelCustom: 'Custom…',
     retry: 'Resend', copy: 'Copy', speak: 'Read aloud',
     loading: 'Loading…', loadFailed: 'Failed to load',
@@ -1216,6 +1288,61 @@ document.addEventListener('touchend', e => {
   edgeX = null;
 }, { passive: true });
 
+/* ===== 首航流程(零会话:自检 → 双向取名)===== */
+// 只在 GET /sessions 为空时触发(有会话即老用户,不打扰)。文案平实中立,
+// Ghost 叙事版归主题包(spec 不做什么)。
+async function maybeOnboard() {
+  await obRenderCheck();
+  $('ob-nick').value = localStorage.getItem('userNickname') || '';  // 名字预填(已填过则免重输)
+  $('ob-asst').value = localStorage.getItem('assistantName') || '';
+  $('ob-check').hidden = false;
+  $('ob-name').hidden = true;
+  $('onboarding').hidden = false;
+}
+
+// 自检三项复用 /health + 记忆探测:红项(✗)给一句人话指引,不甩裸 JSON。
+// 记忆服务是可选项:未配置显示中性(–)不算红,降级才给提示。
+async function obRenderCheck() {
+  let health = null;
+  try { const r = await fetch('/health'); if (r.ok) health = await r.json(); } catch (e) { /* 服务不可达 */ }
+  const svcOk = !!health;
+  const cliOk = !!health && health.claude_cli === 'found';
+  let memState = 'degraded';
+  try {
+    const r = await fetch('/memory-admin/memory/stats');
+    memState = r.ok ? 'ok' : (r.status === 404 ? 'unconf' : 'degraded');
+  } catch (e) { memState = 'degraded'; }
+  const rows = [
+    { ok: svcOk, label: t('obChkService'), guide: svcOk ? '' : t('obGuideService') },
+    { ok: cliOk, label: t('obChkCli'), guide: cliOk ? '' : t('obGuideCli') },
+    { ok: memState === 'ok', neutral: memState === 'unconf', label: t('obChkMemory'),
+      guide: memState === 'degraded' ? t('obGuideMemory') : (memState === 'unconf' ? t('obMemOptional') : '') },
+  ];
+  $('ob-check-list').innerHTML = rows.map(r => {
+    const icon = r.ok ? '✓' : (r.neutral ? '–' : '✗');
+    const cls = r.ok ? 'ok' : (r.neutral ? 'neutral' : 'bad');
+    return `<div class="ob-check-row ${cls}"><span class="ob-chk-icon">${icon}</span>
+      <div><div class="ob-chk-label">${escHtml(r.label)}</div>
+      ${r.guide ? `<div class="ob-chk-guide">${escHtml(r.guide)}</div>` : ''}</div></div>`;
+  }).join('');
+}
+
+function obNext() { $('ob-check').hidden = true; $('ob-name').hidden = false; }
+
+// 双向取名落既有 userNickname/assistantName 键(与设置页 saveIdentity 同源)
+function obFinishNames() {
+  const nick = $('ob-nick').value.trim(), asst = $('ob-asst').value.trim();
+  if (nick) localStorage.setItem('userNickname', nick);
+  if (asst) localStorage.setItem('assistantName', asst);
+  USER_NICKNAME = nick || USER_NICKNAME;
+  ASSISTANT_NAME = asst || ASSISTANT_NAME;
+  $('greeting-name').textContent = t('greeting')(USER_NICKNAME);
+  setStatus(!!(ws && ws.readyState === 1));
+  obFinish();
+}
+
+function obFinish() { $('onboarding').hidden = true; }
+
 /* ===== Boot ===== */
 async function boot() {
   applyI18n();  // 先按当前语言刷静态文案,再加载配置/连接
@@ -1224,7 +1351,14 @@ async function boot() {
   loadSignature();  // 顶栏签名行:最新记忆摘要(无记忆服务则不渲染)
   loadSessions();  // 桌面常驻侧边栏开屏即填充(移动端抽屉打开时会再刷一次)
   if (currentSessionId) { showMessages(); await loadHistory(currentSessionId); }
-  else showGreeting();
+  else {
+    showGreeting();
+    // 零会话首航:GET /sessions 为空 → 自检 + 双向取名;有会话不触发,拉取失败不阻断
+    try {
+      const sessions = await (await fetch('/sessions?limit=1')).json();
+      if (Array.isArray(sessions) && sessions.length === 0) await maybeOnboard();
+    } catch (e) { /* 忽略,直接进聊天 */ }
+  }
   connect();
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
 }
