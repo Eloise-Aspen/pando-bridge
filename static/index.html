@@ -65,12 +65,35 @@
                            overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .session-item .s-meta { font-size: 12px; color: var(--text4); margin-top: 2px; }
 
+  /* 分隔线 + 记忆/状态/设置 三入口 + 版本铭牌(会话列表 flex:1 撑开,导航与铭牌沉底) */
+  .sidebar-divider { height: 1px; background: var(--border); margin: 4px 12px; flex-shrink: 0; }
+  .sidebar-nav { padding: 6px 8px; display: flex; flex-direction: column; gap: 2px; flex-shrink: 0; }
+  .nav-item { display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
+              padding: 10px 12px; border-radius: 10px; background: none; border: none; cursor: pointer;
+              color: var(--text2); font-family: var(--font-cn); font-size: 14px; }
+  .nav-item i { font-size: 18px; color: var(--text3); }
+  .nav-item:active, .nav-item.active { background: var(--surface); color: var(--text); }
+  .nav-item.active i { color: var(--accent); }
+  .sidebar-footer { padding: 10px 16px calc(10px + var(--safe-bottom)); flex-shrink: 0;
+                    font-family: var(--font); font-size: 11px; color: var(--text4);
+                    border-top: 1px solid var(--border); letter-spacing: 0.04em; }
+
   /* ---- Layout ---- */
+  /* app = 侧边栏 + 内容区。移动端侧边栏是抽屉(fixed 覆盖),桌面态 ≥768px 变常驻左栏(见媒体查询) */
+  .app { flex: 1; display: flex; overflow: hidden; position: relative; z-index: 1; min-height: 0; }
+  .content { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-width: 0; position: relative; }
   .main { flex: 1; overflow: hidden; display: none; flex-direction: column; position: relative; z-index: 1; }
   .main.active { display: flex; }
 
-  .topbar { padding: 16px 20px 0; display: flex; align-items: center; justify-content: space-between; min-height: 52px; }
-  .topbar-left { display: flex; align-items: center; gap: 8px; }
+  /* 顶栏高度由内容决定(min-height 仅作单行下限):有签名行 → 两行更高,无签名 → 收缩到单行 */
+  .topbar { padding: 16px 20px 0; display: flex; align-items: center; justify-content: space-between; min-height: 44px; }
+  .topbar-left { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  /* 名字/状态一行,签名行(最新记忆)叠在其下;无签名时该行不渲染,顶栏自然收缩 */
+  .topbar-idc { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .topbar-idline { display: flex; align-items: center; gap: 8px; min-height: 28px; }
+  .topbar-signature { font-size: 12px; color: var(--text3); font-family: var(--font-cn);
+                      max-width: 72vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .topbar-signature[hidden] { display: none; }
   .status-dot { width: 5px; height: 5px; border-radius: 50%; flex-shrink: 0; background: var(--text4); }
   .status-dot.on { background: var(--accent); box-shadow: 0 0 7px var(--accent-glow); }
   .status-dot.off { background: var(--red); box-shadow: 0 0 7px rgba(232,114,114,0.5); }
@@ -182,23 +205,32 @@
   .sheet-body { padding: 16px 20px calc(20px + var(--safe-bottom)); overflow-y: auto;
                 white-space: pre-wrap; font-size: 13px; line-height: 1.7; color: var(--text2); }
 
-  /* ---- Bottom tab bar ---- */
-  .tabbar { display: flex; border-top: 1px solid var(--border); background: var(--bg);
-            padding-bottom: var(--safe-bottom); position: relative; z-index: 5; }
-  .tab { flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px;
-         padding: 8px 0 6px; background: none; border: none; cursor: pointer;
-         color: var(--text4); font-family: var(--font-cn); font-size: 10px; letter-spacing: 0.05em; }
-  .tab i { font-size: 20px; }
-  .tab.active { color: var(--accent); }
-  .tab.active i { filter: drop-shadow(0 0 6px var(--accent-glow)); }
-
-  /* ---- Memory / Settings views ---- */
+  /* ---- 子页面(记忆 / 状态 / 设置)---- */
+  /* 全屏推入 + 左上 ← 返回聊天。移动端从右侧滑入,桌面常驻侧边栏时即时切换 */
   .view { flex: 1; overflow-y: auto; display: none; flex-direction: column;
-          padding: 18px 16px; position: relative; z-index: 1; -webkit-overflow-scrolling: touch; }
-  .view.active { display: flex; }
+          padding: 0 0 18px; position: relative; z-index: 1; -webkit-overflow-scrolling: touch; }
+  .view.active { display: flex; animation: pushin .22s ease; }
   .view::-webkit-scrollbar { width: 0; }
-  .view-title { font-family: var(--font-cn); font-size: 20px; font-weight: 300;
-                margin-bottom: 16px; letter-spacing: 0.08em; }
+  @keyframes pushin { from { transform: translateX(24px); opacity: 0; } to { transform: none; opacity: 1; } }
+  @media (prefers-reduced-motion: reduce) { .view.active { animation: none; } }
+  .view-header { display: flex; align-items: center; gap: 6px; padding: 14px 16px 10px;
+                 position: sticky; top: 0; background: var(--bg); z-index: 2; }
+  .back-btn { background: none; border: none; color: var(--text2); cursor: pointer;
+              min-width: 40px; min-height: 40px; display: flex; align-items: center;
+              justify-content: center; font-size: 20px; padding: 0; margin-left: -8px; }
+  .back-btn:active { color: var(--accent); }
+  .view-body { padding: 0 16px; }
+  .view-title { font-family: var(--font-cn); font-size: 20px; font-weight: 300; letter-spacing: 0.08em; }
+
+  /* ---- 桌面态 ≥768px:侧边栏常驻左栏,取消抽屉/遮罩/汉堡键 ---- */
+  @media (min-width: 768px) {
+    .overlay { display: none !important; }
+    .sidebar { position: relative; transform: none !important; width: 280px; max-width: none;
+               z-index: 1; flex-shrink: 0; }
+    #history-btn { display: none; }
+    .back-btn { display: none; }
+    .view { max-width: 760px; width: 100%; margin: 0 auto; }
+  }
 
   .mem-stat { display: flex; gap: 24px; padding: 14px 16px; background: var(--surface);
               border: 1px solid var(--border); border-radius: 12px; margin-bottom: 14px; }
@@ -246,6 +278,54 @@
   .quota-reset { font-family: var(--font); font-size: 11px; color: var(--text4); margin-top: 5px; }
   .usage-note { font-family: var(--font-cn); font-size: 12px; color: var(--text4); padding: 8px 2px 2px; line-height: 1.5; }
   @media (prefers-reduced-motion: reduce) { .quota-fill { transition: none; } }
+
+  /* ---- 状态页(仪表盘)四卡 ---- */
+  .status-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .status-card { background: var(--surface); border: 1px solid var(--border);
+                 border-radius: 12px; padding: 14px; min-height: 92px;
+                 display: flex; flex-direction: column; }
+  .status-card.disabled { opacity: 0.3; }  /* 情感未装配:诚实的空槽,禁用态 */
+  .sc-label { font-family: var(--font-cn); font-size: 12px; color: var(--text3);
+              letter-spacing: 0.04em; display: flex; align-items: center; gap: 6px; }
+  .sc-label .status-dot { position: relative; top: 0; }
+  /* 大字紧跟 label(固定间距,不 bottom-align),四卡 value 基线一致,不受小字行数影响 */
+  .sc-value { font-family: var(--font-cn); font-size: 17px; color: var(--text); margin-top: 8px; }
+  .sc-value.num { font-family: var(--font); color: var(--accent); }
+  /* min-height 恒占一行:四卡都留出小字行的位置,大字基线对齐(不因有无小字而错位) */
+  .sc-sub { font-family: var(--font); font-size: 11px; color: var(--text4); margin-top: 4px; min-height: 14px; }
+  .status-cta { margin-top: 16px; }
+  .reconnect-btn { width: 100%; padding: 12px; border-radius: 12px; cursor: pointer;
+                   background: var(--accent-bg); color: var(--accent); border: 1px solid var(--accent-border);
+                   font-family: var(--font-cn); font-size: 14px; min-height: 44px; }
+  .reconnect-btn:active { background: rgba(217,119,87,0.18); }
+
+  /* ---- 首航流程(零会话:自检 + 双向取名)---- */
+  .onboarding { position: fixed; inset: 0; z-index: 200; background: var(--bg);
+                display: flex; align-items: center; justify-content: center; padding: 24px; }
+  .onboarding[hidden] { display: none; }
+  .ob-card { width: 100%; max-width: 420px; display: flex; flex-direction: column; }
+  .ob-title { font-family: var(--font-cn); font-size: 22px; font-weight: 300; letter-spacing: 0.06em; }
+  .ob-sub { font-family: var(--font-cn); font-size: 13px; color: var(--text3); margin: 8px 0 20px; }
+  .ob-check-row { display: flex; gap: 12px; align-items: flex-start; padding: 12px 0;
+                  border-bottom: 1px solid rgba(255,255,255,0.06); }
+  .ob-chk-icon { font-family: var(--font); font-size: 15px; width: 18px; text-align: center; flex-shrink: 0; }
+  .ob-check-row.ok .ob-chk-icon { color: #1DED83; }
+  .ob-check-row.bad .ob-chk-icon { color: var(--red); }
+  .ob-check-row.neutral .ob-chk-icon { color: var(--text4); }
+  .ob-chk-label { font-family: var(--font-cn); font-size: 15px; color: var(--text); }
+  .ob-chk-guide { font-family: var(--font-cn); font-size: 12px; color: var(--text3); margin-top: 3px; line-height: 1.5; }
+  .ob-field { margin-top: 18px; }
+  .ob-field label { display: block; font-family: var(--font-cn); font-size: 14px; color: var(--text2); margin-bottom: 8px; }
+  .ob-field input { width: 100%; background: var(--surface); border: 1px solid var(--border);
+                    border-radius: 10px; color: var(--text); font-family: var(--font-cn);
+                    font-size: 16px; padding: 11px 13px; outline: none; }
+  .ob-field input:focus { border-color: var(--accent-border); }
+  .ob-btn { margin-top: 24px; padding: 13px; border-radius: 12px; cursor: pointer; border: none;
+            background: var(--accent); color: #1a1816; font-family: var(--font-cn); font-size: 15px; min-height: 48px; }
+  .ob-btn:active { opacity: 0.85; }
+  .ob-skip { margin-top: 10px; padding: 10px; background: none; border: none; cursor: pointer;
+             color: var(--text4); font-family: var(--font-cn); font-size: 13px; min-height: 40px; }
+  .ob-skip:active { color: var(--text2); }
 </style>
 </head>
 <body>
@@ -253,6 +333,7 @@
 <div class="vignette"></div>
 
 <!-- Sidebar -->
+<div class="app">
 <div class="overlay" id="overlay" onclick="closeSidebar()"></div>
 <div class="sidebar" id="sidebar">
   <div class="sidebar-header">
@@ -260,15 +341,28 @@
     <button class="new-chat-btn" onclick="newConversation()"><i class="ti ti-plus"></i> <span data-i18n="newChat">新对话</span></button>
   </div>
   <div class="session-list" id="session-list"></div>
+  <div class="sidebar-divider"></div>
+  <nav class="sidebar-nav">
+    <button class="nav-item" data-page="memory" onclick="openPage('memory')"><i class="ti ti-brain"></i><span data-i18n="navMemory">记忆</span></button>
+    <button class="nav-item" data-page="status" onclick="openPage('status')"><i class="ti ti-activity"></i><span data-i18n="navStatus">状态</span></button>
+    <button class="nav-item" data-page="settings" onclick="openPage('settings')"><i class="ti ti-settings"></i><span data-i18n="navSettings">设置</span></button>
+  </nav>
+  <div class="sidebar-footer" id="sidebar-version"></div>
 </div>
+<div class="content">
 
 <!-- Main（聊天视图） -->
 <div class="main active" id="view-chat">
   <div class="topbar">
     <div class="topbar-left">
-      <button class="topbar-icon" id="history-btn" onclick="openSidebar()" data-i18n-aria="ariaHistory" aria-label="历史"><i class="ti ti-history"></i></button>
-      <div class="status-dot" id="dot"></div>
-      <span class="topbar-label" id="topbar-status" data-i18n="connecting">连接中…</span>
+      <button class="topbar-icon" id="history-btn" onclick="openSidebar()" data-i18n-aria="ariaMenu" aria-label="菜单"><i class="ti ti-menu-2"></i></button>
+      <div class="topbar-idc">
+        <div class="topbar-idline">
+          <div class="status-dot" id="dot"></div>
+          <span class="topbar-label" id="topbar-status" data-i18n="connecting">连接中…</span>
+        </div>
+        <div class="topbar-signature" id="signature" hidden></div>
+      </div>
     </div>
   </div>
   <div class="divider-top"></div>
@@ -305,22 +399,33 @@
 
 <!-- 记忆视图 -->
 <div class="view" id="view-memory">
-  <div class="view-title" data-i18n="titleMemory">记忆</div>
-  <div id="memory-body"></div>
+  <div class="view-header">
+    <button class="back-btn" onclick="openPage('chat')" data-i18n-aria="ariaBack" aria-label="返回聊天"><i class="ti ti-arrow-left"></i></button>
+    <div class="view-title" data-i18n="titleMemory">记忆</div>
+  </div>
+  <div class="view-body" id="memory-body"></div>
+</div>
+
+<!-- 状态视图（仪表盘） -->
+<div class="view" id="view-status">
+  <div class="view-header">
+    <button class="back-btn" onclick="openPage('chat')" data-i18n-aria="ariaBack" aria-label="返回聊天"><i class="ti ti-arrow-left"></i></button>
+    <div class="view-title" data-i18n="titleStatus">状态</div>
+  </div>
+  <div class="view-body" id="status-body"></div>
 </div>
 
 <!-- 设置视图 -->
 <div class="view" id="view-settings">
-  <div class="view-title" data-i18n="titleSettings">设置</div>
-  <div id="settings-body"></div>
+  <div class="view-header">
+    <button class="back-btn" onclick="openPage('chat')" data-i18n-aria="ariaBack" aria-label="返回聊天"><i class="ti ti-arrow-left"></i></button>
+    <div class="view-title" data-i18n="titleSettings">设置</div>
+  </div>
+  <div class="view-body" id="settings-body"></div>
 </div>
 
-<!-- 底部 tab 栏 -->
-<nav class="tabbar">
-  <button class="tab active" id="tab-chat" onclick="switchTab('chat')"><i class="ti ti-message-circle"></i><span data-i18n="tabChat">聊天</span></button>
-  <button class="tab" id="tab-memory" onclick="switchTab('memory')"><i class="ti ti-brain"></i><span data-i18n="tabMemory">记忆</span></button>
-  <button class="tab" id="tab-settings" onclick="switchTab('settings')"><i class="ti ti-settings"></i><span data-i18n="tabSettings">设置</span></button>
-</nav>
+</div><!-- /.content -->
+</div><!-- /.app -->
 
 <!-- Thinking / detail sheet -->
 <div class="sheet-overlay" id="sheet-overlay" onclick="closeSheet()"></div>
@@ -330,6 +435,32 @@
     <button class="sheet-close" onclick="closeSheet()"><i class="ti ti-x"></i></button>
   </div>
   <div class="sheet-body" id="sheet-body"></div>
+</div>
+
+<!-- 首航流程(零会话首启:自检 → 双向取名 → 进聊天;可跳过) -->
+<div class="onboarding" id="onboarding" hidden>
+  <div class="ob-card">
+    <div class="ob-step" id="ob-check">
+      <div class="ob-title" data-i18n="obCheckTitle">开始之前</div>
+      <div class="ob-sub" data-i18n="obCheckSub">先看看运行环境</div>
+      <div id="ob-check-list"></div>
+      <button class="ob-btn" onclick="obNext()" data-i18n="obContinue">继续</button>
+      <button class="ob-skip" onclick="obFinish()" data-i18n="obSkip">跳过</button>
+    </div>
+    <div class="ob-step" id="ob-name" hidden>
+      <div class="ob-title" data-i18n="obNameTitle">互相认识一下</div>
+      <div class="ob-field">
+        <label for="ob-nick" data-i18n="obAskUser">我该怎么称呼你?</label>
+        <input id="ob-nick" autocomplete="off">
+      </div>
+      <div class="ob-field">
+        <label for="ob-asst" data-i18n="obAskAsst">你想怎么称呼我?</label>
+        <input id="ob-asst" autocomplete="off">
+      </div>
+      <button class="ob-btn" onclick="obFinishNames()" data-i18n="obStart">开始</button>
+      <button class="ob-skip" onclick="obFinish()" data-i18n="obSkip">跳过</button>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -355,20 +486,36 @@ const I18N = {
   zh: {
     sidebarTitle: '对话记录', newChat: '新对话', connecting: '连接中…',
     online: '在线', offline: '离线', inputPlaceholder: '在这里输入…',
-    ariaHistory: '历史', ariaSend: '发送', sheetThinking: 'Thinking',
-    tabChat: '聊天', tabMemory: '记忆', tabSettings: '设置',
-    titleMemory: '记忆', titleSettings: '设置',
+    ariaMenu: '菜单', ariaSend: '发送', ariaBack: '返回聊天', sheetThinking: 'Thinking',
+    navMemory: '记忆', navStatus: '状态', navSettings: '设置',
+    titleMemory: '记忆', titleStatus: '状态', titleSettings: '设置',
+    scConnection: '连接', scMemory: '记忆', scModel: '模型', scEmotion: '情感',
+    scOnline: '在线', scOffline: '离线', scReconnect: '重新连接',
+    scCliReady: 'CLI 已就绪', scCliMissing: 'CLI 未找到',
+    scUnfitted: '未装配', scNotConnected: '未连接',
+    scMemHintSet: '电脑上设 MEMORY_SERVICE_URL 连接', scMemHintDown: '已配置,但暂时连不上',
+    scModelDefault: '默认', scMemFmt: (c, ch) => `${c} 条 · ${ch} 字`,
+    obCheckTitle: '开始之前', obCheckSub: '先看看运行环境',
+    obChkService: '服务连接', obChkCli: 'Claude CLI 授权', obChkMemory: '记忆服务',
+    obGuideService: '连不上本机服务,确认桥进程还在运行',
+    obGuideCli: '在电脑上运行一次 claude 登录后,回来重试',
+    obGuideMemory: '记忆服务已配置但连不上,可以先跳过',
+    obMemOptional: '未连接(可选,不影响聊天)',
+    obContinue: '继续', obSkip: '跳过',
+    obNameTitle: '互相认识一下',
+    obAskUser: '我该怎么称呼你?', obAskAsst: '你想怎么称呼我?', obStart: '开始',
     modelDefault: '默认', modelCustom: '自定义…',
     retry: '重新发送', copy: '复制', speak: '朗读',
     loading: '加载中…', loadFailed: '加载失败',
     memConnFail: '记忆服务连接失败', memConnFailSub: '聊天不受影响,可稍后重试',
-    memUnconfigured: '未配置记忆服务',
-    memUnconfiguredSub: '设置 MEMORY_SERVICE_URL 指向记忆服务后,即可在此浏览、搜索、删除记忆',
+    memUnconfigured: '记忆库未连接',
+    memUnconfiguredSub: '在电脑上把 MEMORY_SERVICE_URL 指向你的记忆服务后,即可在此浏览、搜索、删除记忆',
     memUnavailable: '记忆服务暂时不可用', memUnavailableSub: '已配置但连接失败(降级)·聊天不受影响',
     memCount: '条记忆', memChars: '总字数', memSearchPlaceholder: '搜索记忆…',
     memNoMatch: '没有匹配的记忆', memEmpty: '暂无记忆',
     memDeleteConfirm: '删除这条记忆?', memDeleteFailed: '删除失败',
-    setNick: '你的昵称', setAsst: '助手名称', setServer: '服务端信息', setUsage: '用量统计',
+    setNick: '你的昵称', setAsst: '助手名称', setTheme: '主题', setServer: '服务端信息', setUsage: '用量统计',
+    themeDefault: '简洁(默认)', themeSmoke: '占位主题(验证用)',
     svVersion: '版本', svService: '服务', svHost: '主机', svCli: 'Claude CLI', svMemory: '记忆服务',
     memUnconf: '未配置', memOnline: '已配置 · 在线', memOffline: '已配置 · 离线',
     usage5h: '5 小时窗', usage7d: '周限额', usageResets: r => `${r} 重置`,
@@ -381,20 +528,36 @@ const I18N = {
   en: {
     sidebarTitle: 'Chats', newChat: 'New chat', connecting: 'Connecting…',
     online: 'online', offline: 'offline', inputPlaceholder: 'Type a message…',
-    ariaHistory: 'History', ariaSend: 'Send', sheetThinking: 'Thinking',
-    tabChat: 'Chat', tabMemory: 'Memory', tabSettings: 'Settings',
-    titleMemory: 'Memory', titleSettings: 'Settings',
+    ariaMenu: 'Menu', ariaSend: 'Send', ariaBack: 'Back to chat', sheetThinking: 'Thinking',
+    navMemory: 'Memory', navStatus: 'Status', navSettings: 'Settings',
+    titleMemory: 'Memory', titleStatus: 'Status', titleSettings: 'Settings',
+    scConnection: 'Connection', scMemory: 'Memory', scModel: 'Model', scEmotion: 'Emotion',
+    scOnline: 'Online', scOffline: 'Offline', scReconnect: 'Reconnect',
+    scCliReady: 'CLI ready', scCliMissing: 'CLI not found',
+    scUnfitted: 'Not built', scNotConnected: 'Not connected',
+    scMemHintSet: 'Set MEMORY_SERVICE_URL on the host', scMemHintDown: 'Configured but unreachable',
+    scModelDefault: 'Default', scMemFmt: (c, ch) => `${c} · ${ch} chars`,
+    obCheckTitle: 'Before we start', obCheckSub: 'A quick look at your setup',
+    obChkService: 'Service connection', obChkCli: 'Claude CLI login', obChkMemory: 'Memory service',
+    obGuideService: 'Can\'t reach the local service — check the bridge is still running',
+    obGuideCli: 'Run the claude login on your computer, then come back and retry',
+    obGuideMemory: 'Memory service is configured but unreachable — you can skip for now',
+    obMemOptional: 'Not connected (optional, chat still works)',
+    obContinue: 'Continue', obSkip: 'Skip',
+    obNameTitle: 'Let\'s get acquainted',
+    obAskUser: 'What should I call you?', obAskAsst: 'What would you like to call me?', obStart: 'Start',
     modelDefault: 'Default', modelCustom: 'Custom…',
     retry: 'Resend', copy: 'Copy', speak: 'Read aloud',
     loading: 'Loading…', loadFailed: 'Failed to load',
     memConnFail: 'Memory service unreachable', memConnFailSub: 'Chat is unaffected; try again later',
-    memUnconfigured: 'No memory service',
-    memUnconfiguredSub: 'Set MEMORY_SERVICE_URL to a memory service to browse, search and delete memories here',
+    memUnconfigured: 'Memory library not connected',
+    memUnconfiguredSub: 'Point MEMORY_SERVICE_URL to your memory service on the host to browse, search and delete memories here',
     memUnavailable: 'Memory service unavailable', memUnavailableSub: 'Configured but unreachable (degraded) · chat unaffected',
     memCount: 'memories', memChars: 'total chars', memSearchPlaceholder: 'Search memories…',
     memNoMatch: 'No matching memories', memEmpty: 'No memories yet',
     memDeleteConfirm: 'Delete this memory?', memDeleteFailed: 'Delete failed',
-    setNick: 'Your nickname', setAsst: 'Assistant name', setServer: 'Server info', setUsage: 'Usage',
+    setNick: 'Your nickname', setAsst: 'Assistant name', setTheme: 'Theme', setServer: 'Server info', setUsage: 'Usage',
+    themeDefault: 'Simple (default)', themeSmoke: 'Placeholder (test)',
     svVersion: 'Version', svService: 'Service', svHost: 'Host', svCli: 'Claude CLI', svMemory: 'Memory service',
     memUnconf: 'Not configured', memOnline: 'Configured · online', memOffline: 'Configured · offline',
     usage5h: '5-hour window', usage7d: 'Weekly limit', usageResets: r => `Resets ${r}`,
@@ -435,6 +598,8 @@ async function loadConfig() {
 function setStatus(on) {
   $dot.className = 'status-dot ' + (on ? 'on' : 'off');
   $status.textContent = t('status')(ASSISTANT_NAME, on);
+  // 状态页开着时同步刷新连接卡与断连 CTA(重连成功即撤 CTA,断连即升起)
+  if ($('view-status').classList.contains('active')) loadStatus();
 }
 
 /* ===== View toggles ===== */
@@ -469,7 +634,7 @@ async function loadSessions() {
 }
 
 async function switchSession(sid) {
-  closeSidebar();
+  openPage('chat');  // 桌面常驻侧边栏下,若正停在子页,选会话要先跳回聊天(顺带收抽屉)
   if (sid === currentSessionId) return;
   $msg.innerHTML = '';
   setSessionId(sid);
@@ -480,7 +645,7 @@ async function switchSession(sid) {
 }
 
 function newConversation() {
-  closeSidebar();
+  openPage('chat');  // 同上:从子页新建对话也要跳回聊天
   $msg.innerHTML = '';
   setSessionId(null);
   currentAssistantRow = null; assistantText = '';
@@ -824,15 +989,18 @@ function addThinkingChipRecall(text) {
   $msg.scrollTop = $msg.scrollHeight;
 }
 
-/* ===== Tab bar ===== */
+/* ===== 页面导航(聊天为家,子页全屏推入 + ← 返回)===== */
 const debounce = (fn, ms) => { let t; return (...a) => { clearTimeout(t); t = setTimeout(() => fn(...a), ms); }; };
 
-function switchTab(name) {
-  ['chat', 'memory', 'settings'].forEach(t => {
-    $('view-' + t).classList.toggle('active', t === name);
-    $('tab-' + t).classList.toggle('active', t === name);
-  });
+const PAGES = ['chat', 'memory', 'status', 'settings'];
+// 聊天永远是"家";记忆/状态/设置从侧边栏进,子页全屏推入,← 或选"聊天"回家。
+function openPage(name) {
+  PAGES.forEach(p => $('view-' + p).classList.toggle('active', p === name));
+  document.querySelectorAll('.sidebar-nav .nav-item').forEach(b =>
+    b.classList.toggle('active', b.dataset.page === name));  // 聊天无 nav 项 → 三项全熄
+  closeSidebar();  // 移动端:选完收起抽屉;桌面常驻态 closeSidebar 是空操作
   if (name === 'memory') loadMemory();
+  if (name === 'status') loadStatus();
   if (name === 'settings') loadSettings();
 }
 
@@ -915,6 +1083,7 @@ async function deleteMemory(id, preview) {
   const q = $('mem-q');
   await refreshMemList(q ? q.value.trim() : '');
   updateMemStats();
+  loadSignature();  // 删的可能正是最新一条,顶栏签名行同步刷新
 }
 
 async function updateMemStats() {
@@ -941,6 +1110,13 @@ function loadSettings() {
       <input class="set-input" id="set-asst" placeholder="Claude" autocomplete="off">
     </div>
     <div class="set-group">
+      <div class="set-label">${t('setTheme')}</div>
+      <select class="set-input" id="set-theme" onchange="onThemeChange(this.value)">
+        <option value="">${t('themeDefault')}</option>
+        <option value="_smoke">${t('themeSmoke')}</option>
+      </select>
+    </div>
+    <div class="set-group">
       <div class="set-label">${t('setServer')}</div>
       <div id="server-info"><div class="set-row"><span class="k">${t('loading')}</span><span class="v"></span></div></div>
     </div>
@@ -950,6 +1126,7 @@ function loadSettings() {
     </div>`;
   $('set-nick').value = localStorage.getItem('userNickname') || (USER_NICKNAME === 'User' ? '' : USER_NICKNAME);
   $('set-asst').value = localStorage.getItem('assistantName') || (ASSISTANT_NAME === 'Claude' ? '' : ASSISTANT_NAME);
+  $('set-theme').value = localStorage.getItem('theme') || '';
   $('set-nick').oninput = debounce(saveIdentity, 400);
   $('set-asst').oninput = debounce(saveIdentity, 400);
   loadServerInfo();
@@ -1039,12 +1216,198 @@ async function fallbackUsage() {
     `<div class="usage-note">${t('usageQuotaNeedLogin')}</div>`;
 }
 
+/* ===== 状态页(仪表盘):连接 / 记忆 / 模型 / 情感 四卡 + 断连 CTA ===== */
+async function loadStatus() {
+  const body = $('status-body');
+  const connected = !!(ws && ws.readyState === 1);
+
+  // 连接卡:WS 在线态 + /health 的 CLI 探测
+  let cliText = '';
+  try {
+    const r = await fetch('/health');
+    if (r.ok) { const h = await r.json();
+      cliText = h.claude_cli === 'found' ? t('scCliReady') : t('scCliMissing'); }
+  } catch (e) { /* 探测失败 → CLI 子行留空 */ }
+
+  // 记忆卡:stats 条数|字数;404/失败 = 记忆库未连接(灰值)。记忆是已实现接口,
+  // 未接库用「未连接」,与「情感」那种尚未实现的接口用「未装配」区分开。
+  // memHint 给一句怎么连的指引(仅检测与指引,配置本身仍在电脑侧,见账号边界裁决):
+  //   404 未配置 → 提示设 MEMORY_SERVICE_URL;非 404 = 配了但连不上 → 提示已配置暂不可达。
+  let memValue = t('scNotConnected'), memFitted = false, memHint = t('scMemHintSet');
+  try {
+    const r = await fetch('/memory-admin/memory/stats');
+    if (r.ok) { const s = await r.json();
+      memValue = t('scMemFmt')(s.count ?? 0, s.total_chars ?? 0); memFitted = true; memHint = ''; }
+    else if (r.status !== 404) memHint = t('scMemHintDown');
+  } catch (e) { memHint = t('scMemHintDown'); }
+
+  // 模型卡:复用输入区已选模型(空 = 走 CLI 默认)
+  const modelText = currentModel || t('scModelDefault');
+  const dot = on => `<span class="status-dot ${on ? 'on' : 'off'}"></span>`;
+
+  body.innerHTML = `
+    <div class="status-grid">
+      <div class="status-card">
+        <div class="sc-label">${dot(connected)}${t('scConnection')}</div>
+        <div class="sc-value">${connected ? t('scOnline') : t('scOffline')}</div>
+        <div class="sc-sub">${escHtml(cliText)}</div>
+      </div>
+      <div class="status-card">
+        <div class="sc-label">${t('scMemory')}</div>
+        <div class="sc-value ${memFitted ? 'num' : ''}">${escHtml(memValue)}</div>
+        <div class="sc-sub">${escHtml(memHint)}</div>
+      </div>
+      <div class="status-card">
+        <div class="sc-label">${t('scModel')}</div>
+        <div class="sc-value">${escHtml(modelText)}</div>
+        <div class="sc-sub"></div>
+      </div>
+      <div class="status-card disabled">
+        <div class="sc-label">${t('scEmotion')}</div>
+        <div class="sc-value">${t('scUnfitted')}</div>
+        <div class="sc-sub"></div>
+      </div>
+    </div>
+    ${connected ? '' : `<div class="status-cta"><button class="reconnect-btn" onclick="connect()">${t('scReconnect')}</button></div>`}`;
+}
+
+/* ===== 主题切换机制(可切换主题,非前端插件)=====
+   约定:static/themes/<名>/theme.css 用 :root 覆盖 CSS 变量(设计 token);
+   可选同目录 theme.js = I18N 覆盖 + 启动模块挂点(本 spec 只留约定,不加载执行)。
+   默认「简洁」= 不挂任何 <link>,故默认态零 themes/ 请求。 */
+function applyTheme(name) {
+  let link = document.getElementById('theme-css');
+  if (!name) {                       // 简洁(默认):移除主题 link,不发 themes/ 请求
+    if (link) link.remove();
+    return;
+  }
+  if (!link) {                       // 首次挂载:<link> 追加到 head 末尾,晚于主 <style> → 覆盖生效
+    link = document.createElement('link');
+    link.id = 'theme-css'; link.rel = 'stylesheet';
+    document.head.appendChild(link);
+  }
+  link.href = `/themes/${name}/theme.css`;
+  // 挂点:此处可按约定再加载 themes/<name>/theme.js(文案包/启动模块),本 spec 不实现。
+}
+
+// 设置页选择器回调:写 localStorage 记住,立即应用(刷新后 boot 复原)
+function onThemeChange(name) {
+  if (name) localStorage.setItem('theme', name); else localStorage.removeItem('theme');
+  applyTheme(name);
+}
+
+/* ===== 签名行(顶栏名字下:最新一条记忆摘要)===== */
+// 纯展示不可点(spec 开工默认值 #1,跳转留给主题包/v0.2)。
+// NullProvider(404)/服务失联 → 不渲染,顶栏收缩(hidden 从布局移除)。
+async function loadSignature() {
+  const el = $('signature');
+  try {
+    const r = await fetch('/memory-admin/memory/list');
+    if (!r.ok) { el.hidden = true; return; }      // 404 未装配 / 502 失联 → 收起
+    const items = (await r.json()).items || [];
+    // 取最新一条:约定 list 返回按时间倒序(items[0] 最新);若接入服务是正序则取末条
+    const latest = items[0];
+    if (!latest || !latest.content) { el.hidden = true; return; }
+    el.textContent = latest.content.replace(/\s+/g, ' ').trim().slice(0, 80);
+    el.hidden = false;
+  } catch (e) { el.hidden = true; }                // 网络层失败也收起,不打断聊天
+}
+
+/* ===== 侧边栏版本铭牌 ===== */
+async function loadVersion() {
+  try {
+    const r = await fetch('/health');
+    if (r.ok) { const h = await r.json(); $('sidebar-version').textContent = h.version ? 'Pando v' + h.version : 'Pando'; }
+  } catch (e) { /* 拿不到版本 → 铭牌留空,不报错 */ }
+}
+
+/* ===== 移动端左缘右滑呼出侧边栏(桌面常驻态不需要)===== */
+let edgeX = null, edgeY = null;
+document.addEventListener('touchstart', e => {
+  if (window.innerWidth >= 768) return;
+  const p = e.touches[0];
+  if (p.clientX <= 24 && !$('sidebar').classList.contains('open')) { edgeX = p.clientX; edgeY = p.clientY; }
+  else edgeX = null;
+}, { passive: true });
+document.addEventListener('touchend', e => {
+  if (edgeX === null) return;
+  const p = e.changedTouches[0];
+  if (p.clientX - edgeX > 60 && Math.abs(p.clientY - edgeY) < 50) openSidebar();  // 右滑够远、竖向漂移小
+  edgeX = null;
+}, { passive: true });
+
+/* ===== 首航流程(零会话:自检 → 双向取名)===== */
+// 只在 GET /sessions 为空时触发(有会话即老用户,不打扰)。文案平实中立,
+// Ghost 叙事版归主题包(spec 不做什么)。
+async function maybeOnboard() {
+  await obRenderCheck();
+  $('ob-nick').value = localStorage.getItem('userNickname') || '';  // 名字预填(已填过则免重输)
+  $('ob-asst').value = localStorage.getItem('assistantName') || '';
+  $('ob-check').hidden = false;
+  $('ob-name').hidden = true;
+  $('onboarding').hidden = false;
+}
+
+// 自检三项复用 /health + 记忆探测:红项(✗)给一句人话指引,不甩裸 JSON。
+// 记忆服务是可选项:未配置显示中性(–)不算红,降级才给提示。
+async function obRenderCheck() {
+  let health = null;
+  try { const r = await fetch('/health'); if (r.ok) health = await r.json(); } catch (e) { /* 服务不可达 */ }
+  const svcOk = !!health;
+  const cliOk = !!health && health.claude_cli === 'found';
+  let memState = 'degraded';
+  try {
+    const r = await fetch('/memory-admin/memory/stats');
+    memState = r.ok ? 'ok' : (r.status === 404 ? 'unconf' : 'degraded');
+  } catch (e) { memState = 'degraded'; }
+  const rows = [
+    { ok: svcOk, label: t('obChkService'), guide: svcOk ? '' : t('obGuideService') },
+    { ok: cliOk, label: t('obChkCli'), guide: cliOk ? '' : t('obGuideCli') },
+    { ok: memState === 'ok', neutral: memState === 'unconf', label: t('obChkMemory'),
+      guide: memState === 'degraded' ? t('obGuideMemory') : (memState === 'unconf' ? t('obMemOptional') : '') },
+  ];
+  $('ob-check-list').innerHTML = rows.map(r => {
+    const icon = r.ok ? '✓' : (r.neutral ? '–' : '✗');
+    const cls = r.ok ? 'ok' : (r.neutral ? 'neutral' : 'bad');
+    return `<div class="ob-check-row ${cls}"><span class="ob-chk-icon">${icon}</span>
+      <div><div class="ob-chk-label">${escHtml(r.label)}</div>
+      ${r.guide ? `<div class="ob-chk-guide">${escHtml(r.guide)}</div>` : ''}</div></div>`;
+  }).join('');
+}
+
+function obNext() { $('ob-check').hidden = true; $('ob-name').hidden = false; }
+
+// 双向取名落既有 userNickname/assistantName 键(与设置页 saveIdentity 同源)
+function obFinishNames() {
+  const nick = $('ob-nick').value.trim(), asst = $('ob-asst').value.trim();
+  if (nick) localStorage.setItem('userNickname', nick);
+  if (asst) localStorage.setItem('assistantName', asst);
+  USER_NICKNAME = nick || USER_NICKNAME;
+  ASSISTANT_NAME = asst || ASSISTANT_NAME;
+  $('greeting-name').textContent = t('greeting')(USER_NICKNAME);
+  setStatus(!!(ws && ws.readyState === 1));
+  obFinish();
+}
+
+function obFinish() { $('onboarding').hidden = true; }
+
 /* ===== Boot ===== */
 async function boot() {
+  applyTheme(localStorage.getItem('theme') || '');  // 复原上次主题(默认简洁则零 themes/ 请求)
   applyI18n();  // 先按当前语言刷静态文案,再加载配置/连接
   await loadConfig();
+  loadVersion();
+  loadSignature();  // 顶栏签名行:最新记忆摘要(无记忆服务则不渲染)
+  loadSessions();  // 桌面常驻侧边栏开屏即填充(移动端抽屉打开时会再刷一次)
   if (currentSessionId) { showMessages(); await loadHistory(currentSessionId); }
-  else showGreeting();
+  else {
+    showGreeting();
+    // 零会话首航:GET /sessions 为空 → 自检 + 双向取名;有会话不触发,拉取失败不阻断
+    try {
+      const sessions = await (await fetch('/sessions?limit=1')).json();
+      if (Array.isArray(sessions) && sessions.length === 0) await maybeOnboard();
+    } catch (e) { /* 忽略,直接进聊天 */ }
+  }
   connect();
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
 }

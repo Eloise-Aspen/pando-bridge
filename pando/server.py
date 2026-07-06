@@ -9,6 +9,7 @@ import importlib
 import json
 import logging
 import os
+import shutil
 import socket
 import sqlite3
 import time
@@ -473,7 +474,10 @@ def create_app(config) -> FastAPI:
 
     @app.get("/health")
     async def health():
-        claude_ok = Path(claude_exe).exists()
+        # CLAUDE_EXE 默认是命令名 "claude"（靠 PATH 解析），也允许配相对/绝对路径。
+        # which 兜命令名（在 PATH 里找得到即算装好），exists 兜显式路径，两者其一即 found，
+        # 否则旧写法对命令名恒 missing（Path("claude").exists() 永远 False）。
+        claude_ok = shutil.which(claude_exe) is not None or Path(claude_exe).exists()
         return {
             "status": "ok",
             "service": service_name,
@@ -973,6 +977,19 @@ def create_app(config) -> FastAPI:
         if not icon_path.exists():
             raise HTTPException(status_code=404, detail="icon not found")
         return FileResponse(icon_path, media_type="image/png")
+
+    @app.get("/themes/{name}/{filename}")
+    async def theme_asset(name: str, filename: str):
+        # 主题资源:themes/<名>/theme.css（CSS 变量覆盖）或可选 theme.js（文案包/启动模块）。
+        # 只放行这两个固定文件名,并把解析后的路径限制在 themes/ 目录内,挡路径穿越（../ 等）。
+        if filename not in ("theme.css", "theme.js"):
+            raise HTTPException(status_code=404, detail="theme asset not found")
+        themes_root = (static_dir / "themes").resolve()
+        target = (themes_root / name / filename).resolve()
+        if themes_root not in target.parents or not target.is_file():
+            raise HTTPException(status_code=404, detail="theme asset not found")
+        media = "text/css" if filename.endswith(".css") else "application/javascript"
+        return FileResponse(target, media_type=media)
 
     @app.get("/", response_class=HTMLResponse)
     async def index():
