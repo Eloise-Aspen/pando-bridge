@@ -233,6 +233,19 @@
   .usage-model { padding: 9px 2px; border-bottom: 1px solid rgba(255,255,255,0.06); }
   .usage-model .m { font-family: var(--font); font-size: 12px; color: var(--text2); margin-bottom: 3px; }
   .usage-model .t { font-family: var(--font); font-size: 12px; color: var(--text4); }
+  /* 用量限额进度条(5h 窗 / 周限额)。阈值配色语义:<60% status 绿 / 60-85% ident 黄 / >85% chrome 红 */
+  .quota-row { padding: 10px 2px; }
+  .quota-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px; }
+  .quota-label { font-family: var(--font-cn); font-size: 13px; color: var(--text2); }
+  .quota-pct { font-family: var(--font); font-size: 13px; color: var(--text3); font-variant-numeric: tabular-nums; }
+  .quota-track { height: 6px; border-radius: 3px; background: rgba(255,255,255,0.08); overflow: hidden; }
+  .quota-fill { height: 100%; border-radius: 3px; transition: width 200ms ease; }
+  .quota-fill.green { background: #1DED83; }
+  .quota-fill.yellow { background: #F8EF00; }
+  .quota-fill.red { background: #F75049; }
+  .quota-reset { font-family: var(--font); font-size: 11px; color: var(--text4); margin-top: 5px; }
+  .usage-note { font-family: var(--font-cn); font-size: 12px; color: var(--text4); padding: 8px 2px 2px; line-height: 1.5; }
+  @media (prefers-reduced-motion: reduce) { .quota-fill { transition: none; } }
 </style>
 </head>
 <body>
@@ -358,10 +371,11 @@ const I18N = {
     setNick: '你的昵称', setAsst: '助手名称', setServer: '服务端信息', setUsage: '用量统计',
     svVersion: '版本', svService: '服务', svHost: '主机', svCli: 'Claude CLI', svMemory: '记忆服务',
     memUnconf: '未配置', memOnline: '已配置 · 在线', memOffline: '已配置 · 离线',
-    usageUnavailable: '用量数据不可用', usageToday: '今日', usageTotal: '累计', usageNone: '暂无',
+    usage5h: '5 小时窗', usage7d: '周限额', usageResets: r => `${r} 重置`,
+    usageQuotaNeedLogin: '限额数据需本机 Claude 订阅登录', usageLocalTotal: '本机累计用量',
     customModelPrompt: '输入模型 id(经 --model 透传给 Claude CLI):', greetingDefault: '你好',
     greeting: n => `${n},你好`, status: (name, on) => `${name} · ${on ? '在线' : '离线'}`,
-    msgCount: n => `${n} 条消息`, cache: p => `缓存 ${p}%`, reqs: n => `${n} 次`,
+    msgCount: n => `${n} 条消息`, cache: p => `缓存 ${p}%`,
     thinkingChip: k => `Thinking (${k}k)`, cost: c => `$${c}`,
   },
   en: {
@@ -383,10 +397,11 @@ const I18N = {
     setNick: 'Your nickname', setAsst: 'Assistant name', setServer: 'Server info', setUsage: 'Usage',
     svVersion: 'Version', svService: 'Service', svHost: 'Host', svCli: 'Claude CLI', svMemory: 'Memory service',
     memUnconf: 'Not configured', memOnline: 'Configured · online', memOffline: 'Configured · offline',
-    usageUnavailable: 'Usage data unavailable', usageToday: 'Today', usageTotal: 'Total', usageNone: 'None',
+    usage5h: '5-hour window', usage7d: 'Weekly limit', usageResets: r => `Resets ${r}`,
+    usageQuotaNeedLogin: 'Quota needs a local Claude subscription login', usageLocalTotal: 'Local usage total',
     customModelPrompt: 'Enter model id (passed to the Claude CLI via --model):', greetingDefault: 'Hi',
     greeting: n => `Hi, ${n}`, status: (name, on) => `${name} · ${on ? 'online' : 'offline'}`,
-    msgCount: n => `${n} msgs`, cache: p => `cache ${p}%`, reqs: n => `${n} reqs`,
+    msgCount: n => `${n} msgs`, cache: p => `cache ${p}%`,
     thinkingChip: k => `Thinking (${k}k)`, cost: c => `$${c}`,
   },
 };
@@ -977,20 +992,51 @@ async function loadServerInfo() {
   ).join('');
 }
 
+// 打开设置页时拉取一次(不做后台轮询):
+//   quota 可用 → 两条利用率进度条(5h 窗 / 周限额),阈值配色 + resets_at 本地时间;
+//   不可用(未登录/API 模式/端点异常)→ 本机 token 累计简计 + 说明行,零报错零死按钮。
 async function loadUsage() {
   const box = $('usage-info');
-  let data = null;
-  try { const r = await fetch('/usage/stats'); if (r.ok) data = await r.json(); } catch (e) { /* 降级 */ }
-  if (!data) { box.innerHTML = `<div class="set-row"><span class="k">${t('usageUnavailable')}</span><span class="v"></span></div>`; return; }
-  const group = rows => rows && rows.length
-    ? rows.map(r => `<div class="usage-model">
-        <div class="m">${escHtml(r.model)}</div>
-        <div class="t">↓${r.input_tokens} ↑${r.output_tokens} · ${t('reqs')(r.requests)}</div>
-      </div>`).join('')
-    : `<div class="usage-model"><div class="t">${t('usageNone')}</div></div>`;
-  box.innerHTML =
-    `<div class="set-label" style="margin:2px 0 4px">${t('usageToday')}</div>${group(data.today)}` +
-    `<div class="set-label" style="margin:14px 0 4px">${t('usageTotal')}</div>${group(data.total)}`;
+  let quota = null;
+  try { const r = await fetch('/usage/quota'); if (r.ok) quota = await r.json(); } catch (e) { /* 静默降级 */ }
+  if (quota && quota.available) {
+    const bars = quotaBar(t('usage5h'), quota.five_hour) + quotaBar(t('usage7d'), quota.seven_day);
+    if (bars) { box.innerHTML = bars; return; }  // 两条都缺字段则往下走降级
+  }
+  box.innerHTML = await fallbackUsage();
+}
+
+// 单条限额进度条。utilization 缺失/非数返回空串(该条不渲染)。
+// 阈值配色语义(spec):<60% 绿 / 60-85% 黄 / >85% 红。
+function quotaBar(label, d) {
+  const pct = (d && typeof d.utilization === 'number') ? d.utilization : null;
+  if (pct === null) return '';
+  const band = pct < 60 ? 'green' : (pct <= 85 ? 'yellow' : 'red');
+  const w = Math.max(0, Math.min(pct, 100));
+  const resetLine = d.resets_at
+    ? `<div class="quota-reset">${escHtml(t('usageResets')(fmtReset(d.resets_at)))}</div>` : '';
+  return `<div class="quota-row">
+    <div class="quota-head"><span class="quota-label">${escHtml(label)}</span><span class="quota-pct">${Math.round(pct)}%</span></div>
+    <div class="quota-track"><div class="quota-fill ${band}" style="width:${w}%"></div></div>
+    ${resetLine}
+  </div>`;
+}
+
+// resets_at(带时区 ISO)→ 本地时间字符串;解析失败原样回退,不抛错
+function fmtReset(iso) {
+  try { const d = new Date(iso); return isNaN(d.getTime()) ? iso : d.toLocaleString(); }
+  catch (e) { return iso; }
+}
+
+// 限额不可用时的降级:本机 token 累计总数(不分模型)+ 说明行
+async function fallbackUsage() {
+  let stats = null;
+  try { const r = await fetch('/usage/stats'); if (r.ok) stats = await r.json(); } catch (e) { /* 静默降级 */ }
+  const sum = ((stats && stats.total) || []).reduce(
+    (s, r) => s + (r.input_tokens || 0) + (r.output_tokens || 0), 0);
+  return `<div class="usage-model"><div class="m">${t('usageLocalTotal')}</div>` +
+    `<div class="t">${sum.toLocaleString()} tokens</div></div>` +
+    `<div class="usage-note">${t('usageQuotaNeedLogin')}</div>`;
 }
 
 /* ===== Boot ===== */
