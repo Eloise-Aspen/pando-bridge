@@ -85,8 +85,15 @@
   .main { flex: 1; overflow: hidden; display: none; flex-direction: column; position: relative; z-index: 1; }
   .main.active { display: flex; }
 
-  .topbar { padding: 16px 20px 0; display: flex; align-items: center; justify-content: space-between; min-height: 52px; }
-  .topbar-left { display: flex; align-items: center; gap: 8px; }
+  /* 顶栏高度由内容决定(min-height 仅作单行下限):有签名行 → 两行更高,无签名 → 收缩到单行 */
+  .topbar { padding: 16px 20px 0; display: flex; align-items: center; justify-content: space-between; min-height: 44px; }
+  .topbar-left { display: flex; align-items: center; gap: 8px; min-width: 0; }
+  /* 名字/状态一行,签名行(最新记忆)叠在其下;无签名时该行不渲染,顶栏自然收缩 */
+  .topbar-idc { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .topbar-idline { display: flex; align-items: center; gap: 8px; min-height: 28px; }
+  .topbar-signature { font-size: 12px; color: var(--text3); font-family: var(--font-cn);
+                      max-width: 72vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .topbar-signature[hidden] { display: none; }
   .status-dot { width: 5px; height: 5px; border-radius: 50%; flex-shrink: 0; background: var(--text4); }
   .status-dot.on { background: var(--accent); box-shadow: 0 0 7px var(--accent-glow); }
   .status-dot.off { background: var(--red); box-shadow: 0 0 7px rgba(232,114,114,0.5); }
@@ -319,8 +326,13 @@
   <div class="topbar">
     <div class="topbar-left">
       <button class="topbar-icon" id="history-btn" onclick="openSidebar()" data-i18n-aria="ariaHistory" aria-label="历史"><i class="ti ti-history"></i></button>
-      <div class="status-dot" id="dot"></div>
-      <span class="topbar-label" id="topbar-status" data-i18n="connecting">连接中…</span>
+      <div class="topbar-idc">
+        <div class="topbar-idline">
+          <div class="status-dot" id="dot"></div>
+          <span class="topbar-label" id="topbar-status" data-i18n="connecting">连接中…</span>
+        </div>
+        <div class="topbar-signature" id="signature" hidden></div>
+      </div>
     </div>
   </div>
   <div class="divider-top"></div>
@@ -991,6 +1003,7 @@ async function deleteMemory(id, preview) {
   const q = $('mem-q');
   await refreshMemList(q ? q.value.trim() : '');
   updateMemStats();
+  loadSignature();  // 删的可能正是最新一条,顶栏签名行同步刷新
 }
 
 async function updateMemStats() {
@@ -1163,6 +1176,23 @@ async function loadStatus() {
     ${connected ? '' : `<div class="status-cta"><button class="reconnect-btn" onclick="connect()">${t('scReconnect')}</button></div>`}`;
 }
 
+/* ===== 签名行(顶栏名字下:最新一条记忆摘要)===== */
+// 纯展示不可点(spec 开工默认值 #1,跳转留给主题包/v0.2)。
+// NullProvider(404)/服务失联 → 不渲染,顶栏收缩(hidden 从布局移除)。
+async function loadSignature() {
+  const el = $('signature');
+  try {
+    const r = await fetch('/memory-admin/memory/list');
+    if (!r.ok) { el.hidden = true; return; }      // 404 未装配 / 502 失联 → 收起
+    const items = (await r.json()).items || [];
+    // 取最新一条:约定 list 返回按时间倒序(items[0] 最新);若接入服务是正序则取末条
+    const latest = items[0];
+    if (!latest || !latest.content) { el.hidden = true; return; }
+    el.textContent = latest.content.replace(/\s+/g, ' ').trim().slice(0, 80);
+    el.hidden = false;
+  } catch (e) { el.hidden = true; }                // 网络层失败也收起,不打断聊天
+}
+
 /* ===== 侧边栏版本铭牌 ===== */
 async function loadVersion() {
   try {
@@ -1191,6 +1221,7 @@ async function boot() {
   applyI18n();  // 先按当前语言刷静态文案,再加载配置/连接
   await loadConfig();
   loadVersion();
+  loadSignature();  // 顶栏签名行:最新记忆摘要(无记忆服务则不渲染)
   loadSessions();  // 桌面常驻侧边栏开屏即填充(移动端抽屉打开时会再刷一次)
   if (currentSessionId) { showMessages(); await loadHistory(currentSessionId); }
   else showGreeting();
