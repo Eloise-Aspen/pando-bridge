@@ -271,6 +271,24 @@
   .quota-reset { font-family: var(--font); font-size: 11px; color: var(--text4); margin-top: 5px; }
   .usage-note { font-family: var(--font-cn); font-size: 12px; color: var(--text4); padding: 8px 2px 2px; line-height: 1.5; }
   @media (prefers-reduced-motion: reduce) { .quota-fill { transition: none; } }
+
+  /* ---- 状态页(仪表盘)四卡 ---- */
+  .status-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  .status-card { background: var(--surface); border: 1px solid var(--border);
+                 border-radius: 12px; padding: 14px; min-height: 92px;
+                 display: flex; flex-direction: column; }
+  .status-card.disabled { opacity: 0.3; }  /* 情感未装配:诚实的空槽,禁用态 */
+  .sc-label { font-family: var(--font-cn); font-size: 12px; color: var(--text3);
+              letter-spacing: 0.04em; display: flex; align-items: center; gap: 6px; }
+  .sc-label .status-dot { position: relative; top: 0; }
+  .sc-value { font-family: var(--font-cn); font-size: 17px; color: var(--text); margin-top: auto; }
+  .sc-value.num { font-family: var(--font); color: var(--accent); }
+  .sc-sub { font-family: var(--font); font-size: 11px; color: var(--text4); margin-top: 4px; }
+  .status-cta { margin-top: 16px; }
+  .reconnect-btn { width: 100%; padding: 12px; border-radius: 12px; cursor: pointer;
+                   background: var(--accent-bg); color: var(--accent); border: 1px solid var(--accent-border);
+                   font-family: var(--font-cn); font-size: 14px; min-height: 44px; }
+  .reconnect-btn:active { background: rgba(217,119,87,0.18); }
 </style>
 </head>
 <body>
@@ -403,6 +421,10 @@ const I18N = {
     ariaHistory: '历史', ariaSend: '发送', ariaBack: '返回聊天', sheetThinking: 'Thinking',
     navMemory: '记忆', navStatus: '状态', navSettings: '设置',
     titleMemory: '记忆', titleStatus: '状态', titleSettings: '设置',
+    scConnection: '连接', scMemory: '记忆', scModel: '模型', scEmotion: '情感',
+    scOnline: '在线', scOffline: '离线', scReconnect: '重新连接',
+    scCliReady: 'CLI 已就绪', scCliMissing: 'CLI 未找到', scUnfitted: '未装配',
+    scModelDefault: '默认', scMemFmt: (c, ch) => `${c} 条 · ${ch} 字`,
     modelDefault: '默认', modelCustom: '自定义…',
     retry: '重新发送', copy: '复制', speak: '朗读',
     loading: '加载中…', loadFailed: '加载失败',
@@ -429,6 +451,10 @@ const I18N = {
     ariaHistory: 'History', ariaSend: 'Send', ariaBack: 'Back to chat', sheetThinking: 'Thinking',
     navMemory: 'Memory', navStatus: 'Status', navSettings: 'Settings',
     titleMemory: 'Memory', titleStatus: 'Status', titleSettings: 'Settings',
+    scConnection: 'Connection', scMemory: 'Memory', scModel: 'Model', scEmotion: 'Emotion',
+    scOnline: 'Online', scOffline: 'Offline', scReconnect: 'Reconnect',
+    scCliReady: 'CLI ready', scCliMissing: 'CLI not found', scUnfitted: 'Not fitted',
+    scModelDefault: 'Default', scMemFmt: (c, ch) => `${c} · ${ch} chars`,
     modelDefault: 'Default', modelCustom: 'Custom…',
     retry: 'Resend', copy: 'Copy', speak: 'Read aloud',
     loading: 'Loading…', loadFailed: 'Failed to load',
@@ -480,6 +506,8 @@ async function loadConfig() {
 function setStatus(on) {
   $dot.className = 'status-dot ' + (on ? 'on' : 'off');
   $status.textContent = t('status')(ASSISTANT_NAME, on);
+  // 状态页开着时同步刷新连接卡与断连 CTA(重连成功即撤 CTA,断连即升起)
+  if ($('view-status').classList.contains('active')) loadStatus();
 }
 
 /* ===== View toggles ===== */
@@ -1087,8 +1115,53 @@ async function fallbackUsage() {
     `<div class="usage-note">${t('usageQuotaNeedLogin')}</div>`;
 }
 
-/* ===== 状态页(仪表盘)—— Task 3 填充四卡,此处为占位 ===== */
-function loadStatus() { /* Task 3 实现:连接 / 记忆 / 模型 / 情感 四卡 + 断连 CTA */ }
+/* ===== 状态页(仪表盘):连接 / 记忆 / 模型 / 情感 四卡 + 断连 CTA ===== */
+async function loadStatus() {
+  const body = $('status-body');
+  const connected = !!(ws && ws.readyState === 1);
+
+  // 连接卡:WS 在线态 + /health 的 CLI 探测
+  let cliText = '';
+  try {
+    const r = await fetch('/health');
+    if (r.ok) { const h = await r.json();
+      cliText = h.claude_cli === 'found' ? t('scCliReady') : t('scCliMissing'); }
+  } catch (e) { /* 探测失败 → CLI 子行留空 */ }
+
+  // 记忆卡:stats 条数|字数;404 或失败 = 未装配记忆服务(灰值)
+  let memValue = t('scUnfitted'), memFitted = false;
+  try {
+    const r = await fetch('/memory-admin/memory/stats');
+    if (r.ok) { const s = await r.json();
+      memValue = t('scMemFmt')(s.count ?? 0, s.total_chars ?? 0); memFitted = true; }
+  } catch (e) { /* 未装配兜底 */ }
+
+  // 模型卡:复用输入区已选模型(空 = 走 CLI 默认)
+  const modelText = currentModel || t('scModelDefault');
+  const dot = on => `<span class="status-dot ${on ? 'on' : 'off'}"></span>`;
+
+  body.innerHTML = `
+    <div class="status-grid">
+      <div class="status-card">
+        <div class="sc-label">${dot(connected)}${t('scConnection')}</div>
+        <div class="sc-value">${connected ? t('scOnline') : t('scOffline')}</div>
+        <div class="sc-sub">${escHtml(cliText)}</div>
+      </div>
+      <div class="status-card">
+        <div class="sc-label">${t('scMemory')}</div>
+        <div class="sc-value ${memFitted ? 'num' : ''}">${escHtml(memValue)}</div>
+      </div>
+      <div class="status-card">
+        <div class="sc-label">${t('scModel')}</div>
+        <div class="sc-value">${escHtml(modelText)}</div>
+      </div>
+      <div class="status-card disabled">
+        <div class="sc-label">${t('scEmotion')}</div>
+        <div class="sc-value">${t('scUnfitted')}</div>
+      </div>
+    </div>
+    ${connected ? '' : `<div class="status-cta"><button class="reconnect-btn" onclick="connect()">${t('scReconnect')}</button></div>`}`;
+}
 
 /* ===== 侧边栏版本铭牌 ===== */
 async function loadVersion() {
