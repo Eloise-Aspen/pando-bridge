@@ -11,6 +11,7 @@ import logging
 import os
 import socket
 import sqlite3
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -43,6 +44,78 @@ def _detect_lan_ip() -> str | None:
     except OSError:
         return None
     return ip if ip and not ip.startswith("127.") else None
+
+
+# ---------------------------------------------------------------------------
+# 官方 5 小时/周限额用量(非公开 OAuth 接口,全链路静默降级)
+# ---------------------------------------------------------------------------
+# 端点为 Anthropic 非公开接口,可能随时变动;下面三个纯函数任何异常一律降级为
+# None/{available:false},绝不抛错、绝不影响聊天。OAuth token 只在服务端内存内
+# 流转:只读凭证文件、不写、不进日志、不进响应。
+# 端点用 api.anthropic.com(实测:接受订阅 OAuth token、无 Cloudflare 挑战);
+# claude.ai/api/oauth/usage 同数据但挂在 Cloudflare 后,无头请求恒 403,不可用于服务端。
+_OAUTH_USAGE_URL = "https://api.anthropic.com/api/oauth/usage"
+
+
+def _read_oauth_token() -> str | None:
+    """从 CC 本地凭证读取 claude.ai OAuth access token(只读,不落日志)。
+    发现顺序:CLAUDE_CONFIG_DIR 环境变量指向的目录 > ~/.claude/,读其下
+    .credentials.json 的 claudeAiOauth.accessToken。文件不存在(API 模式/未登录/
+    macOS Keychain)、解析失败、字段缺失、token 已过期一律返回 None,由上层降级。"""
+    try:
+        base = os.environ.get("CLAUDE_CONFIG_DIR")
+        cred_path = (Path(base) if base else Path.home() / ".claude") / ".credentials.json"
+        if not cred_path.exists():
+            return None
+        data = json.loads(cred_path.read_text(encoding="utf-8"))
+        oauth = data.get("claudeAiOauth") or {}
+        token = oauth.get("accessToken")
+        if not token:
+            return None
+        # access token 有寿命(CC 使用时会刷新并回写文件)。已过期就别拿死 token 去
+        # 打端点换回一堆 401/限流噪声,直接当不可用降级。expiresAt 为 CC 存的毫秒时间戳;
+        # 只在明确过期时短路,字段缺失/格式异常则放行交由端点判定。
+        exp = oauth.get("expiresAt")
+        if isinstance(exp, (int, float)) and time.time() * 1000 >= exp:
+            return None
+        return token
+    except Exception:
+        return None
+
+
+async def _fetch_oauth_usage(token: str) -> dict | None:
+    """带 Bearer 调官方用量端点,5s 超时。成功回原始 JSON dict;
+    httpx 缺失/网络/超时/非 200/非 JSON 一律回 None。token 只进请求头,不落日志。"""
+    try:
+        import httpx
+    except ImportError:
+        return None
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "anthropic-beta": "oauth-2025-04-20",
+        "User-Agent": "pando-bridge",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(_OAUTH_USAGE_URL, headers=headers)
+        if resp.status_code != 200:
+            return None
+        return resp.json()
+    except Exception:
+        return None
+
+
+def _clean_quota(raw: dict) -> dict:
+    """把官方响应清洗成最小对外形状:只取两条利用率(百分比)+各自 resets_at。
+    响应结构变化时缺失字段给 None,不把官方原始结构(可能含敏感/多余字段)透传出去。"""
+    def _one(block: str) -> dict:
+        b = raw.get(block) or {}
+        return {"utilization": b.get("utilization"), "resets_at": b.get("resets_at")}
+    return {
+        "available": True,
+        "five_hour": _one("five_hour"),
+        "seven_day": _one("seven_day"),
+    }
 
 
 def create_app(config) -> FastAPI:
@@ -432,6 +505,35 @@ def create_app(config) -> FastAPI:
     async def api_usage_stats():
         """只读:按模型分组的 token 用量(今日/累计),供设置页用量区展示。"""
         return usage_stats()
+
+    # /usage/quota 的服务端缓存:官方端点是非公开接口,60s TTL 防被打成高频轮询。
+    # 闭包内可变字典存最近一次成功清洗结果 + 单调时钟时间戳(避免系统时间回拨影响)。
+    _quota_cache = {"data": None, "ts": 0.0}
+    _QUOTA_TTL = 60.0
+
+    @app.get("/usage/quota")
+    async def api_usage_quota():
+        """官方 5h 窗 / 周限额利用率(静默降级):无凭证 / 端点 401-403 / 超时 /
+        响应形状变化一律回 {available:false},绝不抛 500、绝不影响聊天。
+        OAuth token 只在服务端内存内流转,不进本响应、不进日志。"""
+        now = time.monotonic()
+        # 命中未过期缓存直接回,不碰官方端点
+        if _quota_cache["data"] is not None and (now - _quota_cache["ts"]) < _QUOTA_TTL:
+            return _quota_cache["data"]
+        token = _read_oauth_token()
+        if not token:
+            return {"available": False}
+        raw = await _fetch_oauth_usage(token)
+        if not raw:
+            return {"available": False}
+        try:
+            cleaned = _clean_quota(raw)
+        except Exception:
+            return {"available": False}
+        # 只缓存成功结果:失败不写缓存,下次(设置页再次打开)可即时重试
+        _quota_cache["data"] = cleaned
+        _quota_cache["ts"] = now
+        return cleaned
 
     # -----------------------------------------------------------------------
     # Claude Code subprocess wrapper
