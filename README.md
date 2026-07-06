@@ -104,6 +104,25 @@ PowerShell 写 `$env:BRIDGE_PORT = "8899"; python run.py`——或改上面 `run
 
 ---
 
+## 用量额度显示
+
+设置页顶部会显示两条利用率进度条——**5 小时窗**与**周限额**——对齐 Claude 官方 `/usage`
+的形态,各带重置时间。数据来自官方(非公开)用量端点 `api.anthropic.com/api/oauth/usage`,
+OAuth token 取自本机 Claude Code 的凭证文件 `~/.claude/.credentials.json`(或 `CLAUDE_CONFIG_DIR`
+指向的目录)。
+
+- **需要**:本机已用 Claude **订阅**登录过 Claude Code,且凭证以文件形式存在(Windows /
+  Linux / WSL 均是文件——已在 Windows 与 WSL 两端实测返回 200)。
+- **token 只读、不出服务端**:只读该文件、不写、不进日志、不进响应;进度条只在打开设置页时拉一次,不轮询。
+- **自动降级(聊天永不受影响)**:凡是拿不到实时额度——未登录 / API 模式(`ANTHROPIC_*`)/
+  macOS 用 Keychain 存凭证 / token 过期 / 端点限流——进度条区自动改为显示**本机 token 累计统计** +
+  一行说明,不报错、不卡死。
+
+> 该端点非公开、可能变动,且 access token 约 1 小时过期(Claude Code 使用时会自动刷新并回写文件)。
+> 因此进度条**仅在凭证新鲜且未被限流时**显示;其余情况回退本机统计属正常预期,不是故障。
+
+---
+
 ## 📱 手机接入
 
 Pando 是个*移动*网关——这一节带你从"能在 `127.0.0.1` 上跑"走到"作为 PWA 装在手机上"。
@@ -343,6 +362,31 @@ phone — which is the whole point — see
 [📱 Reach it from your phone](#-reach-it-from-your-phone).
 
 See [`.env.example`](.env.example) for every configuration knob.
+
+---
+
+## Usage quota
+
+The Settings page shows two utilization bars at the top — **5-hour window** and **weekly
+limit** — mirroring Claude's official `/usage`, each with a reset time. The data comes
+from Claude's (undocumented) usage endpoint `api.anthropic.com/api/oauth/usage`, using the
+OAuth token from your local Claude Code credentials at `~/.claude/.credentials.json` (or the
+directory `CLAUDE_CONFIG_DIR` points to).
+
+- **Requires** a Claude **subscription** login in Claude Code on the same machine, with
+  credentials stored as a file (Windows / Linux / WSL all use a file — verified 200 on both
+  Windows and WSL).
+- **Token stays server-side**: the file is read-only, never written, never logged, never in
+  the response; the bars fetch once when you open Settings, no polling.
+- **Graceful fallback (chat is never affected)**: whenever live quota isn't available — not
+  logged in / API mode (`ANTHROPIC_*`) / macOS Keychain-stored credentials / expired token /
+  endpoint rate-limit — the section falls back to your **local token usage totals** plus a
+  one-line note. No errors, no hang.
+
+> This endpoint is undocumented and may change, and the access token expires roughly hourly
+> (Claude Code refreshes and rewrites the file as you use it). So the bars show **only when
+> the credential is fresh and not rate-limited**; falling back to local totals otherwise is
+> expected, not a failure.
 
 ---
 
