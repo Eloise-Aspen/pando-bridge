@@ -491,6 +491,7 @@ const I18N = {
     scOnline: '在线', scOffline: '离线', scReconnect: '重新连接',
     scCliReady: 'CLI 已就绪', scCliMissing: 'CLI 未找到',
     scUnfitted: '未装配', scNotConnected: '未连接',
+    scMemHintSet: '电脑上设 MEMORY_SERVICE_URL 连接', scMemHintDown: '已配置,但暂时连不上',
     scModelDefault: '默认', scMemFmt: (c, ch) => `${c} 条 · ${ch} 字`,
     obCheckTitle: '开始之前', obCheckSub: '先看看运行环境',
     obChkService: '服务连接', obChkCli: 'Claude CLI 授权', obChkMemory: '记忆服务',
@@ -505,8 +506,8 @@ const I18N = {
     retry: '重新发送', copy: '复制', speak: '朗读',
     loading: '加载中…', loadFailed: '加载失败',
     memConnFail: '记忆服务连接失败', memConnFailSub: '聊天不受影响,可稍后重试',
-    memUnconfigured: '未配置记忆服务',
-    memUnconfiguredSub: '设置 MEMORY_SERVICE_URL 指向记忆服务后,即可在此浏览、搜索、删除记忆',
+    memUnconfigured: '记忆库未连接',
+    memUnconfiguredSub: '在电脑上把 MEMORY_SERVICE_URL 指向你的记忆服务后,即可在此浏览、搜索、删除记忆',
     memUnavailable: '记忆服务暂时不可用', memUnavailableSub: '已配置但连接失败(降级)·聊天不受影响',
     memCount: '条记忆', memChars: '总字数', memSearchPlaceholder: '搜索记忆…',
     memNoMatch: '没有匹配的记忆', memEmpty: '暂无记忆',
@@ -532,6 +533,7 @@ const I18N = {
     scOnline: 'Online', scOffline: 'Offline', scReconnect: 'Reconnect',
     scCliReady: 'CLI ready', scCliMissing: 'CLI not found',
     scUnfitted: 'Not built', scNotConnected: 'Not connected',
+    scMemHintSet: 'Set MEMORY_SERVICE_URL on the host', scMemHintDown: 'Configured but unreachable',
     scModelDefault: 'Default', scMemFmt: (c, ch) => `${c} · ${ch} chars`,
     obCheckTitle: 'Before we start', obCheckSub: 'A quick look at your setup',
     obChkService: 'Service connection', obChkCli: 'Claude CLI login', obChkMemory: 'Memory service',
@@ -546,8 +548,8 @@ const I18N = {
     retry: 'Resend', copy: 'Copy', speak: 'Read aloud',
     loading: 'Loading…', loadFailed: 'Failed to load',
     memConnFail: 'Memory service unreachable', memConnFailSub: 'Chat is unaffected; try again later',
-    memUnconfigured: 'No memory service',
-    memUnconfiguredSub: 'Set MEMORY_SERVICE_URL to a memory service to browse, search and delete memories here',
+    memUnconfigured: 'Memory library not connected',
+    memUnconfiguredSub: 'Point MEMORY_SERVICE_URL to your memory service on the host to browse, search and delete memories here',
     memUnavailable: 'Memory service unavailable', memUnavailableSub: 'Configured but unreachable (degraded) · chat unaffected',
     memCount: 'memories', memChars: 'total chars', memSearchPlaceholder: 'Search memories…',
     memNoMatch: 'No matching memories', memEmpty: 'No memories yet',
@@ -1227,12 +1229,15 @@ async function loadStatus() {
 
   // 记忆卡:stats 条数|字数;404/失败 = 记忆库未连接(灰值)。记忆是已实现接口,
   // 未接库用「未连接」,与「情感」那种尚未实现的接口用「未装配」区分开。
-  let memValue = t('scNotConnected'), memFitted = false;
+  // memHint 给一句怎么连的指引(仅检测与指引,配置本身仍在电脑侧,见账号边界裁决):
+  //   404 未配置 → 提示设 MEMORY_SERVICE_URL;非 404 = 配了但连不上 → 提示已配置暂不可达。
+  let memValue = t('scNotConnected'), memFitted = false, memHint = t('scMemHintSet');
   try {
     const r = await fetch('/memory-admin/memory/stats');
     if (r.ok) { const s = await r.json();
-      memValue = t('scMemFmt')(s.count ?? 0, s.total_chars ?? 0); memFitted = true; }
-  } catch (e) { /* 未装配兜底 */ }
+      memValue = t('scMemFmt')(s.count ?? 0, s.total_chars ?? 0); memFitted = true; memHint = ''; }
+    else if (r.status !== 404) memHint = t('scMemHintDown');
+  } catch (e) { memHint = t('scMemHintDown'); }
 
   // 模型卡:复用输入区已选模型(空 = 走 CLI 默认)
   const modelText = currentModel || t('scModelDefault');
@@ -1248,6 +1253,7 @@ async function loadStatus() {
       <div class="status-card">
         <div class="sc-label">${t('scMemory')}</div>
         <div class="sc-value ${memFitted ? 'num' : ''}">${escHtml(memValue)}</div>
+        ${memHint ? `<div class="sc-sub">${escHtml(memHint)}</div>` : ''}
       </div>
       <div class="status-card">
         <div class="sc-label">${t('scModel')}</div>
