@@ -331,8 +331,8 @@
 <div class="vignette"></div>
 
 <!-- Sidebar -->
-<div class="overlay" id="overlay" onclick="closeSidebar()"></div>
 <div class="app">
+<div class="overlay" id="overlay" onclick="closeSidebar()"></div>
 <div class="sidebar" id="sidebar">
   <div class="sidebar-header">
     <h2 data-i18n="sidebarTitle">对话记录</h2>
@@ -353,7 +353,7 @@
 <div class="main active" id="view-chat">
   <div class="topbar">
     <div class="topbar-left">
-      <button class="topbar-icon" id="history-btn" onclick="openSidebar()" data-i18n-aria="ariaHistory" aria-label="历史"><i class="ti ti-history"></i></button>
+      <button class="topbar-icon" id="history-btn" onclick="openSidebar()" data-i18n-aria="ariaMenu" aria-label="菜单"><i class="ti ti-menu-2"></i></button>
       <div class="topbar-idc">
         <div class="topbar-idline">
           <div class="status-dot" id="dot"></div>
@@ -484,19 +484,20 @@ const I18N = {
   zh: {
     sidebarTitle: '对话记录', newChat: '新对话', connecting: '连接中…',
     online: '在线', offline: '离线', inputPlaceholder: '在这里输入…',
-    ariaHistory: '历史', ariaSend: '发送', ariaBack: '返回聊天', sheetThinking: 'Thinking',
+    ariaMenu: '菜单', ariaSend: '发送', ariaBack: '返回聊天', sheetThinking: 'Thinking',
     navMemory: '记忆', navStatus: '状态', navSettings: '设置',
     titleMemory: '记忆', titleStatus: '状态', titleSettings: '设置',
     scConnection: '连接', scMemory: '记忆', scModel: '模型', scEmotion: '情感',
     scOnline: '在线', scOffline: '离线', scReconnect: '重新连接',
-    scCliReady: 'CLI 已就绪', scCliMissing: 'CLI 未找到', scUnfitted: '未装配',
+    scCliReady: 'CLI 已就绪', scCliMissing: 'CLI 未找到',
+    scUnfitted: '未装配', scNotConnected: '未连接',
     scModelDefault: '默认', scMemFmt: (c, ch) => `${c} 条 · ${ch} 字`,
     obCheckTitle: '开始之前', obCheckSub: '先看看运行环境',
     obChkService: '服务连接', obChkCli: 'Claude CLI 授权', obChkMemory: '记忆服务',
     obGuideService: '连不上本机服务,确认桥进程还在运行',
     obGuideCli: '在电脑上运行一次 claude 登录后,回来重试',
     obGuideMemory: '记忆服务已配置但连不上,可以先跳过',
-    obMemOptional: '未配置(可选,不影响聊天)',
+    obMemOptional: '未连接(可选,不影响聊天)',
     obContinue: '继续', obSkip: '跳过',
     obNameTitle: '互相认识一下',
     obAskUser: '我该怎么称呼你?', obAskAsst: '你想怎么称呼我?', obStart: '开始',
@@ -524,19 +525,20 @@ const I18N = {
   en: {
     sidebarTitle: 'Chats', newChat: 'New chat', connecting: 'Connecting…',
     online: 'online', offline: 'offline', inputPlaceholder: 'Type a message…',
-    ariaHistory: 'History', ariaSend: 'Send', ariaBack: 'Back to chat', sheetThinking: 'Thinking',
+    ariaMenu: 'Menu', ariaSend: 'Send', ariaBack: 'Back to chat', sheetThinking: 'Thinking',
     navMemory: 'Memory', navStatus: 'Status', navSettings: 'Settings',
     titleMemory: 'Memory', titleStatus: 'Status', titleSettings: 'Settings',
     scConnection: 'Connection', scMemory: 'Memory', scModel: 'Model', scEmotion: 'Emotion',
     scOnline: 'Online', scOffline: 'Offline', scReconnect: 'Reconnect',
-    scCliReady: 'CLI ready', scCliMissing: 'CLI not found', scUnfitted: 'Not fitted',
+    scCliReady: 'CLI ready', scCliMissing: 'CLI not found',
+    scUnfitted: 'Not built', scNotConnected: 'Not connected',
     scModelDefault: 'Default', scMemFmt: (c, ch) => `${c} · ${ch} chars`,
     obCheckTitle: 'Before we start', obCheckSub: 'A quick look at your setup',
     obChkService: 'Service connection', obChkCli: 'Claude CLI login', obChkMemory: 'Memory service',
     obGuideService: 'Can\'t reach the local service — check the bridge is still running',
     obGuideCli: 'Run the claude login on your computer, then come back and retry',
     obGuideMemory: 'Memory service is configured but unreachable — you can skip for now',
-    obMemOptional: 'Not configured (optional, chat still works)',
+    obMemOptional: 'Not connected (optional, chat still works)',
     obContinue: 'Continue', obSkip: 'Skip',
     obNameTitle: 'Let\'s get acquainted',
     obAskUser: 'What should I call you?', obAskAsst: 'What would you like to call me?', obStart: 'Start',
@@ -628,7 +630,7 @@ async function loadSessions() {
 }
 
 async function switchSession(sid) {
-  closeSidebar();
+  openPage('chat');  // 桌面常驻侧边栏下,若正停在子页,选会话要先跳回聊天(顺带收抽屉)
   if (sid === currentSessionId) return;
   $msg.innerHTML = '';
   setSessionId(sid);
@@ -639,7 +641,7 @@ async function switchSession(sid) {
 }
 
 function newConversation() {
-  closeSidebar();
+  openPage('chat');  // 同上:从子页新建对话也要跳回聊天
   $msg.innerHTML = '';
   setSessionId(null);
   currentAssistantRow = null; assistantText = '';
@@ -1223,8 +1225,9 @@ async function loadStatus() {
       cliText = h.claude_cli === 'found' ? t('scCliReady') : t('scCliMissing'); }
   } catch (e) { /* 探测失败 → CLI 子行留空 */ }
 
-  // 记忆卡:stats 条数|字数;404 或失败 = 未装配记忆服务(灰值)
-  let memValue = t('scUnfitted'), memFitted = false;
+  // 记忆卡:stats 条数|字数;404/失败 = 记忆库未连接(灰值)。记忆是已实现接口,
+  // 未接库用「未连接」,与「情感」那种尚未实现的接口用「未装配」区分开。
+  let memValue = t('scNotConnected'), memFitted = false;
   try {
     const r = await fetch('/memory-admin/memory/stats');
     if (r.ok) { const s = await r.json();
