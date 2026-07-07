@@ -102,7 +102,8 @@ _NOTE_HEADER = "[用户上传了附件，请用 Read 工具查看以下文件]"
 
 
 def test_valid_attachment_injected(tmp_path, monkeypatch):
-    """完成标准 1/2 前置：有效附件路径按固定格式注入进 message。"""
+    """完成标准 1/2 前置：有效附件路径按固定格式注入进 message，且以「相对 CLAUDE_CWD」
+    形式注入（绝对挂载路径喂给 Windows claude.exe 会被 Read 误判 workspace 外 → 门控）。"""
     _install_echo(monkeypatch)
     app = create_app(_config(tmp_path))
     with TestClient(app) as client:
@@ -110,7 +111,10 @@ def test_valid_attachment_injected(tmp_path, monkeypatch):
         result = _run_ws(client, {"text": "看看这个", "attachments": [path]})
         echoed = result["text"]  # = run_claude 收到的 message
         assert _NOTE_HEADER in echoed
-        assert str(Path(path).resolve()) in echoed
+        # 注入的是相对 CLAUDE_CWD 的路径（uploads/YYYYMM/uuid.png），不是绝对路径
+        rel = Path(path).resolve().relative_to(tmp_path.resolve()).as_posix()
+        assert rel in echoed
+        assert str(Path(path).resolve()) not in echoed  # 绝对路径不得出现（回归锁）
 
 
 def test_forged_path_dropped(tmp_path, monkeypatch):
@@ -134,7 +138,8 @@ def test_pure_attachment_no_text(tmp_path, monkeypatch):
         result = _run_ws(client, {"text": "", "attachments": [path]})
         echoed = result["text"]
         assert _NOTE_HEADER in echoed
-        assert str(Path(path).resolve()) in echoed
+        rel = Path(path).resolve().relative_to(tmp_path.resolve()).as_posix()
+        assert rel in echoed
 
 
 def test_pure_attachment_persists_placeholder(tmp_path, monkeypatch):

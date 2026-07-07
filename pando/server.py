@@ -625,10 +625,25 @@ def create_app(config) -> FastAPI:
         return valid
 
     def _build_attachment_note(valid_paths: list[str]) -> str:
-        """把校验过的附件路径拼成注入消息的固定格式段落，供 CC 用 Read 工具查看。"""
+        """把校验过的附件路径拼成注入消息的固定格式段落，供 CC 用 Read 工具查看。
+        路径尽量转成「相对 claude_cwd」形式：CC 子进程 cwd 即 claude_cwd，相对路径由它
+        自行解析。这样跨平台一致，且规避一个跨边界陷阱——WSL 里跑 Windows 版 claude.exe
+        时，注入的挂载路径 /mnt/c/... 会被 Read 误转成 \\mnt\\c\\...（未映射成 C:\\...），
+        被判定在 workspace 外 → Read 触发权限门控读不了。落在 cwd 外的路径（自定义
+        UPLOAD_DIR）保持绝对，CC 本就读不到、由权限层拒绝，符合预期。"""
         if not valid_paths:
             return ""
-        lines = "\n".join(valid_paths)
+        base = Path(claude_cwd).resolve() if claude_cwd else None
+        display = []
+        for p in valid_paths:
+            shown = p
+            if base is not None:
+                try:
+                    shown = Path(p).resolve().relative_to(base).as_posix()
+                except ValueError:
+                    shown = p  # 不在 cwd 下，保持绝对
+            display.append(shown)
+        lines = "\n".join(display)
         return f"\n\n[用户上传了附件，请用 Read 工具查看以下文件]\n{lines}"
 
     # -----------------------------------------------------------------------
