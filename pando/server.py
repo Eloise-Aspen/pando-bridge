@@ -35,6 +35,12 @@ _ATTACH_MAX_BYTES = 10 * 1024 * 1024  # 10MB
 _ATTACH_ALLOWED_EXT = {"png", "jpg", "jpeg", "webp", "gif", "pdf", "txt", "md"}
 _ATTACH_RETENTION_DAYS = 7  # 启动时清理超过此天数的旧附件
 
+# CC 子进程 stdout 按行读，asyncio StreamReader 默认单行上限 64KB。CC 读附件（尤其 PDF）
+# 时，tool_result 事件会把整份文件的 base64 作为**一整行**回吐——10MB 附件 base64≈13.3MB，
+# 远超 64KB 会抛 LimitOverrunError（"chunk exceed the limit"）导致整轮崩、无输出。故把行
+# 上限抬高到能容纳最大附件 base64 + JSON 包裹的量级。
+_STREAM_LINE_LIMIT = 32 * 1024 * 1024  # 32MB
+
 
 def _cfg(config, key: str, default=None):
     """兼容 module / dict / 任意具名属性对象的配置读取。"""
@@ -711,6 +717,8 @@ def create_app(config) -> FastAPI:
             stderr=asyncio.subprocess.PIPE,
             stdin=asyncio.subprocess.DEVNULL,
             cwd=claude_cwd,
+            # 抬高单行上限：CC 读附件时 tool_result 的 base64 会是超长单行（见常量说明）
+            limit=_STREAM_LINE_LIMIT,
         )
 
         # 只登记用户可见轮次:静默存档轮不给「停止」入口,避免和可见轮的 proc 互相覆盖

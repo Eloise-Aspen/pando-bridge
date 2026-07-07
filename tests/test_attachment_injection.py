@@ -142,6 +142,24 @@ def test_pure_attachment_no_text(tmp_path, monkeypatch):
         assert rel in echoed
 
 
+def test_subprocess_uses_large_stream_limit(tmp_path, monkeypatch):
+    """回归锁：spawn CC 子进程必须抬高 stdout 单行上限。默认 64KB 会被 CC 读附件时
+    tool_result 的 base64 超长单行撑爆（LimitOverrunError → 整轮崩，PDF 卡死真机事故）。"""
+    captured = {}
+
+    async def fake_exec(*args, **kwargs):
+        captured["limit"] = kwargs.get("limit")
+        return _EchoProc(args[-1])
+
+    monkeypatch.setattr(server_mod.asyncio, "create_subprocess_exec", fake_exec)
+    app = create_app(_config(tmp_path))
+    with TestClient(app) as client:
+        _run_ws(client, {"text": "hi"})
+    # 至少能容纳 10MB 附件的 base64（≈13.3MB）
+    assert captured["limit"] is not None
+    assert captured["limit"] >= 16 * 1024 * 1024
+
+
 def test_pure_attachment_persists_placeholder(tmp_path, monkeypatch):
     """纯附件存库：user 内容存占位符 [附件]，metadata 记录附件文件名。"""
     _install_echo(monkeypatch)
