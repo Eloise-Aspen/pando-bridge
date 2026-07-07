@@ -13,10 +13,11 @@ import shutil
 import socket
 import sqlite3
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -26,6 +27,13 @@ from .providers import get_provider
 log = logging.getLogger("pando")
 
 _PACKAGE_STATIC_DIR = Path(__file__).parent.parent / "static"
+
+# 附件上传约束（feat-attachment-upload）：单文件上限 + 扩展名白名单。
+# 存储位置必须落在 CLAUDE_CWD 内——Task 1 实测 CC headless 子进程用 Read 读 cwd 外
+# 路径会触发权限门控（无法交互批准），只有 cwd 内的文件才免批可读。
+_ATTACH_MAX_BYTES = 10 * 1024 * 1024  # 10MB
+_ATTACH_ALLOWED_EXT = {"png", "jpg", "jpeg", "webp", "gif", "pdf", "txt", "md"}
+_ATTACH_RETENTION_DAYS = 7  # 启动时清理超过此天数的旧附件
 
 
 def _cfg(config, key: str, default=None):
@@ -155,6 +163,14 @@ def create_app(config) -> FastAPI:
 
     data_dir.mkdir(parents=True, exist_ok=True)
     chat_db = data_dir / "chat.db"
+
+    # 附件落盘目录。默认放 CLAUDE_CWD/.pando-uploads（Task 1 结论：必须在 cwd 内 CC 才
+    # 能免批 Read）；允许 config 用 UPLOAD_DIR 显式覆盖。claude_cwd 缺失时降级到包内
+    # 临时目录，仅为让 create_app 不炸——正常部署 claude_cwd 必配。
+    upload_dir = Path(
+        _cfg(config, "UPLOAD_DIR")
+        or (Path(claude_cwd) / ".pando-uploads" if claude_cwd else data_dir / ".pando-uploads")
+    )
 
     memory = get_provider(memory_service_url, timeout=memory_service_timeout)
 
@@ -441,6 +457,7 @@ def create_app(config) -> FastAPI:
     async def startup():
         _init_chat_db()
         log.info("chat DB ready: %s", chat_db)
+        _cleanup_old_attachments()
 
         config_dict = _config_as_dict()
         for plugin in plugin_instances:
@@ -538,6 +555,54 @@ def create_app(config) -> FastAPI:
         _quota_cache["data"] = cleaned
         _quota_cache["ts"] = now
         return cleaned
+
+    # -----------------------------------------------------------------------
+    # 附件上传（feat-attachment-upload）
+    # -----------------------------------------------------------------------
+
+    def _cleanup_old_attachments():
+        """启动时清理超过保留天数的旧附件。目录不存在、单文件删除失败都静默跳过，
+        绝不阻断服务启动（清理属旁路维护，失败只记日志）。"""
+        cutoff = time.time() - _ATTACH_RETENTION_DAYS * 86400
+        removed = 0
+        try:
+            if not upload_dir.exists():
+                return
+            for p in upload_dir.rglob("*"):
+                if p.is_file() and p.stat().st_mtime < cutoff:
+                    try:
+                        p.unlink()
+                        removed += 1
+                    except OSError:
+                        pass
+            if removed:
+                log.info("attachment cleanup: removed %d file(s) older than %d days",
+                         removed, _ATTACH_RETENTION_DAYS)
+        except Exception as e:
+            log.warning("attachment cleanup skipped: %s", e)
+
+    @app.post("/attachments")
+    async def upload_attachment(file: UploadFile = File(...)):
+        """接收单个上传文件，落 upload_dir/YYYYMM/ 下 UUID 重命名后的文件，返回其绝对路径。
+        校验：扩展名白名单 + 大小上限。UUID 重命名 + 只保留白名单内的扩展名，杜绝用原始
+        文件名做路径注入。返回的 path 供聊天 WS 注入，Task 3 会再校验它确实落在 upload_dir 内。"""
+        # 扩展名白名单（大小写不敏感），不信任原始文件名的其余部分
+        ext = Path(file.filename or "").suffix.lstrip(".").lower()
+        if ext not in _ATTACH_ALLOWED_EXT:
+            raise HTTPException(status_code=400, detail=f"unsupported file type: .{ext or '?'}")
+        # 读到上限+1 字节即可判定是否超限，避免把超大文件整个读进内存
+        data = await file.read(_ATTACH_MAX_BYTES + 1)
+        if len(data) > _ATTACH_MAX_BYTES:
+            raise HTTPException(status_code=413, detail="file too large (max 10MB)")
+        if not data:
+            raise HTTPException(status_code=400, detail="empty file")
+        # 按月分目录 + UUID 文件名（只带白名单扩展名），杜绝路径穿越/覆盖
+        subdir = upload_dir / datetime.now().strftime("%Y%m")
+        subdir.mkdir(parents=True, exist_ok=True)
+        dest = subdir / f"{uuid.uuid4().hex}.{ext}"
+        dest.write_bytes(data)
+        log.info("attachment saved: %s (%d bytes)", dest, len(data))
+        return {"path": str(dest)}
 
     # -----------------------------------------------------------------------
     # Claude Code subprocess wrapper
