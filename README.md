@@ -35,7 +35,7 @@ Pando 完全绕开这点，直接驱动你自己已安装、已认证的 `claude
 | **记忆** | 可插拔——任何引擎接入 4 端点 HTTP 契约即可 | 固定 |
 | **成本模型** | 复用你现有的 Claude Code CLI / 订阅 | 按产品条款 |
 | **可扩展性** | 注入、路由、会话源的插件钩子 | 封闭 |
-| **界面** | 沉浸式聊天 + 侧边栏导航，内置可切换主题（简洁为默认，`static/themes/<名>/theme.css` 覆盖 token） | 固定 |
+| **界面** | 沉浸式聊天 + 侧边栏导航 + 附件上传（图片/PDF 交给 Claude 看），内置可切换主题（简洁为默认，`static/themes/<名>/theme.css` 覆盖 token） | 固定 |
 
 如果你只想要官方体验，用官方产品就好。如果你想自托管、掌控自己的数据、接入自己的
 记忆——这就是它的用途。
@@ -294,7 +294,7 @@ sidesteps that entirely by driving your own already-installed, already-authentic
 | **Memory** | Pluggable — bring any engine behind a 4-endpoint HTTP contract | Fixed |
 | **Cost model** | Uses your existing Claude Code CLI / subscription | Per product terms |
 | **Extensibility** | Plugin hooks for injection, routes, session sources | Closed |
-| **UI** | Immersive chat + sidebar nav, built-in switchable themes (Simple by default; drop a `static/themes/<name>/theme.css` to override tokens) | Fixed |
+| **UI** | Immersive chat + sidebar nav + attachment upload (hand images/PDFs to Claude), built-in switchable themes (Simple by default; drop a `static/themes/<name>/theme.css` to override tokens) | Fixed |
 
 If you just want the official experience, use the official product. If you want to
 self-host, own your data, and plug in your own memory — that's what this is.
