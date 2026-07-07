@@ -190,6 +190,8 @@
               background: var(--accent); color: #1a1816; font-size: 18px; display: flex;
               align-items: center; justify-content: center; }
   .send-btn:disabled { background: var(--surface); color: var(--text4); }
+  /* 流式期间发送键变停止键:方块图标 + 中性表面色,与「发送」的强调色区分 */
+  .send-btn.stop { background: var(--surface); color: var(--text); border: 1px solid var(--border); }
 
   /* ---- Thinking sheet ---- */
   .sheet-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 110;
@@ -392,7 +394,7 @@
     <div class="input-bar">
       <textarea id="input" rows="1" placeholder="在这里输入…" data-i18n-ph="inputPlaceholder"
         onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();send();}"></textarea>
-      <button class="send-btn" id="btn" onclick="send()" data-i18n-aria="ariaSend" aria-label="发送"><i class="ti ti-arrow-up"></i></button>
+      <button class="send-btn" id="btn" onclick="onSendBtn()" data-i18n-aria="ariaSend" aria-label="发送"><i class="ti ti-arrow-up"></i></button>
     </div>
   </div>
 </div>
@@ -486,7 +488,8 @@ const I18N = {
   zh: {
     sidebarTitle: '对话记录', newChat: '新对话', connecting: '连接中…',
     online: '在线', offline: '离线', inputPlaceholder: '在这里输入…',
-    ariaMenu: '菜单', ariaSend: '发送', ariaBack: '返回聊天', sheetThinking: 'Thinking',
+    ariaMenu: '菜单', ariaSend: '发送', ariaStop: '停止', ariaBack: '返回聊天', sheetThinking: 'Thinking',
+    stopped: '已停止',
     navMemory: '记忆', navStatus: '状态', navSettings: '设置',
     titleMemory: '记忆', titleStatus: '状态', titleSettings: '设置',
     scConnection: '连接', scMemory: '记忆', scModel: '模型', scEmotion: '情感',
@@ -528,7 +531,8 @@ const I18N = {
   en: {
     sidebarTitle: 'Chats', newChat: 'New chat', connecting: 'Connecting…',
     online: 'online', offline: 'offline', inputPlaceholder: 'Type a message…',
-    ariaMenu: 'Menu', ariaSend: 'Send', ariaBack: 'Back to chat', sheetThinking: 'Thinking',
+    ariaMenu: 'Menu', ariaSend: 'Send', ariaStop: 'Stop', ariaBack: 'Back to chat', sheetThinking: 'Thinking',
+    stopped: 'Stopped',
     navMemory: 'Memory', navStatus: 'Status', navSettings: 'Settings',
     titleMemory: 'Memory', titleStatus: 'Status', titleSettings: 'Settings',
     scConnection: 'Connection', scMemory: 'Memory', scModel: 'Model', scEmotion: 'Emotion',
@@ -610,7 +614,15 @@ function setSessionId(id) {
   if (id) localStorage.setItem('currentSessionId', id);
   else localStorage.removeItem('currentSessionId');
 }
-function setBusy(b) { busy = b; $btn.disabled = b; }
+// 流式期间(busy)发送键变停止键:方块图标、保持可点(点击发 stop);空闲时恢复箭头发送。
+// 不再用 disabled 禁用——否则用户无从停止长回答。
+function setBusy(b) {
+  busy = b;
+  $btn.disabled = false;
+  $btn.classList.toggle('stop', b);
+  $btn.innerHTML = b ? '<i class="ti ti-player-stop-filled"></i>' : '<i class="ti ti-arrow-up"></i>';
+  $btn.setAttribute('aria-label', t(b ? 'ariaStop' : 'ariaSend'));
+}
 
 /* ===== Sidebar ===== */
 function openSidebar() { loadSessions(); $('sidebar').classList.add('open'); $('overlay').classList.add('open'); }
@@ -788,6 +800,15 @@ function addUsage(data) {
   $msg.scrollTop = $msg.scrollHeight;
 }
 
+// 停止轮的元数据行:复用 usage-bar 样式,只显示「已停止」(无用量数据可展示)
+function addStoppedMeta() {
+  const el = document.createElement('div');
+  el.className = 'usage-bar';
+  el.innerHTML = `<span>${escHtml(t('stopped'))}</span>`;
+  $msg.appendChild(el);
+  $msg.scrollTop = $msg.scrollHeight;
+}
+
 /* ===== 助手回复工具条(复制 / 朗读)===== */
 let speakingBtn = null;  // 当前正在朗读的按钮,用于播放/停止切换
 
@@ -894,6 +915,16 @@ document.addEventListener('click', e => {
 });
 
 /* ===== Send ===== */
+// 发送键双职:空闲=发送,流式中=停止(与 setBusy 的图标切换配对)
+function onSendBtn() { if (busy) stopStreaming(); else send(); }
+
+// 发停止信号:服务端据 WS 连接找到在途子进程 terminate,随后回一帧 stopped result。
+// 不在此处改 UI——统一等 stopped 帧到达走 result 分支恢复发送态,避免乐观更新与实际不同步。
+function stopStreaming() {
+  if (!ws || ws.readyState !== 1) return;
+  ws.send(JSON.stringify({ type: 'stop' }));
+}
+
 function send() {
   const text = $input.value.trim();
   if (!text || busy || !ws || ws.readyState !== 1) return;
@@ -963,7 +994,8 @@ function connect() {
         if (m.text && !assistantText) { currentAssistantRow = addMsg('assistant', m.text); assistantText = m.text; }
         if (m.thinking) addThinkingChip(m.thinking, currentAssistantRow || undefined);
         if (currentAssistantRow && assistantText) addAssistantToolbar(currentAssistantRow, assistantText);
-        if (m.usage) addUsage({ cost_usd: m.cost_usd, duration_ms: m.duration_ms, usage: m.usage });
+        if (m.stopped) addStoppedMeta();  // 停止轮:无 usage,元数据行标「已停止」
+        else if (m.usage) addUsage({ cost_usd: m.cost_usd, duration_ms: m.duration_ms, usage: m.usage });
         if (m.session_id) setSessionId(m.session_id);
         currentAssistantRow = null; assistantText = '';
         setBusy(false);

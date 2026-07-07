@@ -543,6 +543,28 @@ def create_app(config) -> FastAPI:
     # Claude Code subprocess wrapper
     # -----------------------------------------------------------------------
 
+    # 每个 WS 连接「当前用户可见轮次」的在途子进程登记表:stop 消息据此找到要杀的 proc,
+    # 断连回收也用它。只登记 silent=False 的轮次(自动存档轮不给用户「停止」入口)。
+    inflight_procs: dict[WebSocket, asyncio.subprocess.Process] = {}
+    # 已请求停止的连接:被杀轮次的 result 事件不会到达,run_claude 据此改发 stopped 结束帧而非 error。
+    stopped_conns: set[WebSocket] = set()
+
+    async def _stop_inflight(ws: WebSocket):
+        """终止某连接的在途子进程:terminate 优先,POSIX 兜底 2s 未退则 kill。
+        找不到在途 proc(流已结束/快速连点)直接忽略,不产生副作用。"""
+        proc = inflight_procs.get(ws)
+        if proc is None:
+            return
+        stopped_conns.add(ws)
+        try:
+            proc.terminate()
+        except ProcessLookupError:
+            return  # 已退出
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=2.0)
+        except asyncio.TimeoutError:
+            proc.kill()
+
     async def run_claude(
         message: str,
         session_id: str | None,
@@ -584,6 +606,10 @@ def create_app(config) -> FastAPI:
             cwd=claude_cwd,
         )
 
+        # 只登记用户可见轮次:静默存档轮不给「停止」入口,避免和可见轮的 proc 互相覆盖
+        if not silent:
+            inflight_procs[ws] = proc
+
         new_session_id = session_id
         full_text = ""
         thinking_text = ""
@@ -593,136 +619,159 @@ def create_app(config) -> FastAPI:
         init_model = model or ""
 
         try:
-            async for raw_line in proc.stdout:
-                line = raw_line.decode("utf-8", errors="replace").strip()
-                if not line:
-                    continue
+            try:
+                async for raw_line in proc.stdout:
+                    line = raw_line.decode("utf-8", errors="replace").strip()
+                    if not line:
+                        continue
 
-                try:
-                    event = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
+                    try:
+                        event = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
 
-                etype = event.get("type")
+                    etype = event.get("type")
 
-                if etype == "system" and event.get("subtype") == "init":
-                    new_session_id = event.get("session_id", new_session_id)
-                    init_model = event.get("model") or init_model
-                    if not silent:
-                        save_session(new_session_id, model or "")
-                        await ws.send_text(json.dumps({
-                            "type": "session",
-                            "session_id": new_session_id,
-                            "model": event.get("model", ""),
-                        }, ensure_ascii=False))
-
-                elif etype == "assistant":
-                    msg = event.get("message", {})
-                    for block in msg.get("content", []):
-                        btype = block.get("type")
-                        if btype == "thinking":
-                            thinking_text += block.get("thinking", "")
-                            if not silent:
-                                await ws.send_text(json.dumps({
-                                    "type": "thinking",
-                                    "text": block.get("thinking", ""),
-                                }, ensure_ascii=False))
-                        elif btype == "text":
-                            text = block["text"]
-                            full_text += text
-                            if not silent:
-                                await ws.send_text(json.dumps({
-                                    "type": "text",
-                                    "text": text,
-                                }, ensure_ascii=False))
-                        elif btype == "tool_use" and not silent:
+                    if etype == "system" and event.get("subtype") == "init":
+                        new_session_id = event.get("session_id", new_session_id)
+                        init_model = event.get("model") or init_model
+                        if not silent:
+                            save_session(new_session_id, model or "")
                             await ws.send_text(json.dumps({
-                                "type": "tool_use",
-                                "tool": block.get("name", ""),
-                                "input_preview": str(block.get("input", ""))[:200],
+                                "type": "session",
+                                "session_id": new_session_id,
+                                "model": event.get("model", ""),
                             }, ensure_ascii=False))
 
-                elif etype == "result":
-                    usage = event.get("usage", {})
-                    cache_read = usage.get("cache_read_input_tokens", 0)
-                    cache_create = usage.get("cache_creation_input_tokens", 0)
-                    input_tok = usage.get("input_tokens", 0)
-                    output_tok = usage.get("output_tokens", 0)
-                    total_input = cache_read + cache_create + input_tok
-                    cache_hit_pct = round(cache_read / total_input * 100) if total_input else 0
+                    elif etype == "assistant":
+                        msg = event.get("message", {})
+                        for block in msg.get("content", []):
+                            btype = block.get("type")
+                            if btype == "thinking":
+                                thinking_text += block.get("thinking", "")
+                                if not silent:
+                                    await ws.send_text(json.dumps({
+                                        "type": "thinking",
+                                        "text": block.get("thinking", ""),
+                                    }, ensure_ascii=False))
+                            elif btype == "text":
+                                text = block["text"]
+                                full_text += text
+                                if not silent:
+                                    await ws.send_text(json.dumps({
+                                        "type": "text",
+                                        "text": text,
+                                    }, ensure_ascii=False))
+                            elif btype == "tool_use" and not silent:
+                                await ws.send_text(json.dumps({
+                                    "type": "tool_use",
+                                    "tool": block.get("name", ""),
+                                    "input_preview": str(block.get("input", ""))[:200],
+                                }, ensure_ascii=False))
 
-                    result_meta = {
-                        "cost_usd": event.get("total_cost_usd"),
-                        "duration_ms": event.get("duration_ms"),
-                        "thinking": thinking_text if thinking_text else None,
-                        "usage": {
-                            "input_tokens": input_tok,
-                            "output_tokens": output_tok,
-                            "cache_read": cache_read,
-                            "cache_create": cache_create,
-                            "cache_hit_pct": cache_hit_pct,
-                        },
-                    }
+                    elif etype == "result":
+                        usage = event.get("usage", {})
+                        cache_read = usage.get("cache_read_input_tokens", 0)
+                        cache_create = usage.get("cache_creation_input_tokens", 0)
+                        input_tok = usage.get("input_tokens", 0)
+                        output_tok = usage.get("output_tokens", 0)
+                        total_input = cache_read + cache_create + input_tok
+                        cache_hit_pct = round(cache_read / total_input * 100) if total_input else 0
 
-                    if not silent:
-                        # 用量落库:只记用户可见的对话轮次(silent=True 的自动存档轮不计),
-                        # 保证「发一条消息 → 统计数字增长」的可验证链路清晰可归因。
-                        record_usage(new_session_id, init_model, result_meta["usage"])
+                        result_meta = {
+                            "cost_usd": event.get("total_cost_usd"),
+                            "duration_ms": event.get("duration_ms"),
+                            "thinking": thinking_text if thinking_text else None,
+                            "usage": {
+                                "input_tokens": input_tok,
+                                "output_tokens": output_tok,
+                                "cache_read": cache_read,
+                                "cache_create": cache_create,
+                                "cache_hit_pct": cache_hit_pct,
+                            },
+                        }
+
+                        if not silent:
+                            # 用量落库:只记用户可见的对话轮次(silent=True 的自动存档轮不计),
+                            # 保证「发一条消息 → 统计数字增长」的可验证链路清晰可归因。
+                            record_usage(new_session_id, init_model, result_meta["usage"])
+                            await ws.send_text(json.dumps({
+                                "type": "result",
+                                "text": full_text,
+                                "session_id": new_session_id,
+                                **result_meta,
+                            }, ensure_ascii=False))
+
+            except WebSocketDisconnect:
+                proc.kill()
+                raise
+
+            await proc.wait()
+
+            # 用户主动停止:proc 被 terminate/kill,stdout 提前 EOF,result 事件从未到达
+            # (result_meta 仍为空)。不当作进程崩溃上报,改发一帧带 stopped 的 result 结束帧,
+            # 保留已生成的 full_text;用量无从补录——result 没到就没有可靠数据(见 spec「不做什么」)。
+            if (not silent) and (ws in stopped_conns):
+                if not result_meta:
+                    try:
                         await ws.send_text(json.dumps({
                             "type": "result",
                             "text": full_text,
                             "session_id": new_session_id,
-                            **result_meta,
+                            "stopped": True,
                         }, ensure_ascii=False))
-
-        except WebSocketDisconnect:
-            proc.kill()
-            raise
-
-        await proc.wait()
-
-        if proc.returncode and proc.returncode != 0:
-            stderr_bytes = await proc.stderr.read()
-            err = stderr_bytes.decode("utf-8", errors="replace").strip()
-
-            if session_id and not _retry and "No conversation found" in err:
-                log.warning("session %s expired, retrying as new session", session_id)
-                if not silent:
-                    try:
-                        await ws.send_text('{"type":"session_expired"}')
                     except WebSocketDisconnect:
                         pass
-                loop = asyncio.get_event_loop()
-                history_msgs = await loop.run_in_executor(None, get_recent_messages, session_id, 30)
-                history_block = "\n".join(
-                    f"{'用户' if m['role'] == 'user' else 'assistant'}: {m['content'][:500]}"
-                    for m in history_msgs
-                )
-                injected_prompt = (
-                    (system_prompt or "")
-                    + ("\n\n# 历史对话（会话已重置，以下为上下文恢复）\n" + history_block if history_block else "")
-                ) or None
-                log.info("session_expired: injecting %d msgs history:\n%s", len(history_msgs), history_block[:1000])
-                return await run_claude(
-                    message, None, ws,
-                    system_prompt=injected_prompt,
-                    model=model,
-                    effort=effort,
-                    silent=silent,
-                    _retry=True,
-                )
+                # result_meta 非空 = 停止请求到达时该轮已正常收尾,正常 result 帧已发,无需再动作
+                return new_session_id, full_text, result_meta
 
-            log.error("claude exited %d: %s", proc.returncode, err[:300])
-            try:
-                await ws.send_text(json.dumps({
-                    "type": "error",
-                    "message": f"claude exited with code {proc.returncode}",
-                    "detail": err[:500],
-                }, ensure_ascii=False))
-            except WebSocketDisconnect:
-                pass
+            if proc.returncode and proc.returncode != 0:
+                stderr_bytes = await proc.stderr.read()
+                err = stderr_bytes.decode("utf-8", errors="replace").strip()
 
-        return new_session_id, full_text, result_meta
+                if session_id and not _retry and "No conversation found" in err:
+                    log.warning("session %s expired, retrying as new session", session_id)
+                    if not silent:
+                        try:
+                            await ws.send_text('{"type":"session_expired"}')
+                        except WebSocketDisconnect:
+                            pass
+                    loop = asyncio.get_event_loop()
+                    history_msgs = await loop.run_in_executor(None, get_recent_messages, session_id, 30)
+                    history_block = "\n".join(
+                        f"{'用户' if m['role'] == 'user' else 'assistant'}: {m['content'][:500]}"
+                        for m in history_msgs
+                    )
+                    injected_prompt = (
+                        (system_prompt or "")
+                        + ("\n\n# 历史对话（会话已重置，以下为上下文恢复）\n" + history_block if history_block else "")
+                    ) or None
+                    log.info("session_expired: injecting %d msgs history:\n%s", len(history_msgs), history_block[:1000])
+                    return await run_claude(
+                        message, None, ws,
+                        system_prompt=injected_prompt,
+                        model=model,
+                        effort=effort,
+                        silent=silent,
+                        _retry=True,
+                    )
+
+                log.error("claude exited %d: %s", proc.returncode, err[:300])
+                try:
+                    await ws.send_text(json.dumps({
+                        "type": "error",
+                        "message": f"claude exited with code {proc.returncode}",
+                        "detail": err[:500],
+                    }, ensure_ascii=False))
+                except WebSocketDisconnect:
+                    pass
+
+            return new_session_id, full_text, result_meta
+        finally:
+            # 用户可见轮次结束(正常/停止/异常)一律注销登记,避免残留导致下一轮误判停止或误杀
+            if not silent:
+                inflight_procs.pop(ws, None)
+                stopped_conns.discard(ws)
 
     # -----------------------------------------------------------------------
     # WebSocket — Claude Code 会话
@@ -818,9 +867,34 @@ def create_app(config) -> FastAPI:
             _auto_archive_loop(ws, lambda: session_id, lambda: model, lambda: effort)
         )
 
+        # 独立读协程:主循环在 run_claude 流式期间阻塞在 await,自己收不到 stop。
+        # 由它专职收帧——stop 帧即时终止在途子进程,其余帧原样入队交给主循环顺序消费,
+        # 保持 switch_session/forge/普通消息的既有处理顺序不变。断连时投哨兵唤醒主循环退出。
+        msg_queue: asyncio.Queue = asyncio.Queue()
+
+        async def _reader():
+            try:
+                while True:
+                    raw = await ws.receive_text()
+                    try:
+                        peek = json.loads(raw)
+                    except (json.JSONDecodeError, AttributeError):
+                        await msg_queue.put(raw)
+                        continue
+                    if isinstance(peek, dict) and peek.get("type") == "stop":
+                        await _stop_inflight(ws)  # 停止当前用户可见轮次;无在途轮则忽略
+                        continue
+                    await msg_queue.put(raw)
+            except WebSocketDisconnect:
+                await msg_queue.put(None)  # 哨兵:通知主循环连接已断
+
+        reader_task = asyncio.create_task(_reader())
+
         try:
             while True:
-                raw = await ws.receive_text()
+                raw = await msg_queue.get()
+                if raw is None:  # 断连哨兵
+                    break
 
                 voice_mode = False
                 mode = "chat"
@@ -955,6 +1029,12 @@ def create_app(config) -> FastAPI:
         except Exception as e:
             log.error("ws connection error (session=%s): %s", session_id, e)
         finally:
+            reader_task.cancel()
+            # 连接断开时回收可能仍在跑的可见轮子进程(run_claude 的 send 未触发 disconnect 的窗口)
+            proc = inflight_procs.pop(ws, None)
+            if proc is not None and proc.returncode is None:
+                proc.kill()
+            stopped_conns.discard(ws)
             archive_task.cancel()
             if session_id:
                 await _try_archive(session_id, model=model, effort=effort)
