@@ -604,6 +604,33 @@ def create_app(config) -> FastAPI:
         log.info("attachment saved: %s (%d bytes)", dest, len(data))
         return {"path": str(dest)}
 
+    def _validate_attachment_paths(paths) -> list[str]:
+        """只放行落在 upload_dir 内、真实存在的附件路径，挡任意路径注入。
+        客户端只应回传 POST /attachments 返回的 path；这里再做前缀校验兜底——
+        防止伪造 /etc/passwd 之类路径诱导 CC 用 Read 去读任意文件。"""
+        if not isinstance(paths, list):
+            return []
+        base = upload_dir.resolve()
+        valid: list[str] = []
+        for p in paths:
+            if not isinstance(p, str) or not p:
+                continue
+            try:
+                rp = Path(p).resolve()
+            except (OSError, ValueError):
+                continue
+            # 前缀校验：解析后的路径必须等于 upload_dir 或落在其下，且是真实文件
+            if (rp == base or base in rp.parents) and rp.is_file():
+                valid.append(str(rp))
+        return valid
+
+    def _build_attachment_note(valid_paths: list[str]) -> str:
+        """把校验过的附件路径拼成注入消息的固定格式段落，供 CC 用 Read 工具查看。"""
+        if not valid_paths:
+            return ""
+        lines = "\n".join(valid_paths)
+        return f"\n\n[用户上传了附件，请用 Read 工具查看以下文件]\n{lines}"
+
     # -----------------------------------------------------------------------
     # Claude Code subprocess wrapper
     # -----------------------------------------------------------------------
@@ -963,6 +990,7 @@ def create_app(config) -> FastAPI:
 
                 voice_mode = False
                 mode = "chat"
+                attachments: list = []
                 try:
                     payload = json.loads(raw)
                     text = payload.get("text", "").strip()
@@ -972,6 +1000,7 @@ def create_app(config) -> FastAPI:
                         effort = payload["effort"]
                     voice_mode = payload.get("voice_mode", False)
                     mode = payload.get("mode", "chat")
+                    attachments = payload.get("attachments") or []
                     # 切换会话
                     if "switch_session" in payload:
                         new_sid = payload["switch_session"]
@@ -1008,7 +1037,10 @@ def create_app(config) -> FastAPI:
                 except (json.JSONDecodeError, AttributeError):
                     text = raw.strip()
 
-                if not text:
+                # 只放行落在 upload_dir 内的真实附件；纯附件（无文字）也可发，
+                # 但文字与附件都空则跳过
+                valid_attachments = _validate_attachment_paths(attachments)
+                if not text and not valid_attachments:
                     continue
 
                 loop = asyncio.get_event_loop()
@@ -1058,6 +1090,11 @@ def create_app(config) -> FastAPI:
                 else:
                     enhanced = claude_text
 
+                # 附件注入：把校验过的路径以固定格式附进消息，CC 用自带 Read 工具查看
+                attach_note = _build_attachment_note(valid_attachments)
+                if attach_note:
+                    enhanced = enhanced + attach_note
+
                 await ws.send_text(json.dumps({
                     "type": "status",
                     "message": "thinking...",
@@ -1077,7 +1114,13 @@ def create_app(config) -> FastAPI:
                 # 保存消息（user 先，assistant 后，保证顺序正确）
                 if effective_sid:
                     user_meta = {"voice_mode": True} if voice_mode else None
-                    save_message(effective_sid, "user", text, user_meta)
+                    if valid_attachments:
+                        user_meta = user_meta or {}
+                        # 只存文件名（不含 upload_dir 路径），供历史回看识别带了哪些附件
+                        user_meta["attachments"] = [Path(p).name for p in valid_attachments]
+                    # 纯附件无文字：存占位符，避免历史里出现空气泡
+                    user_text_for_db = text if text else "[附件]"
+                    save_message(effective_sid, "user", user_text_for_db, user_meta)
                     if assistant_text:
                         assistant_meta = assistant_meta or {}
                         if recall_ctx:
