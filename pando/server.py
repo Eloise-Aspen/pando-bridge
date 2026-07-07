@@ -13,10 +13,11 @@ import shutil
 import socket
 import sqlite3
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -26,6 +27,19 @@ from .providers import get_provider
 log = logging.getLogger("pando")
 
 _PACKAGE_STATIC_DIR = Path(__file__).parent.parent / "static"
+
+# 附件上传约束（feat-attachment-upload）：单文件上限 + 扩展名白名单。
+# 存储位置必须落在 CLAUDE_CWD 内——Task 1 实测 CC headless 子进程用 Read 读 cwd 外
+# 路径会触发权限门控（无法交互批准），只有 cwd 内的文件才免批可读。
+_ATTACH_MAX_BYTES = 10 * 1024 * 1024  # 10MB
+_ATTACH_ALLOWED_EXT = {"png", "jpg", "jpeg", "webp", "gif", "pdf", "txt", "md"}
+_ATTACH_RETENTION_DAYS = 7  # 启动时清理超过此天数的旧附件
+
+# CC 子进程 stdout 按行读，asyncio StreamReader 默认单行上限 64KB。CC 读附件（尤其 PDF）
+# 时，tool_result 事件会把整份文件的 base64 作为**一整行**回吐——10MB 附件 base64≈13.3MB，
+# 远超 64KB 会抛 LimitOverrunError（"chunk exceed the limit"）导致整轮崩、无输出。故把行
+# 上限抬高到能容纳最大附件 base64 + JSON 包裹的量级。
+_STREAM_LINE_LIMIT = 32 * 1024 * 1024  # 32MB
 
 
 def _cfg(config, key: str, default=None):
@@ -155,6 +169,14 @@ def create_app(config) -> FastAPI:
 
     data_dir.mkdir(parents=True, exist_ok=True)
     chat_db = data_dir / "chat.db"
+
+    # 附件落盘目录。默认放 CLAUDE_CWD/.pando-uploads（Task 1 结论：必须在 cwd 内 CC 才
+    # 能免批 Read）；允许 config 用 UPLOAD_DIR 显式覆盖。claude_cwd 缺失时降级到包内
+    # 临时目录，仅为让 create_app 不炸——正常部署 claude_cwd 必配。
+    upload_dir = Path(
+        _cfg(config, "UPLOAD_DIR")
+        or (Path(claude_cwd) / ".pando-uploads" if claude_cwd else data_dir / ".pando-uploads")
+    )
 
     memory = get_provider(memory_service_url, timeout=memory_service_timeout)
 
@@ -441,6 +463,7 @@ def create_app(config) -> FastAPI:
     async def startup():
         _init_chat_db()
         log.info("chat DB ready: %s", chat_db)
+        _cleanup_old_attachments()
 
         config_dict = _config_as_dict()
         for plugin in plugin_instances:
@@ -540,6 +563,96 @@ def create_app(config) -> FastAPI:
         return cleaned
 
     # -----------------------------------------------------------------------
+    # 附件上传（feat-attachment-upload）
+    # -----------------------------------------------------------------------
+
+    def _cleanup_old_attachments():
+        """启动时清理超过保留天数的旧附件。目录不存在、单文件删除失败都静默跳过，
+        绝不阻断服务启动（清理属旁路维护，失败只记日志）。"""
+        cutoff = time.time() - _ATTACH_RETENTION_DAYS * 86400
+        removed = 0
+        try:
+            if not upload_dir.exists():
+                return
+            for p in upload_dir.rglob("*"):
+                if p.is_file() and p.stat().st_mtime < cutoff:
+                    try:
+                        p.unlink()
+                        removed += 1
+                    except OSError:
+                        pass
+            if removed:
+                log.info("attachment cleanup: removed %d file(s) older than %d days",
+                         removed, _ATTACH_RETENTION_DAYS)
+        except Exception as e:
+            log.warning("attachment cleanup skipped: %s", e)
+
+    @app.post("/attachments")
+    async def upload_attachment(file: UploadFile = File(...)):
+        """接收单个上传文件，落 upload_dir/YYYYMM/ 下 UUID 重命名后的文件，返回其绝对路径。
+        校验：扩展名白名单 + 大小上限。UUID 重命名 + 只保留白名单内的扩展名，杜绝用原始
+        文件名做路径注入。返回的 path 供聊天 WS 注入，Task 3 会再校验它确实落在 upload_dir 内。"""
+        # 扩展名白名单（大小写不敏感），不信任原始文件名的其余部分
+        ext = Path(file.filename or "").suffix.lstrip(".").lower()
+        if ext not in _ATTACH_ALLOWED_EXT:
+            raise HTTPException(status_code=400, detail=f"unsupported file type: .{ext or '?'}")
+        # 读到上限+1 字节即可判定是否超限，避免把超大文件整个读进内存
+        data = await file.read(_ATTACH_MAX_BYTES + 1)
+        if len(data) > _ATTACH_MAX_BYTES:
+            raise HTTPException(status_code=413, detail="file too large (max 10MB)")
+        if not data:
+            raise HTTPException(status_code=400, detail="empty file")
+        # 按月分目录 + UUID 文件名（只带白名单扩展名），杜绝路径穿越/覆盖
+        subdir = upload_dir / datetime.now().strftime("%Y%m")
+        subdir.mkdir(parents=True, exist_ok=True)
+        dest = subdir / f"{uuid.uuid4().hex}.{ext}"
+        dest.write_bytes(data)
+        log.info("attachment saved: %s (%d bytes)", dest, len(data))
+        return {"path": str(dest)}
+
+    def _validate_attachment_paths(paths) -> list[str]:
+        """只放行落在 upload_dir 内、真实存在的附件路径，挡任意路径注入。
+        客户端只应回传 POST /attachments 返回的 path；这里再做前缀校验兜底——
+        防止伪造 /etc/passwd 之类路径诱导 CC 用 Read 去读任意文件。"""
+        if not isinstance(paths, list):
+            return []
+        base = upload_dir.resolve()
+        valid: list[str] = []
+        for p in paths:
+            if not isinstance(p, str) or not p:
+                continue
+            try:
+                rp = Path(p).resolve()
+            except (OSError, ValueError):
+                continue
+            # 前缀校验：解析后的路径必须等于 upload_dir 或落在其下，且是真实文件
+            if (rp == base or base in rp.parents) and rp.is_file():
+                valid.append(str(rp))
+        return valid
+
+    def _build_attachment_note(valid_paths: list[str]) -> str:
+        """把校验过的附件路径拼成注入消息的固定格式段落，供 CC 用 Read 工具查看。
+        路径尽量转成「相对 claude_cwd」形式：CC 子进程 cwd 即 claude_cwd，相对路径由它
+        自行解析。这样跨平台一致，且规避一个跨边界陷阱——WSL 里跑 Windows 版 claude.exe
+        时，注入的挂载路径 /mnt/c/... 会被 Read 误转成 \\mnt\\c\\...（未映射成 C:\\...），
+        被判定在 workspace 外 → Read 触发权限门控读不了。落在 cwd 外的路径（自定义
+        UPLOAD_DIR）保持绝对，CC 本就读不到、由权限层拒绝，符合预期。"""
+        if not valid_paths:
+            return ""
+        base = Path(claude_cwd).resolve() if claude_cwd else None
+        display = []
+        for p in valid_paths:
+            shown = p
+            if base is not None:
+                try:
+                    shown = Path(p).resolve().relative_to(base).as_posix()
+                except ValueError:
+                    shown = p  # 不在 cwd 下，保持绝对
+            display.append(shown)
+        lines = "\n".join(display)
+        return f"\n\n[用户上传了附件，请用 Read 工具查看以下文件]\n{lines}"
+
+    # -----------------------------------------------------------------------
     # Claude Code subprocess wrapper
     # -----------------------------------------------------------------------
 
@@ -604,6 +717,8 @@ def create_app(config) -> FastAPI:
             stderr=asyncio.subprocess.PIPE,
             stdin=asyncio.subprocess.DEVNULL,
             cwd=claude_cwd,
+            # 抬高单行上限：CC 读附件时 tool_result 的 base64 会是超长单行（见常量说明）
+            limit=_STREAM_LINE_LIMIT,
         )
 
         # 只登记用户可见轮次:静默存档轮不给「停止」入口,避免和可见轮的 proc 互相覆盖
@@ -898,6 +1013,7 @@ def create_app(config) -> FastAPI:
 
                 voice_mode = False
                 mode = "chat"
+                attachments: list = []
                 try:
                     payload = json.loads(raw)
                     text = payload.get("text", "").strip()
@@ -907,6 +1023,7 @@ def create_app(config) -> FastAPI:
                         effort = payload["effort"]
                     voice_mode = payload.get("voice_mode", False)
                     mode = payload.get("mode", "chat")
+                    attachments = payload.get("attachments") or []
                     # 切换会话
                     if "switch_session" in payload:
                         new_sid = payload["switch_session"]
@@ -943,7 +1060,10 @@ def create_app(config) -> FastAPI:
                 except (json.JSONDecodeError, AttributeError):
                     text = raw.strip()
 
-                if not text:
+                # 只放行落在 upload_dir 内的真实附件；纯附件（无文字）也可发，
+                # 但文字与附件都空则跳过
+                valid_attachments = _validate_attachment_paths(attachments)
+                if not text and not valid_attachments:
                     continue
 
                 loop = asyncio.get_event_loop()
@@ -993,6 +1113,11 @@ def create_app(config) -> FastAPI:
                 else:
                     enhanced = claude_text
 
+                # 附件注入：把校验过的路径以固定格式附进消息，CC 用自带 Read 工具查看
+                attach_note = _build_attachment_note(valid_attachments)
+                if attach_note:
+                    enhanced = enhanced + attach_note
+
                 await ws.send_text(json.dumps({
                     "type": "status",
                     "message": "thinking...",
@@ -1012,7 +1137,13 @@ def create_app(config) -> FastAPI:
                 # 保存消息（user 先，assistant 后，保证顺序正确）
                 if effective_sid:
                     user_meta = {"voice_mode": True} if voice_mode else None
-                    save_message(effective_sid, "user", text, user_meta)
+                    if valid_attachments:
+                        user_meta = user_meta or {}
+                        # 只存文件名（不含 upload_dir 路径），供历史回看识别带了哪些附件
+                        user_meta["attachments"] = [Path(p).name for p in valid_attachments]
+                    # 纯附件无文字：存占位符，避免历史里出现空气泡
+                    user_text_for_db = text if text else "[附件]"
+                    save_message(effective_sid, "user", user_text_for_db, user_meta)
                     if assistant_text:
                         assistant_meta = assistant_meta or {}
                         if recall_ctx:

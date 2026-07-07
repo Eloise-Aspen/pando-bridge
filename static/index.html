@@ -193,6 +193,38 @@
   /* 流式期间发送键变停止键:方块图标 + 中性表面色,与「发送」的强调色区分 */
   .send-btn.stop { background: var(--surface); color: var(--text); border: 1px solid var(--border); }
 
+  /* ---- Attachments ---- */
+  .file-input-hidden { display: none; }
+  .attach-btn { width: 36px; height: 36px; flex-shrink: 0; border-radius: 50%; border: none; cursor: pointer;
+                background: none; color: var(--text3); font-size: 18px; align-self: flex-end;
+                display: flex; align-items: center; justify-content: center; }
+  .attach-btn:hover { color: var(--text); }
+  .attach-btn:disabled { color: var(--text4); cursor: default; }
+  .attach-chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 4px 8px; }
+  .attach-chips:empty { display: none; }
+  .attach-chip { display: inline-flex; align-items: center; gap: 6px; max-width: 220px;
+                 background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+                 padding: 5px 9px; font-size: 12px; font-family: var(--font-cn); color: var(--text2); }
+  .attach-chip .chip-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .attach-chip.uploading { opacity: 0.65; }
+  .attach-chip.error { border-color: var(--red); color: var(--red); }
+  .attach-chip .chip-x { cursor: pointer; color: var(--text4); display: inline-flex; flex-shrink: 0; }
+  .attach-chip .chip-x:hover { color: var(--text); }
+  .attach-chip .chip-spin { width: 12px; height: 12px; flex-shrink: 0; border: 2px solid var(--text4);
+                            border-top-color: transparent; border-radius: 50%; animation: chipspin .7s linear infinite; }
+  @keyframes chipspin { to { transform: rotate(360deg); } }
+  /* 用户气泡上方的附件小标(发送后回显) */
+  .msg-attachments { display: flex; flex-wrap: wrap; gap: 4px; justify-content: flex-end; margin-bottom: 4px; }
+  .msg-attachments .att { display: inline-flex; align-items: center; gap: 4px; font-size: 11px;
+                          color: var(--text3); background: var(--surface); border-radius: 8px; padding: 3px 7px; }
+
+  /* ---- Toast ---- */
+  .toast { position: fixed; left: 50%; bottom: calc(84px + var(--safe-bottom)); transform: translateX(-50%);
+           background: var(--text); color: var(--bg); font-size: 13px; font-family: var(--font-cn);
+           padding: 10px 16px; border-radius: 12px; z-index: 200; max-width: 82%; text-align: center;
+           opacity: 0; transition: opacity .2s; pointer-events: none; box-shadow: 0 4px 16px rgba(0,0,0,0.3); }
+  .toast.show { opacity: 1; }
+
   /* ---- Thinking sheet ---- */
   .sheet-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 110;
                    opacity: 0; pointer-events: none; transition: opacity .2s; }
@@ -391,7 +423,13 @@
         </div>
       </span>
     </div>
+    <div class="attach-chips" id="attach-chips"></div>
     <div class="input-bar">
+      <!-- 无 capture:手机文件选择器天然含相册,不强制拍照(见 spec 不做什么) -->
+      <input type="file" id="file-input" class="file-input-hidden" multiple
+        accept=".png,.jpg,.jpeg,.webp,.gif,.pdf,.txt,.md,image/png,image/jpeg,image/webp,image/gif,application/pdf,text/plain"
+        onchange="onFilesSelected(event)">
+      <button class="attach-btn" id="attach-btn" onclick="onAttachClick()" data-i18n-aria="ariaAttach" aria-label="添加附件"><i class="ti ti-paperclip"></i></button>
       <textarea id="input" rows="1" placeholder="在这里输入…" data-i18n-ph="inputPlaceholder"
         onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();send();}"></textarea>
       <button class="send-btn" id="btn" onclick="onSendBtn()" data-i18n-aria="ariaSend" aria-label="发送"><i class="ti ti-arrow-up"></i></button>
@@ -469,6 +507,8 @@
 /* ===== State ===== */
 let ws, busy = false, currentAssistantRow = null, assistantText = '';
 let currentSessionId = localStorage.getItem('currentSessionId') || null;
+// 已选附件:每项 {id, name, path|null, uploading, error};path 为 POST /attachments 返回的落盘路径
+let pendingAtts = [], attSeq = 0;
 let typingEl = null, lastMsgTime = null;
 let ASSISTANT_NAME = 'Claude', USER_NICKNAME = 'User';
 
@@ -508,6 +548,9 @@ const I18N = {
     obNameTitle: '互相认识一下',
     obAskUser: '我该怎么称呼你?', obAskAsst: '你想怎么称呼我?', obStart: '开始',
     modelDefault: '默认', modelCustom: '自定义…',
+    ariaAttach: '添加附件', ariaRemoveAttach: '移除附件',
+    attachTooLarge: n => `${n} 超过 10MB,未添加`, attachBadType: n => `${n} 类型不支持`,
+    attachUploadFailed: n => `${n} 上传失败`,
     retry: '重新发送', copy: '复制', speak: '朗读',
     loading: '加载中…', loadFailed: '加载失败',
     memConnFail: '记忆服务连接失败', memConnFailSub: '聊天不受影响,可稍后重试',
@@ -551,6 +594,9 @@ const I18N = {
     obNameTitle: 'Let\'s get acquainted',
     obAskUser: 'What should I call you?', obAskAsst: 'What would you like to call me?', obStart: 'Start',
     modelDefault: 'Default', modelCustom: 'Custom…',
+    ariaAttach: 'Add attachment', ariaRemoveAttach: 'Remove attachment',
+    attachTooLarge: n => `${n} exceeds 10MB, not added`, attachBadType: n => `${n}: unsupported type`,
+    attachUploadFailed: n => `${n} upload failed`,
     retry: 'Resend', copy: 'Copy', speak: 'Read aloud',
     loading: 'Loading…', loadFailed: 'Failed to load',
     memConnFail: 'Memory service unreachable', memConnFailSub: 'Chat is unaffected; try again later',
@@ -710,7 +756,7 @@ function maybeTimeDivider() {
 }
 
 /* ===== Messages ===== */
-function addMsg(cls, text) {
+function addMsg(cls, text, attachments) {
   showMessages();
   const row = document.createElement('div');
   row.className = 'msg-row ' + cls;
@@ -722,17 +768,32 @@ function addMsg(cls, text) {
       row.appendChild(b);
     });
   } else if (cls === 'user') {
-    const wrap = document.createElement('div');
-    wrap.className = 'msg-user-wrap';
-    const bubble = document.createElement('div');
-    bubble.className = 'msg-bubble user';
-    bubble.textContent = text;
-    const btn = document.createElement('button');
-    btn.className = 'retry-btn'; btn.title = t('retry');
-    btn.innerHTML = '<i class="ti ti-refresh"></i>';
-    btn.onclick = () => retryMsg(text);
-    wrap.appendChild(bubble); wrap.appendChild(btn);
-    row.appendChild(wrap);
+    // 附件小标(发送后回显在气泡上方,右对齐)
+    if (attachments && attachments.length) {
+      const at = document.createElement('div');
+      at.className = 'msg-attachments';
+      attachments.forEach(name => {
+        const s = document.createElement('span');
+        s.className = 'att';
+        s.innerHTML = '<i class="ti ti-paperclip"></i>' + escHtml(name);
+        at.appendChild(s);
+      });
+      row.appendChild(at);
+    }
+    // 纯附件(无文字)不渲染空气泡,只保留上方附件小标
+    if (text) {
+      const wrap = document.createElement('div');
+      wrap.className = 'msg-user-wrap';
+      const bubble = document.createElement('div');
+      bubble.className = 'msg-bubble user';
+      bubble.textContent = text;
+      const btn = document.createElement('button');
+      btn.className = 'retry-btn'; btn.title = t('retry');
+      btn.innerHTML = '<i class="ti ti-refresh"></i>';
+      btn.onclick = () => retryMsg(text);
+      wrap.appendChild(bubble); wrap.appendChild(btn);
+      row.appendChild(wrap);
+    }
   } else {
     const b = document.createElement('div');
     b.className = 'msg-bubble ' + cls;
@@ -914,6 +975,81 @@ document.addEventListener('click', e => {
   if (!e.target.closest('.model-slot')) $('model-popup').style.display = 'none';
 });
 
+/* ===== Toast ===== */
+// 轻量瞬时提示(附件报错等)。自建元素、2.6s 后淡出移除,不依赖任何库。
+function toast(msg) {
+  const el = document.createElement('div');
+  el.className = 'toast';
+  el.textContent = msg;
+  document.body.appendChild(el);
+  requestAnimationFrame(() => el.classList.add('show'));
+  setTimeout(() => { el.classList.remove('show'); setTimeout(() => el.remove(), 250); }, 2600);
+}
+
+/* ===== Attachments ===== */
+// 前端与服务端保持一致的白名单/大小上限(服务端仍会 4xx 兜底,见 pando/server.py)
+const ATT_MAX_BYTES = 10 * 1024 * 1024;
+const ATT_ALLOWED_EXT = ['png', 'jpg', 'jpeg', 'webp', 'gif', 'pdf', 'txt', 'md'];
+const extOf = name => { const i = name.lastIndexOf('.'); return i >= 0 ? name.slice(i + 1).toLowerCase() : ''; };
+
+function onAttachClick() { $('file-input').click(); }
+
+function onFilesSelected(e) {
+  const files = Array.from(e.target.files || []);
+  e.target.value = '';  // 清空以便再次选中同一文件也能触发 change
+  files.forEach(uploadAttachment);
+}
+
+async function uploadAttachment(file) {
+  // 客户端前置校验:类型/大小任一不过 → toast 报错,不发请求(完成标准 3)
+  if (!ATT_ALLOWED_EXT.includes(extOf(file.name))) { toast(t('attachBadType')(file.name)); return; }
+  if (file.size > ATT_MAX_BYTES) { toast(t('attachTooLarge')(file.name)); return; }
+  const att = { id: ++attSeq, name: file.name, path: null, uploading: true, error: false };
+  pendingAtts.push(att);
+  renderChips();
+  try {
+    const fd = new FormData();
+    fd.append('file', file);
+    const resp = await fetch('/attachments', { method: 'POST', body: fd });
+    if (!resp.ok) throw new Error('http ' + resp.status);
+    att.path = (await resp.json()).path;
+    att.uploading = false;
+  } catch (err) {
+    console.error('attachment upload failed', err);
+    att.uploading = false; att.error = true;
+    toast(t('attachUploadFailed')(file.name));
+    setTimeout(() => removeAttachment(att.id), 1800);  // 失败 chip 短暂展示后撤除
+  }
+  renderChips();
+}
+
+function removeAttachment(id) {
+  pendingAtts = pendingAtts.filter(a => a.id !== id);
+  renderChips();
+}
+
+function clearAttachments() { pendingAtts = []; renderChips(); }
+
+function renderChips() {
+  const box = $('attach-chips');
+  box.innerHTML = '';
+  pendingAtts.forEach(a => {
+    const chip = document.createElement('div');
+    chip.className = 'attach-chip' + (a.uploading ? ' uploading' : '') + (a.error ? ' error' : '');
+    const lead = a.uploading ? '<span class="chip-spin"></span>' : '<i class="ti ti-paperclip"></i>';
+    chip.innerHTML = lead + `<span class="chip-name">${escHtml(a.name)}</span>`;
+    if (!a.uploading) {
+      const x = document.createElement('span');
+      x.className = 'chip-x'; x.setAttribute('role', 'button');
+      x.setAttribute('aria-label', t('ariaRemoveAttach'));
+      x.innerHTML = '<i class="ti ti-x"></i>';
+      x.onclick = () => removeAttachment(a.id);
+      chip.appendChild(x);
+    }
+    box.appendChild(chip);
+  });
+}
+
 /* ===== Send ===== */
 // 发送键双职:空闲=发送,流式中=停止(与 setBusy 的图标切换配对)
 function onSendBtn() { if (busy) stopStreaming(); else send(); }
@@ -927,13 +1063,21 @@ function stopStreaming() {
 
 function send() {
   const text = $input.value.trim();
-  if (!text || busy || !ws || ws.readyState !== 1) return;
+  if (busy || !ws || ws.readyState !== 1) return;
+  const ready = pendingAtts.filter(a => a.path);            // 已拿到 path 的附件
+  if (pendingAtts.some(a => a.uploading)) return;           // 还有附件在上传:先等
+  if (!text && ready.length === 0) return;                  // 文字与附件都空
   maybeTimeDivider();
-  addMsg('user', text);
+  const attNames = ready.map(a => a.name);
+  const attPaths = ready.map(a => a.path);
+  addMsg('user', text, attNames);
   $input.value = '';
   $input.style.height = 'auto';
   currentAssistantRow = null; assistantText = '';
-  ws.send(JSON.stringify({ text, model: currentModel || undefined }));
+  const payload = { text, model: currentModel || undefined };
+  if (attPaths.length) payload.attachments = attPaths;
+  ws.send(JSON.stringify(payload));
+  clearAttachments();
   setBusy(true);
   showTyping();
 }
