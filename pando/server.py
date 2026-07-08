@@ -264,6 +264,9 @@ def create_app(config) -> FastAPI:
         str(Path(__file__).parent / "permission_mcp.py"),
     )
     permission_timeout = float(_cfg(config, "PERMISSION_TIMEOUT", 120.0))
+    # 桥用自签证书跑 HTTPS 时，回调走 https 回环，MCP 端需跳过证书校验（见 permission_mcp
+    # 的 INSECURE_TLS）。仅回环 + token 关联场景，默认关。
+    permission_insecure_tls = bool(_cfg(config, "PERMISSION_INSECURE_TLS", False))
     # MCP 服务回调 bridge 的地址。默认 127.0.0.1:<PORT>；WSL+Windows-claude 场景由 Windows 侧
     # 经 localhost 转发访问 WSL 服务（待真机复验连通性）。可用 PERMISSION_CALLBACK_URL 显式覆盖。
     _perm_port = _cfg(config, "PORT") or os.environ.get("BRIDGE_PORT") or 8765
@@ -854,6 +857,8 @@ def create_app(config) -> FastAPI:
                         "PANDO_PERMISSION_TOKEN": tok,
                         # 本端 HTTP 等待上限略大于 bridge 120s，让 bridge 的默拒先触发
                         "PANDO_PERMISSION_HTTP_TIMEOUT": str(permission_timeout + 30),
+                        # 自签 HTTPS 回环回调时跳过证书校验（默认不注入=校验）
+                        **({"PANDO_PERMISSION_INSECURE_TLS": "1"} if permission_insecure_tls else {}),
                     },
                 }}}, ensure_ascii=False)
                 # 顺序要紧：--mcp-config 是可变参数（<configs...>），会贪婪吞掉后面所有非选项
