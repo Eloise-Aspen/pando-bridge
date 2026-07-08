@@ -177,6 +177,37 @@ Tunnel 必须前置访问策略。
 
 ---
 
+## 权限确认透传（可选，默认关闭）
+
+`--print` 无头模式没有终端弹权限确认，Claude Code 需要门控工具（写文件、运行 Bash 等）时
+只能默认拒绝。开启本功能后，授权请求会透传到前端：CC 请求 → 手机弹 modal → 你点允许/拒绝
+→ 原路返回。
+
+- **默认关闭**：不设 `PERMISSION_PASSTHROUGH` 时行为与现状完全一致，存量用户零感知。
+- **默认拒绝哲学**：超时（默认 120 秒）、连接断开、桥连不上、任何异常——**一律拒绝**，绝不
+  因为出错就放行。安全优先。
+- **机制**：基于 CC 官方的 `--permission-prompt-tool` + `--mcp-config`。桥自带一个零依赖的
+  stdio MCP 小服务（`pando/permission_mcp.py`，由 CC 拉起），它把授权请求回调桥的内部端点
+  `POST /internal/permission`（仅绑 `127.0.0.1`），桥经 WebSocket 推给前端，等你决策后原路返回。
+- **本功能只传授权决策**，不碰凭证/账号——常规红线照旧（token 不出服务端）。
+
+开启方式（经 `create_app(config)` 传入，或你的 `run.py` 从环境读入）：
+
+| 配置项 | 说明 | 默认 |
+|---|---|---|
+| `PERMISSION_PASSTHROUGH` | 总开关 | `false` |
+| `PERMISSION_TIMEOUT` | 无操作多少秒后自动拒绝 | `120` |
+| `PERMISSION_MCP_PYTHON` | 运行 MCP 小服务的解释器 | `python` |
+| `PERMISSION_MCP_SCRIPT` | MCP 小服务脚本路径 | 包内 `permission_mcp.py` |
+| `PERMISSION_CALLBACK_URL` | MCP 回调桥的地址 | `http://127.0.0.1:<PORT>/internal/permission` |
+
+> **跨平台注意（WSL + Windows claude.exe）**：若桥跑在 WSL、`CLAUDE_EXE` 指向 Windows 版
+> `claude.exe`，则 CC 拉起的 MCP 小服务也会是 Windows 进程——`PERMISSION_MCP_PYTHON` /
+> `PERMISSION_MCP_SCRIPT` 须指向 **Windows 侧**可执行的解释器与脚本路径，回调走 `localhost`
+> 转发访问 WSL 的桥。
+
+---
+
 ## 记忆契约
 
 内核从不实现记忆——它只跟一个满足 `MemoryProvider` 协议（`pando/memory_provider.py`）的
@@ -461,6 +492,42 @@ Pando ships **no authentication** — anyone who can reach the port can drive th
 `claude` CLI inside your `CLAUDE_CWD`. Expose it only through your tailnet or a
 trusted private network. **Never** port-forward it or map it directly to the public
 internet; if you use Cloudflare Tunnel, put an access policy in front.
+
+---
+
+## Permission passthrough (optional, off by default)
+
+In `--print` headless mode there is no terminal to show a permission prompt, so Claude
+Code auto-denies any gated tool (writing files, running Bash, …). With this feature on,
+the permission request is passed through to the frontend: CC asks → a modal pops on your
+phone → you allow/deny → the decision travels back the same path.
+
+- **Off by default**: without `PERMISSION_PASSTHROUGH` set, behavior is identical to
+  before — existing users notice nothing.
+- **Default-deny philosophy**: timeout (120s by default), disconnect, bridge unreachable,
+  any error whatsoever → **deny**. It never allows on failure. Safety first.
+- **Mechanism**: built on CC's official `--permission-prompt-tool` + `--mcp-config`. The
+  bridge ships a zero-dependency stdio MCP micro-service (`pando/permission_mcp.py`,
+  launched by CC) that calls back the bridge's internal `POST /internal/permission`
+  (bound to `127.0.0.1` only); the bridge pushes it over WebSocket and relays your decision back.
+- **This feature only carries the authorization decision** — it never touches credentials
+  or accounts (tokens never leave the server, as always).
+
+Enable it via `create_app(config)` (or read from env in your `run.py`):
+
+| Config | Meaning | Default |
+|---|---|---|
+| `PERMISSION_PASSTHROUGH` | Master switch | `false` |
+| `PERMISSION_TIMEOUT` | Seconds of inactivity before auto-deny | `120` |
+| `PERMISSION_MCP_PYTHON` | Interpreter that runs the MCP micro-service | `python` |
+| `PERMISSION_MCP_SCRIPT` | Path to the MCP micro-service script | in-package `permission_mcp.py` |
+| `PERMISSION_CALLBACK_URL` | Where the MCP service calls the bridge back | `http://127.0.0.1:<PORT>/internal/permission` |
+
+> **Cross-platform note (WSL + Windows claude.exe)**: if the bridge runs in WSL and
+> `CLAUDE_EXE` points at Windows `claude.exe`, the MCP micro-service CC launches is also a
+> Windows process — so `PERMISSION_MCP_PYTHON` / `PERMISSION_MCP_SCRIPT` must point at a
+> **Windows-side** interpreter and script path, with the callback reaching the WSL bridge
+> over `localhost` forwarding.
 
 ---
 

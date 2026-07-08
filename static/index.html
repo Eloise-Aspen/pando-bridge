@@ -239,6 +239,37 @@
   .sheet-body { padding: 16px 20px calc(20px + var(--safe-bottom)); overflow-y: auto;
                 white-space: pre-wrap; font-size: 13px; line-height: 1.7; color: var(--text2); }
 
+  /* ---- 权限确认 modal(feat-permission-passthrough)---- */
+  /* 居中卡片,z-index 高于 sheet;CC 请求门控工具时弹出,允许/拒绝原路返回。多请求排队展示。 */
+  .perm-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.66); z-index: 130;
+                  display: flex; align-items: center; justify-content: center; padding: 20px;
+                  opacity: 0; pointer-events: none; transition: opacity .2s; }
+  .perm-overlay.open { opacity: 1; pointer-events: auto; }
+  .perm-modal { background: var(--bg); border: 1px solid var(--border-light); border-radius: 18px;
+                width: 100%; max-width: 420px; padding: 20px; display: flex; flex-direction: column;
+                gap: 14px; box-shadow: 0 12px 40px rgba(0,0,0,0.45);
+                transform: translateY(10px) scale(0.98); transition: transform .2s ease; }
+  .perm-overlay.open .perm-modal { transform: none; }
+  .perm-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .perm-title { font-family: var(--font-cn); font-size: 16px; font-weight: 400; color: var(--text);
+                display: flex; align-items: center; gap: 8px; }
+  .perm-title i { color: var(--accent); }
+  .perm-queue { font-size: 12px; color: var(--text3); font-family: var(--font-cn); white-space: nowrap; }
+  .perm-tool { font-family: var(--font-cn); font-size: 13px; color: var(--text2); }
+  .perm-tool b { color: var(--accent); font-weight: 500; }
+  .perm-params { background: rgba(0,0,0,0.25); border: 1px solid var(--border); border-radius: 10px;
+                 padding: 10px 12px; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px;
+                 line-height: 1.6; color: var(--text2); max-height: 40vh; overflow: auto;
+                 white-space: pre-wrap; word-break: break-word; }
+  .perm-countdown { font-size: 11px; color: var(--text3); font-family: var(--font-cn); text-align: center; }
+  .perm-actions { display: flex; gap: 10px; margin-top: 2px; }
+  /* 44px 命中区(移动端触控友好) */
+  .perm-btn { flex: 1; min-height: 44px; border-radius: 12px; font-size: 15px; cursor: pointer;
+              font-family: var(--font-cn); border: 1px solid transparent; transition: filter .15s; }
+  .perm-btn:active { filter: brightness(1.2); }
+  .perm-btn-deny { background: transparent; color: var(--red); border-color: rgba(232,114,114,0.4); }
+  .perm-btn-allow { background: var(--accent); color: #fff; }
+
   /* ---- 子页面(记忆 / 状态 / 设置)---- */
   /* 全屏推入 + 左上 ← 返回聊天。移动端从右侧滑入,桌面常驻侧边栏时即时切换 */
   .view { flex: 1; overflow-y: auto; display: none; flex-direction: column;
@@ -477,6 +508,23 @@
   <div class="sheet-body" id="sheet-body"></div>
 </div>
 
+<!-- 权限确认 modal(CC 请求门控工具授权时弹出;允许/拒绝原路返回,超时默认拒绝) -->
+<div class="perm-overlay" id="perm-overlay">
+  <div class="perm-modal" role="dialog" aria-modal="true" aria-labelledby="perm-title">
+    <div class="perm-head">
+      <span class="perm-title" id="perm-title"><i class="ti ti-shield-lock"></i><span data-i18n="permTitle">权限确认</span></span>
+      <span class="perm-queue" id="perm-queue"></span>
+    </div>
+    <div class="perm-tool" id="perm-tool"></div>
+    <div class="perm-params" id="perm-params"></div>
+    <div class="perm-countdown" id="perm-countdown"></div>
+    <div class="perm-actions">
+      <button class="perm-btn perm-btn-deny" id="perm-deny" data-i18n="permDeny" onclick="respondPermission(false)">拒绝</button>
+      <button class="perm-btn perm-btn-allow" id="perm-allow" data-i18n="permAllow" onclick="respondPermission(true)">允许</button>
+    </div>
+  </div>
+</div>
+
 <!-- 首航流程(零会话首启:自检 → 双向取名 → 进聊天;可跳过) -->
 <div class="onboarding" id="onboarding" hidden>
   <div class="ob-card">
@@ -530,6 +578,10 @@ const I18N = {
     online: '在线', offline: '离线', inputPlaceholder: '在这里输入…',
     ariaMenu: '菜单', ariaSend: '发送', ariaStop: '停止', ariaBack: '返回聊天', sheetThinking: 'Thinking',
     stopped: '已停止',
+    permTitle: '权限确认', permAllow: '允许', permDeny: '拒绝',
+    permToolPrefix: 'Claude 想使用工具',
+    permQueueFmt: (i, n) => `第 ${i}/${n} 个`,
+    permCountdownFmt: s => `${s} 秒后自动拒绝`,
     navMemory: '记忆', navStatus: '状态', navSettings: '设置',
     titleMemory: '记忆', titleStatus: '状态', titleSettings: '设置',
     scConnection: '连接', scMemory: '记忆', scModel: '模型', scEmotion: '情感',
@@ -576,6 +628,10 @@ const I18N = {
     online: 'online', offline: 'offline', inputPlaceholder: 'Type a message…',
     ariaMenu: 'Menu', ariaSend: 'Send', ariaStop: 'Stop', ariaBack: 'Back to chat', sheetThinking: 'Thinking',
     stopped: 'Stopped',
+    permTitle: 'Permission', permAllow: 'Allow', permDeny: 'Deny',
+    permToolPrefix: 'Claude wants to use',
+    permQueueFmt: (i, n) => `${i} of ${n}`,
+    permCountdownFmt: s => `auto-deny in ${s}s`,
     navMemory: 'Memory', navStatus: 'Status', navSettings: 'Settings',
     titleMemory: 'Memory', titleStatus: 'Status', titleSettings: 'Settings',
     scConnection: 'Connection', scMemory: 'Memory', scModel: 'Model', scEmotion: 'Emotion',
@@ -1104,7 +1160,7 @@ function connect() {
     setStatus(true);
     if (currentSessionId) ws.send(JSON.stringify({ switch_session: currentSessionId }));
   };
-  ws.onclose = () => { setStatus(false); setBusy(false); setTimeout(connect, 2000); };
+  ws.onclose = () => { setStatus(false); setBusy(false); clearPendingPermissions(); setTimeout(connect, 2000); };
   ws.onerror = () => setStatus(false);
 
   ws.onmessage = ev => {
@@ -1149,8 +1205,78 @@ function connect() {
         addMsg('system', '⚠ ' + (m.message || 'error') + (m.detail ? '\n' + m.detail : ''));
         setBusy(false);
         break;
+      case 'permission_request':
+        // CC 请求门控工具授权:入队 → 弹 modal → 用户允许/拒绝原路返回(见 pando/server.py)
+        enqueuePermission(m);
+        break;
     }
   };
+}
+
+/* ===== 权限确认 modal(feat-permission-passthrough)=====
+   多个请求排队,一次展示一个;超时(与服务端 120s 对齐)自动拒绝;断连清队。 */
+const permQueue = [];
+let permTimer = null, permCountdownTimer = null;
+const PERM_TIMEOUT_SEC = 120;
+
+function enqueuePermission(req) {
+  permQueue.push(req);
+  if (permQueue.length === 1) showNextPermission();  // 队首直接展示
+  else updatePermQueueBadge();                        // 已有 modal 在展示,仅更新排队角标
+}
+
+function showNextPermission() {
+  clearPermTimers();
+  const req = permQueue[0];
+  if (!req) { hidePermModal(); return; }
+  // 工具名(textContent 逐段设置,杜绝 HTML 注入)
+  const toolEl = $('perm-tool');
+  toolEl.textContent = t('permToolPrefix') + ' ';
+  const b = document.createElement('b'); b.textContent = req.tool || '?'; toolEl.appendChild(b);
+  // 参数摘要:JSON 缩进 + 截断展示
+  let params;
+  try { params = JSON.stringify(req.input ?? {}, null, 2); } catch { params = String(req.input); }
+  if (params.length > 1400) params = params.slice(0, 1400) + '\n… (truncated)';
+  $('perm-params').textContent = params;
+  updatePermQueueBadge();
+  // 倒计时 + 到点默拒(与服务端超时对齐;服务端也会 120s 默拒并清理,双保险)
+  let left = PERM_TIMEOUT_SEC;
+  $('perm-countdown').textContent = t('permCountdownFmt')(left);
+  permCountdownTimer = setInterval(() => {
+    left -= 1;
+    $('perm-countdown').textContent = t('permCountdownFmt')(Math.max(0, left));
+    if (left <= 0) clearInterval(permCountdownTimer);
+  }, 1000);
+  permTimer = setTimeout(() => respondPermission(false), PERM_TIMEOUT_SEC * 1000);
+  $('perm-overlay').classList.add('open');
+}
+
+function updatePermQueueBadge() {
+  const n = permQueue.length;
+  $('perm-queue').textContent = n > 1 ? t('permQueueFmt')(1, n) : '';
+}
+
+function respondPermission(allow) {
+  const req = permQueue.shift();
+  if (req && ws && ws.readyState === 1) {
+    ws.send(JSON.stringify({ type: 'permission_response', request_id: req.request_id, allow: !!allow }));
+  }
+  clearPermTimers();
+  if (permQueue.length) showNextPermission();  // 展示下一个排队请求
+  else hidePermModal();
+}
+
+function clearPendingPermissions() {
+  // 断连:挂起请求服务端已全部默拒,前端清队收起 modal,避免残留误点
+  permQueue.length = 0;
+  clearPermTimers();
+  hidePermModal();
+}
+
+function hidePermModal() { $('perm-overlay').classList.remove('open'); }
+function clearPermTimers() {
+  if (permTimer) { clearTimeout(permTimer); permTimer = null; }
+  if (permCountdownTimer) { clearInterval(permCountdownTimer); permCountdownTimer = null; }
 }
 
 function addThinkingChipRecall(text) {
