@@ -28,7 +28,6 @@ import json
 import os
 import sys
 import urllib.request
-import urllib.error
 
 # ---- 配置（进程启动即读一次，缺失不致命，落到默拒路径）-----------------------------
 CALLBACK_URL = os.environ.get("PANDO_PERMISSION_CALLBACK_URL", "")
@@ -85,8 +84,9 @@ def request_decision(tool_name: str, tool_input: dict, tool_use_id: str) -> dict
         with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
             raw = resp.read().decode("utf-8")
         data = json.loads(raw)
-    except urllib.error.URLError:
-        # 连不上 / 超时（bridge 挂了或本端等超了）——默拒
+    except OSError:
+        # 连不上 / 超时 / 连接中途被重置（bridge 挂了、本端等超了、读一半断了）——默拒。
+        # URLError 是 OSError 子类；ConnectionResetError/socket.timeout 亦然，一网打尽。
         return _deny("permission request failed to reach bridge")
     except (ValueError, json.JSONDecodeError):
         return _deny("permission bridge returned malformed response")

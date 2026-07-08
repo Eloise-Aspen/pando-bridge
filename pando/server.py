@@ -17,7 +17,7 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -40,6 +40,89 @@ _ATTACH_RETENTION_DAYS = 7  # 启动时清理超过此天数的旧附件
 # 远超 64KB 会抛 LimitOverrunError（"chunk exceed the limit"）导致整轮崩、无输出。故把行
 # 上限抬高到能容纳最大附件 base64 + JSON 包裹的量级。
 _STREAM_LINE_LIMIT = 32 * 1024 * 1024  # 32MB
+
+
+class PermissionBroker:
+    """权限透传的挂起队列 + token 路由（feat-permission-passthrough）。
+
+    与 WS/HTTP 传输解耦，只管「一次授权请求 → 阻塞等决策 → 返回 allow/deny」的核心状态机，
+    便于单测。所有异常路径（token 失效 / 推送失败 / 超时 / 断连）一律默认拒绝——安全优先。
+
+    - `register/unregister`：每个 WS 连接一个不透明 token，注入 MCP 服务 env，回调时反查连接。
+    - `request`：HTTP 回调进来时调用，登记 Future 并阻塞等前端决策；`send_request` 由调用方注入
+      （负责把 modal 推给对应 WS），broker 不碰传输。
+    - `resolve`：前端 permission_response 到达时解掉对应 Future。
+    - `deny_all`：连接断开时把该连接所有挂起请求默拒清空。
+    多请求各自独立 request_id + Future，天然排队互不串扰（完成标准 3）。
+    """
+
+    def __init__(self, timeout: float = 120.0):
+        self._timeout = timeout
+        self._ws_by_token: dict = {}
+        self._token_by_ws: dict = {}
+        self._pending: dict = {}          # request_id -> asyncio.Future(decision dict)
+        self._pending_by_ws: dict = {}    # ws -> set(request_id)，供断连清队
+
+    def register(self, token, ws):
+        self._ws_by_token[token] = ws
+        self._token_by_ws[ws] = token
+
+    def unregister(self, ws):
+        tok = self._token_by_ws.pop(ws, None)
+        if tok is not None:
+            self._ws_by_token.pop(tok, None)
+
+    def token_for(self, ws):
+        return self._token_by_ws.get(ws)
+
+    def ws_for_token(self, token):
+        return self._ws_by_token.get(token) if token else None
+
+    async def request(self, token, send_request) -> dict:
+        """处理一次授权请求。`send_request` 是 async callable(request_id)，负责推 modal 给客户端。
+        返回 {"decision": "allow"|"deny", "message": str}。"""
+        ws = self._ws_by_token.get(token) if token else None
+        if ws is None:
+            return {"decision": "deny", "message": "no active session"}
+        rid = uuid.uuid4().hex
+        fut: asyncio.Future = asyncio.get_event_loop().create_future()
+        self._pending[rid] = fut
+        self._pending_by_ws.setdefault(ws, set()).add(rid)
+        try:
+            await send_request(rid)
+        except Exception:
+            self._cleanup(rid, ws)
+            return {"decision": "deny", "message": "failed to reach client"}
+        try:
+            return await asyncio.wait_for(fut, timeout=self._timeout)
+        except asyncio.TimeoutError:
+            return {"decision": "deny", "message": "timed out"}
+        finally:
+            self._cleanup(rid, ws)
+
+    def resolve(self, request_id, allow: bool, message: str = ""):
+        """前端决策回帧时解掉对应 Future；未知 request_id（已超时/清理）静默忽略。"""
+        fut = self._pending.get(request_id) if request_id else None
+        if fut is not None and not fut.done():
+            fut.set_result({
+                "decision": "allow" if allow else "deny",
+                "message": message or ("" if allow else "denied by user"),
+            })
+
+    def deny_all(self, ws):
+        """连接断开：该连接所有挂起请求一律默拒并清表（完成标准 2）。"""
+        for rid in list(self._pending_by_ws.get(ws, set())):
+            fut = self._pending.get(rid)
+            if fut is not None and not fut.done():
+                fut.set_result({"decision": "deny", "message": "connection closed"})
+            self._pending.pop(rid, None)
+        self._pending_by_ws.pop(ws, None)
+
+    def _cleanup(self, request_id, ws):
+        self._pending.pop(request_id, None)
+        ids = self._pending_by_ws.get(ws)
+        if ids is not None:
+            ids.discard(request_id)
 
 
 def _cfg(config, key: str, default=None):
@@ -166,6 +249,28 @@ def create_app(config) -> FastAPI:
     voice_inline_hint = _cfg(config, "VOICE_INLINE_HINT", "") or ""
     voice_exit_hint = _cfg(config, "VOICE_EXIT_HINT", "") or ""
     chat_mode_hint = _cfg(config, "CHAT_MODE_HINT", "") or ""
+
+    # 权限确认透传（feat-permission-passthrough）。默认关闭——存量用户零感知（完成标准 4）。
+    # 开启后 run_claude 追加 --permission-prompt-tool + --mcp-config，把 CC 的门控工具授权
+    # 请求经内嵌 MCP 小服务回调 → WS modal → 用户决策 → 原路返回（allow/deny）。
+    permission_passthrough = bool(_cfg(config, "PERMISSION_PASSTHROUGH", False))
+    # MCP 小服务的解释器与脚本路径。**跨平台注意**：CC 若是 Windows claude.exe（WSL 部署常见），
+    # 它拉起的 MCP 进程也是 Windows 进程，故这两项须指向 Windows 侧可执行的解释器/脚本路径，
+    # 由 config 显式覆盖（禁硬编码，见 CONSTRAINTS）。默认取当前解释器命令名 + 本模块同目录脚本，
+    # 仅适用于 bridge 与 claude 同平台的场景（如本地 Windows 自测）。
+    permission_mcp_python = _cfg(config, "PERMISSION_MCP_PYTHON", "python")
+    permission_mcp_script = _cfg(
+        config, "PERMISSION_MCP_SCRIPT",
+        str(Path(__file__).parent / "permission_mcp.py"),
+    )
+    permission_timeout = float(_cfg(config, "PERMISSION_TIMEOUT", 120.0))
+    # MCP 服务回调 bridge 的地址。默认 127.0.0.1:<PORT>；WSL+Windows-claude 场景由 Windows 侧
+    # 经 localhost 转发访问 WSL 服务（待真机复验连通性）。可用 PERMISSION_CALLBACK_URL 显式覆盖。
+    _perm_port = _cfg(config, "PORT") or os.environ.get("BRIDGE_PORT") or 8765
+    permission_callback_url = _cfg(
+        config, "PERMISSION_CALLBACK_URL",
+        f"http://127.0.0.1:{_perm_port}/internal/permission",
+    )
 
     data_dir.mkdir(parents=True, exist_ok=True)
     chat_db = data_dir / "chat.db"
@@ -662,6 +767,33 @@ def create_app(config) -> FastAPI:
     # 已请求停止的连接:被杀轮次的 result 事件不会到达,run_claude 据此改发 stopped 结束帧而非 error。
     stopped_conns: set[WebSocket] = set()
 
+    # 权限透传挂起队列 + token 路由。开关关闭时也实例化（空表无副作用），run_claude 靠
+    # token_for(ws) 是否有值决定要不要追加 CLI 参数——连接注册只在开关打开时发生。
+    permission_broker = PermissionBroker(timeout=permission_timeout)
+
+    @app.post("/internal/permission")
+    async def internal_permission(req: Request):
+        """MCP 权限小服务的回调端点（仅内部，绑 127.0.0.1）。
+        收到 {token, tool_name, input, tool_use_id} → broker 反查连接 → 推 permission_request
+        modal → 阻塞等前端 permission_response（或 120s 超时 / 断连）→ 返回 {"decision":...}。
+        任何异常路径一律默拒——与 MCP 端的默认拒绝哲学一致。"""
+        try:
+            body = await req.json()
+        except Exception:
+            return {"decision": "deny", "message": "bad request"}
+
+        async def _push(request_id: str):
+            ws = permission_broker.ws_for_token(body.get("token"))
+            await ws.send_text(json.dumps({
+                "type": "permission_request",
+                "request_id": request_id,
+                "tool": body.get("tool_name", ""),
+                "input": body.get("input", {}),
+                "tool_use_id": body.get("tool_use_id", ""),
+            }, ensure_ascii=False))
+
+        return await permission_broker.request(body.get("token"), _push)
+
     async def _stop_inflight(ws: WebSocket):
         """终止某连接的在途子进程:terminate 优先,POSIX 兜底 2s 未退则 kill。
         找不到在途 proc(流已结束/快速连点)直接忽略,不产生副作用。"""
@@ -706,6 +838,28 @@ def create_app(config) -> FastAPI:
             cmd += ["--model", model]
         if effort:
             cmd += ["--effort", effort]
+
+        # 权限透传：仅用户可见轮次开启（silent 存档轮无人盯着，开了只会 120s 后默拒白等）。
+        # 用内联 JSON 字符串传 --mcp-config（CC 支持 file 或 string），免临时文件与清理。
+        # 版本注记：--permission-prompt-tool 在 CC 2.1.202 已从 --help 隐藏但仍生效（Task 1 实测），
+        # CC 升级时需复验本机制。
+        if permission_passthrough and not silent:
+            tok = permission_broker.token_for(ws)
+            if tok:
+                mcp_cfg = json.dumps({"mcpServers": {"pando_permission": {
+                    "command": permission_mcp_python,
+                    "args": [permission_mcp_script],
+                    "env": {
+                        "PANDO_PERMISSION_CALLBACK_URL": permission_callback_url,
+                        "PANDO_PERMISSION_TOKEN": tok,
+                        # 本端 HTTP 等待上限略大于 bridge 120s，让 bridge 的默拒先触发
+                        "PANDO_PERMISSION_HTTP_TIMEOUT": str(permission_timeout + 30),
+                    },
+                }}}, ensure_ascii=False)
+                cmd += [
+                    "--permission-prompt-tool", "mcp__pando_permission__approve",
+                    "--mcp-config", mcp_cfg,
+                ]
 
         cmd.append(message)
 
@@ -969,6 +1123,11 @@ def create_app(config) -> FastAPI:
         session_id = None
         system_prompt = None
         session_resumed = False  # True 表示恢复已有会话，跳过 L0+L1 重建
+
+        # 权限透传：为本连接注册一个 token（注入 MCP 服务 env，回调时反查连接）。
+        # 仅开关打开时注册；关闭时 token_by_ws 缺失 → run_claude 不追加 CLI 参数，行为如现状。
+        if permission_passthrough:
+            permission_broker.register(uuid.uuid4().hex, ws)
         await ws.send_text(json.dumps({
             "type": "hello",
             "message": "bridge connected",
@@ -998,6 +1157,15 @@ def create_app(config) -> FastAPI:
                         continue
                     if isinstance(peek, dict) and peek.get("type") == "stop":
                         await _stop_inflight(ws)  # 停止当前用户可见轮次;无在途轮则忽略
+                        continue
+                    # 授权决策回帧:主循环此刻正阻塞在 run_claude 的 await(CC 等着这个决策),
+                    # 收不到帧,必须在 reader 里就地解掉对应 Future(与 stop 同理)。
+                    if isinstance(peek, dict) and peek.get("type") == "permission_response":
+                        permission_broker.resolve(
+                            peek.get("request_id"),
+                            peek.get("allow") is True,
+                            peek.get("message") or "",
+                        )
                         continue
                     await msg_queue.put(raw)
             except WebSocketDisconnect:
@@ -1166,6 +1334,9 @@ def create_app(config) -> FastAPI:
             if proc is not None and proc.returncode is None:
                 proc.kill()
             stopped_conns.discard(ws)
+            # 权限透传:挂起的授权请求全部默拒并清表,注销 token(完成标准 2:断连清队默拒)
+            permission_broker.deny_all(ws)
+            permission_broker.unregister(ws)
             archive_task.cancel()
             if session_id:
                 await _try_archive(session_id, model=model, effort=effort)

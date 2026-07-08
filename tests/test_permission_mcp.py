@@ -86,10 +86,14 @@ def test_request_decision_malformed_defaults_deny(monkeypatch):
     # bridge 返回非法 JSON → 默拒
     class _BadStub(_BridgeStub):
         def do_POST(self):
+            # 先读掉请求体，避免不 drain 触发连接重置（否则默拒路径由 OSError 而非 JSON 错误命中）
+            length = int(self.headers.get("Content-Length", 0))
+            self.rfile.read(length)
+            body = b"notjson"
             self.send_response(200)
-            self.send_header("Content-Length", "3")
+            self.send_header("Content-Length", str(len(body)))
             self.end_headers()
-            self.wfile.write(b"notjson"[:3])
+            self.wfile.write(body)
 
     srv = HTTPServer(("127.0.0.1", 0), _BadStub)
     threading.Thread(target=srv.serve_forever, daemon=True).start()
