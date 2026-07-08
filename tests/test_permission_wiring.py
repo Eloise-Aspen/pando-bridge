@@ -123,6 +123,11 @@ def test_on_appends_permission_flags(tmp_path, monkeypatch):
     env = cfg["mcpServers"]["pando_permission"]["env"]
     assert env["PANDO_PERMISSION_CALLBACK_URL"] == "http://127.0.0.1:9/internal/permission"
     assert env["PANDO_PERMISSION_TOKEN"]  # 非空 token
+    # --mcp-config 是可变参数,其值后面必须紧跟一个选项(--...),否则会吞掉末尾的 message。
+    # 断言 message(argv 最后一项)不是被 --mcp-config 直接跟着,即中间隔着 --permission-prompt-tool。
+    after_cfg = argv[argv.index("--mcp-config") + 2]
+    assert after_cfg.startswith("--"), f"--mcp-config 的值后应紧跟选项,实际是 {after_cfg!r}(会吞掉 message)"
+    assert argv[-1].endswith("hi"), "message 应是最后一个位置参数,未被 --mcp-config 吞掉"
 
 
 def _run_endpoint_roundtrip(tmp_path, monkeypatch, allow):

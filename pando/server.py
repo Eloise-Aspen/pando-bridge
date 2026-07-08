@@ -856,9 +856,13 @@ def create_app(config) -> FastAPI:
                         "PANDO_PERMISSION_HTTP_TIMEOUT": str(permission_timeout + 30),
                     },
                 }}}, ensure_ascii=False)
+                # 顺序要紧：--mcp-config 是可变参数（<configs...>），会贪婪吞掉后面所有非选项
+                # token——若紧跟其后的是 message（位置参数），message 会被误当成第二个 config 路径
+                # → CC 报 "MCP config file not found"。故把非可变的 --permission-prompt-tool 夹在
+                # --mcp-config 的值与 message 之间，终止其贪婪消费，保护 message。
                 cmd += [
-                    "--permission-prompt-tool", "mcp__pando_permission__approve",
                     "--mcp-config", mcp_cfg,
+                    "--permission-prompt-tool", "mcp__pando_permission__approve",
                 ]
 
         cmd.append(message)

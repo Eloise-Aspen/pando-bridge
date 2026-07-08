@@ -26,6 +26,7 @@ env（由 bridge 在 mcp-config 的 env 段注入）：
 """
 import json
 import os
+import ssl
 import sys
 import urllib.request
 
@@ -37,6 +38,9 @@ try:
     HTTP_TIMEOUT = float(os.environ.get("PANDO_PERMISSION_HTTP_TIMEOUT", "150"))
 except ValueError:
     HTTP_TIMEOUT = 150.0
+# 回调是 HTTPS 且证书自签（如桥用 ts.net 自签证书跑 TLS）时，跳过证书校验。
+# 仅用于 localhost 回环到你自管的桥——回调对象由 token 关联，非公网信任场景。默认关。
+INSECURE_TLS = os.environ.get("PANDO_PERMISSION_INSECURE_TLS", "").lower() in ("1", "true", "yes", "on")
 
 PROTOCOL_FALLBACK = "2025-11-25"  # 实测 CC 2.1.202 用的版本；实际以 client 请求为准
 
@@ -80,8 +84,10 @@ def request_decision(tool_name: str, tool_input: dict, tool_use_id: str) -> dict
         headers={"Content-Type": "application/json"},
         method="POST",
     )
+    # 自签 HTTPS 回环回调：用不校验证书的 SSL context（仅 INSECURE_TLS 开启时）
+    ctx = ssl._create_unverified_context() if INSECURE_TLS else None
     try:
-        with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
+        with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT, context=ctx) as resp:
             raw = resp.read().decode("utf-8")
         data = json.loads(raw)
     except OSError:
