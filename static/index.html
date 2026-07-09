@@ -221,8 +221,6 @@
   .ctx-track>div{height:100%;border-radius:9999px;background:var(--online);width:0;transition:width .2s}
   .ctx-rows{display:flex;flex-direction:column;gap:6px}
   .ctx-r{display:flex;align-items:center;justify-content:space-between;font:400 11.5px var(--ui);color:var(--text2)}
-  .ctx-r>span:first-child{display:inline-flex;align-items:center;gap:6px}
-  .ctx-r i{width:7px;height:7px;border-radius:2px;display:inline-block}
   .ctx-r>span:last-child{font-variant-numeric:tabular-nums;color:var(--dim)}
   .ctx-sep{height:1px;background:rgba(31,30,29,.08)}
   .ctx-btns{display:flex;gap:8px}
@@ -375,8 +373,8 @@
           <div class="ctx-h"><span>上下文用量</span><span id="ctx-h-val">—</span></div>
           <div class="ctx-track"><div id="ctx-track-fill"></div></div>
           <div class="ctx-rows">
-            <div class="ctx-r"><span><i style="background:#D97757"></i>输入</span><span id="ctx-in">—</span></div>
-            <div class="ctx-r"><span><i style="background:#E0A98F"></i>输出</span><span id="ctx-out">—</span></div>
+            <div class="ctx-r"><span>输入</span><span id="ctx-in">—</span></div>
+            <div class="ctx-r"><span>输出</span><span id="ctx-out">—</span></div>
           </div>
           <div class="ctx-sep"></div>
           <div class="ctx-btns"><button class="ctx-b1" onclick="compactCtx()">压缩上下文</button><button class="ctx-b2" onclick="newChat()">开新对话</button></div>
