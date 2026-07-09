@@ -602,7 +602,7 @@ function renderConversations(){
   }).join('');
 }
 /* ===== context indicator ===== */
-const CTX_CAP=200000;
+const CTX_CAP_FALLBACK=200000;
 function fmtTok(n){ n=n||0; return n>=1000?(n/1000).toFixed(n>=100000?0:1)+'K':String(n); }
 // 三档水位色(Pando Kit「上下文用量」组件定值):常态绿 ≤75% → 琥珀 >75% → 红 >90%(非 clay)
 function ctxState(pct){
@@ -610,18 +610,20 @@ function ctxState(pct){
   if(pct>75) return { ring:'#BE8A2D', track:'rgba(31,30,29,.12)', label:'var(--dim)', cap:'var(--fainter)', bar:'#BE8A2D' };
   return { ring:'#5B9A5B', track:'rgba(31,30,29,.12)', label:'var(--dim)', cap:'var(--fainter)', bar:'var(--online)' };
 }
-function updateCtx(u){
-  if(!u) return;
-  const cacheRead=u.cache_read_input_tokens??u.cache_read??0, cacheCreate=u.cache_creation_input_tokens??u.cache_create??0;
-  const used=(u.input_tokens||0)+cacheRead+cacheCreate;
-  const cachePct = (u.cache_hit_pct!=null) ? Math.round(u.cache_hit_pct) : (used?Math.round(cacheRead/used*100):0);
-  const pct=Math.min(100, used/CTX_CAP*100), circ=44, st=ctxState(pct);
+// c = 后端 result.context(最后一条 assistant 的 usage 快照):{used,window,input,output,cache_read,cache_hit_pct}
+// used=输入+缓存读+缓存写+输出=此刻上下文装了多少;window=该模型真实上下文窗口(不再写死 200k)。
+// 压缩后 used 回落是预期(上下文真变小了),不是 bug。
+function updateCtx(c){
+  if(!c) return;
+  const used=c.used||0, cap=c.window||CTX_CAP_FALLBACK;
+  const cachePct = (c.cache_hit_pct!=null) ? Math.round(c.cache_hit_pct) : 0;
+  const pct=Math.min(100, used/cap*100), circ=44, st=ctxState(pct);
   const arc=$('ctx-arc'); if(arc){ arc.setAttribute('stroke-dasharray',`${(pct/100*circ).toFixed(1)} ${circ}`); arc.setAttribute('stroke',st.ring); }
   const trk=$('ctx-ring-track'); if(trk) trk.setAttribute('stroke',st.track);
-  const lb=$('ctx-lb'); lb.innerHTML=`${fmtTok(used)}<span class="ctx-cap" style="color:${st.cap}"> / ${fmtTok(CTX_CAP)}</span>`; lb.style.color=st.label;
-  $('ctx-h-val').textContent=`${fmtTok(used)} / ${fmtTok(CTX_CAP)}`;
+  const lb=$('ctx-lb'); lb.innerHTML=`${fmtTok(used)}<span class="ctx-cap" style="color:${st.cap}"> / ${fmtTok(cap)}</span>`; lb.style.color=st.label;
+  $('ctx-h-val').textContent=`${fmtTok(used)} / ${fmtTok(cap)}`;
   const f=$('ctx-track-fill'); f.style.width=pct+'%'; f.style.background=st.bar;
-  $('ctx-in').textContent=fmtTok(u.input_tokens||0); $('ctx-out').textContent=fmtTok(u.output_tokens||0); $('ctx-cache').textContent=cachePct+'%';
+  $('ctx-in').textContent=fmtTok(c.input||0); $('ctx-out').textContent=fmtTok(c.output||0); $('ctx-cache').textContent=cachePct+'%';
   $('ctx-slot').style.display='inline';
 }
 function toggleCtx(e){ e.stopPropagation(); const p=$('ctx-pop'); p.style.display=p.style.display==='none'?'flex':'none'; }
@@ -807,7 +809,7 @@ async function loadHistory(sid){
     msgs.forEach(x=>{
       if(x.role==='user') addUser(x.content, (x.metadata&&x.metadata.attachments)||[]);
       else if(x.role==='assistant'){ const row=addAssistant(x.content); if(x.metadata&&x.metadata.thinking) addThinking(row, x.metadata.thinking, null, x.metadata.duration_ms); addToolbar(row,x.content,x.metadata);
-        if(x.metadata&&x.metadata.usage) updateCtx(x.metadata.usage); }
+        if(x.metadata&&x.metadata.context) updateCtx(x.metadata.context); }
     });
   }catch(e){ console.error(e); }
 }
@@ -970,7 +972,7 @@ function connect(){
         if(currentAssistantRow) addThinking(currentAssistantRow, m.thinking, roundTools, m.duration_ms);
         if(currentAssistantRow && assistantText) addToolbar(currentAssistantRow, assistantText, m.stopped?null:{cost_usd:m.cost_usd,duration_ms:m.duration_ms,usage:m.usage});
         if(currentAssistantRow && m.stopped) addStopped(currentAssistantRow);
-        if(m.usage) updateCtx(m.usage);
+        if(m.context) updateCtx(m.context);
         if(m.session_id) setSessionId(m.session_id);
         currentAssistantRow=null; assistantText=''; roundTools=[]; setBusy(false); break;
       case 'error': removeTyping(); addSystem('⚠ '+(m.message||'error')+(m.detail?'\n'+m.detail:'')); setBusy(false); break;

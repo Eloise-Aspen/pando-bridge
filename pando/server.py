@@ -892,6 +892,10 @@ def create_app(config) -> FastAPI:
         full_text = ""
         thinking_text = ""
         result_meta = {}
+        # 上下文占用用「最后一个 assistant 事件的 message.usage」快照(不是 result 的账单聚合)——
+        # result.usage 把本轮所有工具往返的 token 累加,当"上下文占用"看会虚高且不随压缩回落;
+        # 最后一次 API 调用的 usage 才是"此刻上下文里装了多少"。覆盖式更新,最后一条胜出。
+        last_assistant_usage = {}
         # 实际使用的模型名以 init 事件为准(用户选「默认」时 model 参数为空,
         # CC 回报的 model 才是真实模型),用量落库时按它分组。
         init_model = model or ""
@@ -923,6 +927,9 @@ def create_app(config) -> FastAPI:
 
                     elif etype == "assistant":
                         msg = event.get("message", {})
+                        # 每个 assistant 事件都带 message.usage;取最后一条作上下文占用快照
+                        if msg.get("usage"):
+                            last_assistant_usage = msg["usage"]
                         for block in msg.get("content", []):
                             btype = block.get("type")
                             if btype == "thinking":
@@ -948,6 +955,8 @@ def create_app(config) -> FastAPI:
                                 }, ensure_ascii=False))
 
                     elif etype == "result":
+                        # usage(result 聚合)= 本轮账单口径,用于落库 /usage/stats 与消息脚注成本行;
+                        # 保持不动——它衡量"这轮花了多少 token",是计费语义,不是上下文占用。
                         usage = event.get("usage", {})
                         cache_read = usage.get("cache_read_input_tokens", 0)
                         cache_create = usage.get("cache_creation_input_tokens", 0)
@@ -955,6 +964,33 @@ def create_app(config) -> FastAPI:
                         output_tok = usage.get("output_tokens", 0)
                         total_input = cache_read + cache_create + input_tok
                         cache_hit_pct = round(cache_read / total_input * 100) if total_input else 0
+
+                        # context(上下文占用)= 最后一个 assistant 事件的 usage 快照,与账单口径分开。
+                        # 占用 = 输入 + 缓存读 + 缓存写 + 输出(下一轮会带着这些进上下文);
+                        # 分母取 result.modelUsage 里该模型的 contextWindow(拿不到则回退 200k)。
+                        # 压缩后此值回落是预期:CC 内部压掉早期内容,上下文真的变小了。
+                        context_meta = None
+                        if last_assistant_usage:
+                            lu = last_assistant_usage
+                            l_input = lu.get("input_tokens", 0)
+                            l_output = lu.get("output_tokens", 0)
+                            l_cread = lu.get("cache_read_input_tokens", 0)
+                            l_ccreate = lu.get("cache_creation_input_tokens", 0)
+                            l_total_in = l_input + l_cread + l_ccreate
+                            ctx_window = 0
+                            for mu in (event.get("modelUsage") or {}).values():
+                                cw = mu.get("contextWindow") or 0
+                                if cw > ctx_window:
+                                    ctx_window = cw
+                            context_meta = {
+                                "used": l_input + l_cread + l_ccreate + l_output,
+                                "window": ctx_window or 200000,
+                                "input": l_input,
+                                "output": l_output,
+                                "cache_read": l_cread,
+                                "cache_create": l_ccreate,
+                                "cache_hit_pct": round(l_cread / l_total_in * 100) if l_total_in else 0,
+                            }
 
                         result_meta = {
                             "cost_usd": event.get("total_cost_usd"),
@@ -968,6 +1004,8 @@ def create_app(config) -> FastAPI:
                                 "cache_hit_pct": cache_hit_pct,
                             },
                         }
+                        if context_meta:
+                            result_meta["context"] = context_meta
 
                         if not silent:
                             # 用量落库:只记用户可见的对话轮次(silent=True 的自动存档轮不计),
