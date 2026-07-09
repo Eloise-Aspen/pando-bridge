@@ -271,6 +271,12 @@
   .sheet-close { background: none; border: none; color: var(--text3); font-size: 20px; cursor: pointer; }
   .sheet-body { padding: 16px 20px calc(20px + var(--safe-bottom)); overflow-y: auto;
                 white-space: pre-wrap; font-size: 13px; line-height: 1.7; color: var(--text2); }
+  /* 披露区:thinking 文本 + 折叠进来的工具调用行(fix-toolcall-collapse) */
+  .disc-think { white-space: pre-wrap; margin-bottom: 12px; }
+  .disc-tool { display: flex; gap: 8px; align-items: baseline; padding: 6px 0;
+               border-top: 1px solid var(--c-border-faint); font-family: var(--font-mono); font-size: 12px; }
+  .disc-tool-name { color: var(--accent); flex-shrink: 0; }
+  .disc-tool-arg { color: var(--text3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
   /* ---- 权限确认 modal(feat-permission-passthrough)---- */
   /* 居中卡片,z-index 高于 sheet;CC 请求门控工具时弹出,允许/拒绝原路返回。多请求排队展示。 */
@@ -586,7 +592,7 @@
 
 <script>
 /* ===== State ===== */
-let ws, busy = false, currentAssistantRow = null, assistantText = '';
+let ws, busy = false, currentAssistantRow = null, assistantText = '', roundTools = [];
 let currentSessionId = localStorage.getItem('currentSessionId') || null;
 // 已选附件:每项 {id, name, path|null, uploading, error};path 为 POST /attachments 返回的落盘路径
 let pendingAtts = [], attSeq = 0;
@@ -654,7 +660,7 @@ const I18N = {
     customModelPrompt: '输入模型 id(经 --model 透传给 Claude CLI):', greetingDefault: '你好',
     greeting: n => `${n},你好`, status: (name, on) => `${name} · ${on ? '在线' : '离线'}`,
     msgCount: n => `${n} 条消息`, cache: p => `缓存 ${p}%`,
-    thinkingChip: k => `Thinking (${k}k)`, cost: c => `$${c}`,
+    thinkingChip: k => `Thinking (${k}k)`, toolsChip: n => `Tools · ${n}`, cost: c => `$${c}`,
   },
   en: {
     sidebarTitle: 'Chats', newChat: 'New chat', connecting: 'Connecting…',
@@ -704,7 +710,7 @@ const I18N = {
     customModelPrompt: 'Enter model id (passed to the Claude CLI via --model):', greetingDefault: 'Hi',
     greeting: n => `Hi, ${n}`, status: (name, on) => `${name} · ${on ? 'online' : 'offline'}`,
     msgCount: n => `${n} msgs`, cache: p => `cache ${p}%`,
-    thinkingChip: k => `Thinking (${k}k)`, cost: c => `$${c}`,
+    thinkingChip: k => `Thinking (${k}k)`, toolsChip: n => `Tools · ${n}`, cost: c => `$${c}`,
   },
 };
 const t = k => { const v = I18N[LANG][k]; return v !== undefined ? v : I18N.zh[k]; };
@@ -785,7 +791,7 @@ async function switchSession(sid) {
   if (sid === currentSessionId) return;
   $msg.innerHTML = '';
   setSessionId(sid);
-  currentAssistantRow = null; assistantText = '';
+  currentAssistantRow = null; assistantText = ''; roundTools = [];
   showMessages();
   await loadHistory(sid);
   if (ws && ws.readyState === 1) ws.send(JSON.stringify({ switch_session: sid }));
@@ -795,7 +801,7 @@ function newConversation() {
   openPage('chat');  // 同上:从子页新建对话也要跳回聊天
   $msg.innerHTML = '';
   setSessionId(null);
-  currentAssistantRow = null; assistantText = '';
+  currentAssistantRow = null; assistantText = ''; roundTools = [];
   showGreeting();
   if (ws && ws.readyState === 1) ws.send(JSON.stringify({ switch_session: null }));
 }
@@ -811,7 +817,7 @@ async function loadHistory(sid) {
     msgs.forEach(m => {
       if (m.role === 'user') addMsg('user', m.content);
       else if (m.role === 'assistant') {
-        if (m.metadata && m.metadata.thinking) addThinkingChip(m.metadata.thinking);
+        if (m.metadata && (m.metadata.thinking || m.metadata.tools)) addDisclosure(m.metadata.thinking, m.metadata.tools || null);
         const row = addMsg('assistant', m.content);
         addAssistantToolbar(row, m.content);
         if (m.metadata && m.metadata.usage)
@@ -909,31 +915,56 @@ function updateAssistantBubbles(row, fullText) {
   $msg.scrollTop = $msg.scrollHeight;
 }
 
-// beforeEl 给定时把 chip 插到该元素之前(用于实时路径把 chip 放到气泡上方,
-// 与历史路径统一——chip 一律在气泡上方)
-function addThinkingChip(text, beforeEl) {
+// 工具调用与 thinking 折叠进同一披露区(fix-toolcall-collapse):默认折叠成一枚 chip
+// (放气泡上方,beforeEl 指定插入位),点开在底部 sheet 展开——thinking 文本在上、
+// 该轮工具调用行在下。thinking 与 tools 皆空则不出 chip(不留空披露区)。
+function addDisclosure(thinking, tools, beforeEl) {
+  thinking = thinking || ''; tools = tools || [];
+  if (!thinking && !tools.length) return;
   const row = document.createElement('div');
   row.className = 'chip-row';
   const chip = document.createElement('button');
   chip.className = 'chip';
-  chip.innerHTML = `<i class="ti ti-sparkles"></i> ${t('thinkingChip')((text.length/1000).toFixed(1))}`;
-  chip.onclick = () => openSheet('Thinking', text);
+  if (thinking) {
+    chip.innerHTML = `<i class="ti ti-sparkles"></i> ${t('thinkingChip')((thinking.length/1000).toFixed(1))}`;
+  } else {
+    chip.classList.add('tool');
+    chip.innerHTML = `<i class="ti ti-tool"></i> ${t('toolsChip')(tools.length)}`;
+  }
+  chip.onclick = () => openDisclosureSheet(thinking, tools);
   row.appendChild(chip);
   if (beforeEl) $msg.insertBefore(row, beforeEl);
   else $msg.appendChild(row);
   $msg.scrollTop = $msg.scrollHeight;
 }
 
-function addToolChip(tool, preview) {
-  const row = document.createElement('div');
-  row.className = 'chip-row';
-  const chip = document.createElement('button');
-  chip.className = 'chip tool';
-  chip.innerHTML = `<i class="ti ti-tool"></i> ${escHtml(tool)}`;
-  if (preview) chip.onclick = () => openSheet(tool, preview);
-  row.appendChild(chip);
-  $msg.appendChild(row);
-  $msg.scrollTop = $msg.scrollHeight;
+// 披露 sheet:thinking 文本 + 工具调用行(名称 + 参数摘要一行,截断)。
+// 不做工具结果富渲染、不做工具行二次交互(见 fix-toolcall-collapse「不做什么」)。
+function openDisclosureSheet(thinking, tools) {
+  $('sheet-title').textContent = t('sheetThinking');
+  const body = $('sheet-body'); body.innerHTML = '';
+  if (thinking) {
+    const tx = document.createElement('div');
+    tx.className = 'disc-think'; tx.textContent = thinking;
+    body.appendChild(tx);
+  }
+  (tools || []).forEach(tl => {
+    const line = document.createElement('div');
+    line.className = 'disc-tool';
+    const name = document.createElement('span');
+    name.className = 'disc-tool-name'; name.textContent = tl.tool || tl.name || '';
+    line.appendChild(name);
+    const prev = (tl.preview || '').replace(/\s+/g, ' ').trim();
+    if (prev) {
+      const p = document.createElement('span');
+      p.className = 'disc-tool-arg';
+      p.textContent = prev.length > 120 ? prev.slice(0, 120) + '…' : prev;
+      line.appendChild(p);
+    }
+    body.appendChild(line);
+  });
+  $('sheet-overlay').classList.add('open');
+  $('sheet').classList.add('open');
 }
 
 function addUsage(data) {
@@ -1162,7 +1193,7 @@ function send() {
   addMsg('user', text, attNames);
   $input.value = '';
   $input.style.height = 'auto';
-  currentAssistantRow = null; assistantText = '';
+  currentAssistantRow = null; assistantText = ''; roundTools = [];
   const payload = { text, model: currentModel || undefined };
   if (attPaths.length) payload.attachments = attPaths;
   ws.send(JSON.stringify(payload));
@@ -1173,7 +1204,7 @@ function send() {
 
 function retryMsg(text) {
   if (!text || busy || !ws || ws.readyState !== 1) return;
-  currentAssistantRow = null; assistantText = '';
+  currentAssistantRow = null; assistantText = ''; roundTools = [];
   ws.send(JSON.stringify({ text, model: currentModel || undefined }));
   setBusy(true);
   showTyping();
@@ -1211,8 +1242,9 @@ function connect() {
         // streamed thinking deltas are summarized via the result.thinking chip
         break;
       case 'tool_use':
-        removeTyping();
-        addToolChip(m.tool, m.input_preview);
+        // 工具调用不再独立成卡,收进本轮披露区(fix-toolcall-collapse);保留 typing 表示仍在工作
+        roundTools.push({ tool: m.tool, preview: m.input_preview });
+        showTyping();
         break;
       case 'text':
         removeTyping();
@@ -1225,12 +1257,12 @@ function connect() {
         // 先确保气泡存在(无流式 text 时用 result.text 建),再把 thinking chip
         // 插到气泡上方——与历史路径统一,chip 一律在气泡上方,刷新前后位置一致
         if (m.text && !assistantText) { currentAssistantRow = addMsg('assistant', m.text); assistantText = m.text; }
-        if (m.thinking) addThinkingChip(m.thinking, currentAssistantRow || undefined);
+        addDisclosure(m.thinking, roundTools, currentAssistantRow || undefined);
         if (currentAssistantRow && assistantText) addAssistantToolbar(currentAssistantRow, assistantText);
         if (m.stopped) addStoppedMeta();  // 停止轮:无 usage,元数据行标「已停止」
         else if (m.usage) addUsage({ cost_usd: m.cost_usd, duration_ms: m.duration_ms, usage: m.usage });
         if (m.session_id) setSessionId(m.session_id);
-        currentAssistantRow = null; assistantText = '';
+        currentAssistantRow = null; assistantText = ''; roundTools = [];
         setBusy(false);
         break;
       case 'error':
