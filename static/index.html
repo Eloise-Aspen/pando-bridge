@@ -448,10 +448,7 @@ async function loadMemory(){
   const v=$('v-memory');
   v.innerHTML=`<div class="sub-top"><div class="r"><button class="icon-btn lead" onclick="go('home')">${BACK}</button><span class="sub-h">记忆</span><span class="sub-meta" id="mem-count"></span></div></div>
     <div class="mem-search"><div class="box">${SEARCHIC}<input id="mem-q" placeholder="搜索记忆…" oninput="renderMemories()" autocomplete="off"></div></div>
-    <div class="mem-tags" id="mem-tags"></div>
     <div class="sub-body pd-scroll"><div class="mem-list" id="mem-list"></div></div>`;
-  const tags=['全部','项目','偏好','生活','阅读'];
-  $('mem-tags').innerHTML=tags.map(t=>`<span class="tag-chip${t===memActiveTag?' on':''}" onclick="setMemTag('${t}')">${t}</span>`).join('');
   try{ const r=await fetch('/memory-admin/memory/stats'); if(r.ok){ memStatsCache=await r.json();
     $('mem-count').textContent=`${memStatsCache.count??0} 条 · ${fmtChars(memStatsCache.chars)}`; } }catch(e){}
   renderMemories();
@@ -466,12 +463,11 @@ async function renderMemories(){
     const r=await fetch(url); if(r.ok) items=await r.json(); else if(r.status===404) items='unconfigured'; }catch(e){ items='unconfigured'; }
   if(items==='unconfigured'){ list.innerHTML=`<div class="sub-empty">未配置记忆服务<br><span style="font-size:12px;color:var(--hint)">在宿主机指向 MEMORY_SERVICE_URL 后即可在此浏览记忆</span></div>`; return; }
   items=Array.isArray(items)?items:[];
-  if(memActiveTag!=='全部') items=items.filter(m=>(m.tag||m.type||'')===memActiveTag);
   if(!items.length){ list.innerHTML=`<div class="sub-empty">${q?'没有匹配的记忆':'还没有记忆'}</div>`; return; }
+  // 开源服记忆无打标 → 只显示正文 + 时间;标签/筛选留给生产服
   list.innerHTML=items.map(m=>{
-    const text=escHtml(m.text||m.content||m.body||''); const tag=m.tag||m.type||''; const date=fmtWhen(m.created_at||m.updated_at||m.date);
-    const tc=TAG_COLORS[tag]; const tagHtml=tag?`<span class="mem-tag" style="color:${tc?tc[0]:'#73726C'};background:${tc?tc[1]:'var(--track)'}">${escHtml(tag)}</span>`:'';
-    return `<div class="mem-card"><div class="tx">${text}</div><div class="ft">${tagHtml}<span class="mem-date">${date}</span><button class="mem-del" onclick="deleteMemory('${m.id}')">${TRASH}</button></div></div>`;
+    const text=escHtml(m.text||m.content||m.body||''); const date=fmtWhen(m.created_at||m.updated_at||m.date);
+    return `<div class="mem-card"><div class="tx">${text}</div><div class="ft"><span class="mem-date">${date}</span><button class="mem-del" onclick="deleteMemory('${m.id}')">${TRASH}</button></div></div>`;
   }).join('');
 }
 async function deleteMemory(id){ try{ const r=await fetch(`/memory-admin/memory/${id}`,{method:'DELETE'}); if(r.ok){ toast('已删除记忆'); loadMemory(); } }catch(e){} }
@@ -593,7 +589,7 @@ function renderRecent(){
   });
 }
 async function switchSession(sid){ go('chat'); $('msgs').innerHTML=''; setSessionId(sid); await loadHistory(sid); if(ws&&ws.readyState===1) ws.send(JSON.stringify({switch_session:sid})); }
-function newChat(){ go('chat'); $('msgs').innerHTML=''; setSessionId(null); currentAssistantRow=null; assistantText=''; roundTools=[]; showEmpty(); if(ws&&ws.readyState===1) ws.send(JSON.stringify({switch_session:null})); }
+function newChat(){ setSessionId(null); currentAssistantRow=null; assistantText=''; roundTools=[]; $('msgs').innerHTML=''; go('home'); loadSessions(); if(ws&&ws.readyState===1) ws.send(JSON.stringify({switch_session:null})); }
 function setSessionId(id){ currentSessionId=id; if(id) localStorage.setItem('currentSessionId',id); else localStorage.removeItem('currentSessionId'); }
 
 function showEmpty(){ const m=$('msgs'); if(m.children.length) return; const e=document.createElement('div'); e.className='empty';
@@ -680,14 +676,15 @@ function removeTyping(){ if(typingEl){ typingEl.remove(); typingEl=null; } }
 function onSendBtn(){ if(busy) stopStreaming(); else send(); }
 function stopStreaming(){ if(ws&&ws.readyState===1) ws.send(JSON.stringify({type:'stop'})); }
 function send(){
-  const text=($input&&$input.value.trim())||'';
+  const inp=$input;
+  const text=(inp&&inp.value.trim())||'';
   if(busy||!ws||ws.readyState!==1) return;
   if(pendingAtts.some(a=>a.uploading)) return;
   const ready=pendingAtts.filter(a=>a.path);
   if(!text && !ready.length) return;
+  if(inp){ inp.value=''; inp.style.height='auto'; }   // 先清发起处输入(HOME→CHAT 切换会重指 $input)
   maybeTimeDivider();
   addUser(text, ready.map(a=>a.name));
-  $input.value=''; $input.style.height='auto';
   currentAssistantRow=null; assistantText=''; roundTools=[];
   const payload={text, model:currentModel||undefined};
   if(ready.length) payload.attachments=ready.map(a=>a.path);
