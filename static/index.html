@@ -5,32 +5,65 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="theme-color" content="#1a1816">
+<meta name="theme-color" content="#faf9f5">
 <link rel="manifest" href="/manifest.json">
 <link rel="apple-touch-icon" href="/icon-192.png">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.19.0/dist/tabler-icons.min.css">
 <title>Claude Code Bridge</title>
 <style>
-  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400&family=Noto+Sans+SC:wght@300;400&display=swap');
+  /* JetBrains Mono 自托管（CONSTRAINTS 禁 CDN 外链）——简洁模式仅代码/工具参数 JSON 用等宽 */
+  @font-face { font-family:'JetBrains Mono'; font-style:normal; font-weight:400;
+               font-display:swap; src:url('/fonts/jetbrains-mono-400.woff2') format('woff2'); }
+  @font-face { font-family:'JetBrains Mono'; font-style:normal; font-weight:500;
+               font-display:swap; src:url('/fonts/jetbrains-mono-500.woff2') format('woff2'); }
 
   * { box-sizing: border-box; margin: 0; padding: 0; }
   :root {
-    --bg: #1a1816;
-    --surface: rgba(255,255,255,0.05);
-    --border: rgba(255,255,255,0.12);
-    --border-light: rgba(255,255,255,0.20);
-    --text: rgba(245,240,235,0.96);
-    --text2: rgba(235,228,220,0.72);
-    --text3: rgba(255,255,255,0.40);
-    --text4: rgba(255,255,255,0.26);
-    --accent: #d97757;
-    --accent-dim: rgba(217,119,87,0.55);
-    --accent-glow: rgba(217,119,87,0.9);
+    /* ===== 简洁模式浅色 kit（源自 Anthropic MCP Apps UI kit, CC BY 4.0；见 design/demo-theme/simple-mode-kit.md）===== */
+    /* 中性 */
+    --c-bg:#faf9f5; --c-surface:#ffffff; --c-surface-alt:#f5f4ed; --c-bg-inverse:#141413;
+    --c-text-primary:#141413; --c-text-secondary:#3d3d3a; --c-text-dim:#73726c; --c-text-inverse:#fff;
+    --c-border:#1f1e1d4d; --c-border-strong:#1f1e1d66; --c-border-faint:#1f1e1d26;
+    --c-ring:#141413b2;
+    /* 交互 + 语义 */
+    --c-accent:#d97757; --c-accent-hover:#c6613f; /* clay */
+    --c-online:#5b9a5b; --c-warn:#d6a417; --c-link:#2c84db;
+    --c-danger:#b53333; --c-danger-text:#7f2c28;
+    --c-success:#437426; --c-info:#3266ad;
+    /* Kit 扩展中性阶（2026-07-09 回流）：track=输入底/进度轨，ink-body=长文正文 */
+    --c-track:#f0eee6; --c-ink-body:#1f1e1d; --c-text-faint:#9c9a92;
+    --c-icon:#8b8a83; --c-toggle-off:#e4e1d8;
+    /* 圆角（Kit 回流）*/
+    --r-sheet:16px; --r-card:14px; --r-btn:11px; --r-input:10px; --r-pill:9999px;
+    /* 正文（简洁模式阅读向）*/
+    --text-body:16.5px; --lh-body:1.9;
+    /* 字号 / 行高 / 字重 */
+    --text-xs:12px; --text-sm:14px; --text-md:16px; --text-lg:18px;
+    --lh-xs:16.8px; --lh-sm:19.6px; --lh-md:22.4px; --lh-lg:25px;
+    --h-lg:20px; --h-xl:24px; --h-2xl:28px; --h-3xl:36px;
+    --w-normal:400; --w-medium:500; --w-semibold:600; --w-bold:700;
+    /* 字体：sans 系统栈（正文/界面/数字，简洁模式全无衬线）+ JetBrains Mono 自托管（仅代码/JSON）*/
+    --font-sans:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+    --font-mono:"JetBrains Mono",ui-monospace,"SFMono-Regular",Menlo,monospace;
+
+    /* ===== 兼容层：既有样式的旧变量名 → 浅色语义值（组件级细化见 Task 2）===== */
+    --bg: var(--c-bg);
+    --surface: var(--c-surface-alt);
+    --border: var(--c-border-faint);
+    --border-light: var(--c-border);
+    --text: var(--c-text-primary);
+    --text2: var(--c-text-secondary);
+    --text3: var(--c-text-dim);
+    --text4: var(--c-text-faint);
+    --accent: var(--c-accent);
+    --accent-dim: var(--c-accent-hover);
+    --accent-glow: rgba(217,119,87,0.45);
     --accent-bg: rgba(217,119,87,0.10);
-    --accent-border: rgba(217,119,87,0.22);
-    --red: #e87272;
-    --font: 'JetBrains Mono', monospace;
-    --font-cn: 'Noto Sans SC', sans-serif;
+    --accent-border: rgba(217,119,87,0.28);
+    --red: var(--c-danger);
+    /* 简洁模式：界面文字（含数字/时间戳）一律无衬线；等宽只在代码/JSON 显式用 --font-mono */
+    --font: var(--font-sans);
+    --font-cn: var(--font-sans);
     --safe-bottom: env(safe-area-inset-bottom, 0px);
   }
 
@@ -39,10 +72,10 @@
          -webkit-font-smoothing: antialiased; }
 
   .vignette { position: fixed; inset: 0; pointer-events: none; z-index: 0;
-              background: radial-gradient(ellipse at 50% 30%, transparent 40%, rgba(0,0,0,0.45) 100%); }
+              background: radial-gradient(ellipse at 50% 30%, transparent 62%, rgba(20,20,19,0.028) 100%); }
 
   /* ---- Sidebar ---- */
-  .overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 90;
+  .overlay { position: fixed; inset: 0; background: rgba(20,20,19,0.32); z-index: 90;
              opacity: 0; pointer-events: none; transition: opacity .25s; }
   .overlay.open { opacity: 1; pointer-events: auto; }
 
@@ -96,12 +129,12 @@
   .topbar-signature[hidden] { display: none; }
   .status-dot { width: 5px; height: 5px; border-radius: 50%; flex-shrink: 0; background: var(--text4); }
   .status-dot.on { background: var(--accent); box-shadow: 0 0 7px var(--accent-glow); }
-  .status-dot.off { background: var(--red); box-shadow: 0 0 7px rgba(232,114,114,0.5); }
+  .status-dot.off { background: var(--red); box-shadow: 0 0 7px rgba(181,51,51,0.45); }
   .topbar-label { font-size: 12px; color: var(--accent-dim); letter-spacing: 0.12em; }
   .topbar-right { display: flex; gap: 14px; align-items: center; }
-  .topbar-icon { color: rgba(255,255,255,0.22); font-size: 19px; cursor: pointer; background: none; border: none; padding: 4px; }
-  .topbar-icon:active { color: rgba(255,255,255,0.5); }
-  .divider-top { margin: 14px 20px 0; height: 1px; background: rgba(255,255,255,0.08); }
+  .topbar-icon { color: var(--c-icon); font-size: 19px; cursor: pointer; background: none; border: none; padding: 4px; }
+  .topbar-icon:active { color: var(--c-text-secondary); }
+  .divider-top { margin: 14px 20px 0; height: 1px; background: var(--c-border-faint); }
   /* 模型选择器:放在输入区(对齐生产服位置),按钮 + 上弹 popup */
   .input-meta { position: relative; padding: 2px 4px 6px; display: flex; gap: 2px; }
   .model-slot { position: relative; }
@@ -113,7 +146,7 @@
   .model-popup { position: absolute; bottom: calc(100% + 4px); left: 0;
                  background: var(--bg); border: 1px solid var(--border-light);
                  border-radius: 10px; padding: 4px 0; min-width: 160px; z-index: 50;
-                 box-shadow: 0 4px 16px rgba(0,0,0,0.5); }
+                 box-shadow: 0 4px 16px rgba(20,20,19,0.14); }
   .model-option { font-size: 14px; font-family: var(--font-cn); color: var(--text2);
                   padding: 0 16px; min-height: 44px; display: flex; align-items: center; cursor: pointer; }
   .model-option:active { background: var(--surface); }
@@ -144,9 +177,9 @@
   .msg-bubble.user { background: var(--accent-bg); border: 1px solid var(--accent-border);
                      border-radius: 12px 12px 3px 12px; padding: 10px 14px;
                      font-family: var(--font-cn); color: var(--text); }
-  .msg-bubble.assistant { background: rgba(255,255,255,0.04); border: 1px solid rgba(255,255,255,0.08);
+  .msg-bubble.assistant { background: var(--c-surface); border: 1px solid var(--c-border-faint);
                           border-radius: 12px 12px 12px 3px; padding: 10px 14px;
-                          font-family: var(--font-cn); font-weight: 300; color: var(--text2); }
+                          font-family: var(--font-cn); font-weight: 400; color: var(--text2); }
   /* 重发按钮:对齐生产服 IM 逻辑——绝对定位在气泡左侧,悬停/点触时显现。
      隐藏态 pointer-events:none,避免手机上误触不可见按钮(对齐完成标准第 8 条)。 */
   .msg-user-wrap { position: relative; display: inline-block; max-width: 85%; }
@@ -187,7 +220,7 @@
   #input { flex: 1; background: none; border: none; outline: none; resize: none; color: var(--text);
            font-family: var(--font-cn); font-size: 15px; line-height: 1.5; max-height: 120px; padding: 6px 0; }
   .send-btn { width: 36px; height: 36px; flex-shrink: 0; border-radius: 50%; border: none; cursor: pointer;
-              background: var(--accent); color: #1a1816; font-size: 18px; display: flex;
+              background: var(--accent); color: var(--c-text-inverse); font-size: 18px; display: flex;
               align-items: center; justify-content: center; }
   .send-btn:disabled { background: var(--surface); color: var(--text4); }
   /* 流式期间发送键变停止键:方块图标 + 中性表面色,与「发送」的强调色区分 */
@@ -226,7 +259,7 @@
   .toast.show { opacity: 1; }
 
   /* ---- Thinking sheet ---- */
-  .sheet-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.6); z-index: 110;
+  .sheet-overlay { position: fixed; inset: 0; background: rgba(20,20,19,0.32); z-index: 110;
                    opacity: 0; pointer-events: none; transition: opacity .2s; }
   .sheet-overlay.open { opacity: 1; pointer-events: auto; }
   .sheet { position: fixed; left: 0; right: 0; bottom: 0; z-index: 120; background: var(--bg);
@@ -241,13 +274,13 @@
 
   /* ---- 权限确认 modal(feat-permission-passthrough)---- */
   /* 居中卡片,z-index 高于 sheet;CC 请求门控工具时弹出,允许/拒绝原路返回。多请求排队展示。 */
-  .perm-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.66); z-index: 130;
+  .perm-overlay { position: fixed; inset: 0; background: rgba(20,20,19,0.36); z-index: 130;
                   display: flex; align-items: center; justify-content: center; padding: 20px;
                   opacity: 0; pointer-events: none; transition: opacity .2s; }
   .perm-overlay.open { opacity: 1; pointer-events: auto; }
   .perm-modal { background: var(--bg); border: 1px solid var(--border-light); border-radius: 18px;
                 width: 100%; max-width: 420px; padding: 20px; display: flex; flex-direction: column;
-                gap: 14px; box-shadow: 0 12px 40px rgba(0,0,0,0.45);
+                gap: 14px; box-shadow: 0 12px 40px rgba(20,20,19,0.16);
                 transform: translateY(10px) scale(0.98); transition: transform .2s ease; }
   .perm-overlay.open .perm-modal { transform: none; }
   .perm-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
@@ -257,8 +290,8 @@
   .perm-queue { font-size: 12px; color: var(--text3); font-family: var(--font-cn); white-space: nowrap; }
   .perm-tool { font-family: var(--font-cn); font-size: 13px; color: var(--text2); }
   .perm-tool b { color: var(--accent); font-weight: 500; }
-  .perm-params { background: rgba(0,0,0,0.25); border: 1px solid var(--border); border-radius: 10px;
-                 padding: 10px 12px; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 12px;
+  .perm-params { background: var(--c-track); border: 1px solid var(--border); border-radius: 10px;
+                 padding: 10px 12px; font-family: var(--font-mono); font-size: 12px;
                  line-height: 1.6; color: var(--text2); max-height: 40vh; overflow: auto;
                  white-space: pre-wrap; word-break: break-word; }
   .perm-countdown { font-size: 11px; color: var(--text3); font-family: var(--font-cn); text-align: center; }
@@ -267,8 +300,8 @@
   .perm-btn { flex: 1; min-height: 44px; border-radius: 12px; font-size: 15px; cursor: pointer;
               font-family: var(--font-cn); border: 1px solid transparent; transition: filter .15s; }
   .perm-btn:active { filter: brightness(1.2); }
-  .perm-btn-deny { background: transparent; color: var(--red); border-color: rgba(232,114,114,0.4); }
-  .perm-btn-allow { background: var(--accent); color: #fff; }
+  .perm-btn-deny { background: transparent; color: var(--red); border-color: rgba(181,51,51,0.4); }
+  .perm-btn-allow { background: var(--accent); color: var(--c-text-inverse); }
 
   /* ---- 子页面(记忆 / 状态 / 设置)---- */
   /* 全屏推入 + 左上 ← 返回聊天。移动端从右侧滑入,桌面常驻侧边栏时即时切换 */
@@ -324,10 +357,10 @@
                font-size: 15px; padding: 10px 13px; outline: none; }
   .set-input:focus { border-color: var(--accent-border); }
   .set-row { display: flex; justify-content: space-between; gap: 12px; padding: 9px 2px;
-             border-bottom: 1px solid rgba(255,255,255,0.06); font-size: 13px; }
+             border-bottom: 1px solid var(--c-border-faint); font-size: 13px; }
   .set-row .k { color: var(--text3); font-family: var(--font-cn); flex-shrink: 0; }
   .set-row .v { color: var(--text2); font-family: var(--font); text-align: right; word-break: break-all; }
-  .usage-model { padding: 9px 2px; border-bottom: 1px solid rgba(255,255,255,0.06); }
+  .usage-model { padding: 9px 2px; border-bottom: 1px solid var(--c-border-faint); }
   .usage-model .m { font-family: var(--font); font-size: 12px; color: var(--text2); margin-bottom: 3px; }
   .usage-model .t { font-family: var(--font); font-size: 12px; color: var(--text4); }
   /* 用量限额进度条(5h 窗 / 周限额)。阈值配色语义:<60% status 绿 / 60-85% ident 黄 / >85% chrome 红 */
@@ -335,11 +368,11 @@
   .quota-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px; }
   .quota-label { font-family: var(--font-cn); font-size: 13px; color: var(--text2); }
   .quota-pct { font-family: var(--font); font-size: 13px; color: var(--text3); font-variant-numeric: tabular-nums; }
-  .quota-track { height: 6px; border-radius: 3px; background: rgba(255,255,255,0.08); overflow: hidden; }
+  .quota-track { height: 6px; border-radius: 3px; background: var(--c-track); overflow: hidden; }
   .quota-fill { height: 100%; border-radius: 3px; transition: width 200ms ease; }
-  .quota-fill.green { background: #1DED83; }
-  .quota-fill.yellow { background: #F8EF00; }
-  .quota-fill.red { background: #F75049; }
+  .quota-fill.green { background: var(--c-online); }
+  .quota-fill.yellow { background: var(--c-warn); }
+  .quota-fill.red { background: var(--c-danger); }
   .quota-reset { font-family: var(--font); font-size: 11px; color: var(--text4); margin-top: 5px; }
   .usage-note { font-family: var(--font-cn); font-size: 12px; color: var(--text4); padding: 8px 2px 2px; line-height: 1.5; }
   @media (prefers-reduced-motion: reduce) { .quota-fill { transition: none; } }
@@ -372,9 +405,9 @@
   .ob-title { font-family: var(--font-cn); font-size: 22px; font-weight: 300; letter-spacing: 0.06em; }
   .ob-sub { font-family: var(--font-cn); font-size: 13px; color: var(--text3); margin: 8px 0 20px; }
   .ob-check-row { display: flex; gap: 12px; align-items: flex-start; padding: 12px 0;
-                  border-bottom: 1px solid rgba(255,255,255,0.06); }
+                  border-bottom: 1px solid var(--c-border-faint); }
   .ob-chk-icon { font-family: var(--font); font-size: 15px; width: 18px; text-align: center; flex-shrink: 0; }
-  .ob-check-row.ok .ob-chk-icon { color: #1DED83; }
+  .ob-check-row.ok .ob-chk-icon { color: var(--c-online); }
   .ob-check-row.bad .ob-chk-icon { color: var(--red); }
   .ob-check-row.neutral .ob-chk-icon { color: var(--text4); }
   .ob-chk-label { font-family: var(--font-cn); font-size: 15px; color: var(--text); }
@@ -386,7 +419,7 @@
                     font-size: 16px; padding: 11px 13px; outline: none; }
   .ob-field input:focus { border-color: var(--accent-border); }
   .ob-btn { margin-top: 24px; padding: 13px; border-radius: 12px; cursor: pointer; border: none;
-            background: var(--accent); color: #1a1816; font-family: var(--font-cn); font-size: 15px; min-height: 48px; }
+            background: var(--accent); color: var(--c-text-inverse); font-family: var(--font-cn); font-size: 15px; min-height: 48px; }
   .ob-btn:active { opacity: 0.85; }
   .ob-skip { margin-top: 10px; padding: 10px; background: none; border: none; cursor: pointer;
              color: var(--text4); font-family: var(--font-cn); font-size: 13px; min-height: 40px; }
