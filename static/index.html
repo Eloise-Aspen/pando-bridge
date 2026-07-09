@@ -105,7 +105,7 @@
   .comp-ctrl .model-slot{margin-right:auto}
   #input{width:100%;border:none;outline:none;background:none;resize:none;font:400 15px/1.55 var(--ui);color:var(--ink);min-height:24px;max-height:160px;padding:2px 0}
   .model-slot{position:relative;flex-shrink:0}
-  .model-btn{display:inline-flex;align-items:center;gap:3px;border:none;background:var(--card);border-radius:9999px;padding:5px 11px;font:500 12px var(--ui);color:var(--text2);cursor:pointer;white-space:nowrap}
+  .model-btn{display:inline-flex;align-items:center;gap:3px;border:none;background:var(--card);box-shadow:var(--e1-shadow);border-radius:9999px;padding:5px 11px;font:500 12px var(--ui);color:var(--text2);cursor:pointer;white-space:nowrap}
   .model-pop{position:absolute;left:0;bottom:calc(100% + 6px);background:var(--card);border:1px solid var(--line-strong);border-radius:10px;padding:4px;min-width:150px;box-shadow:0 10px 30px rgba(31,30,29,.16);z-index:20}
   .model-opt{padding:9px 12px;border-radius:7px;font:400 13.5px var(--ui);color:var(--dim);cursor:pointer}
   .model-opt.sel{background:var(--accent-bg);color:var(--accent-press);font-weight:500}
@@ -129,8 +129,10 @@
   .think-pill{align-self:flex-start;display:inline-flex;align-items:center;gap:5px;background:var(--surface);border:none;border-radius:9999px;padding:4px 10px;cursor:pointer;font:500 11px var(--ui);color:var(--icon)}
   .think-pill.tool-only{color:#B07A5E}
   .think-pill svg{flex-shrink:0}
-  .think-body{align-self:stretch;border-left:2px solid rgba(217,119,87,.3);padding-left:14px;font:400 13px/1.75 var(--ui);color:var(--faint);white-space:pre-wrap}
-  .think-tool{font:400 12px/1.7 var(--ui);color:var(--dim)}
+  /* 桌面(≥880px)"原文处展开"态:不弹底部弹窗,直接在 chip 下方续写(边线样式沿用早期未启用的稿子) */
+  .think-body{align-self:stretch;margin-top:8px;border-left:2px solid rgba(217,119,87,.3);padding:2px 0 2px 14px;font:400 14px/1.8 var(--ui);color:var(--dim);white-space:pre-wrap;word-break:break-word;max-height:320px;overflow:auto}
+  .think-body .ti-meta{font:400 11.5px var(--ui);color:var(--fainter);margin-bottom:8px;font-variant-numeric:tabular-nums}
+  .think-tool{font:400 12.5px/1.7 var(--ui);color:var(--dim);padding-top:8px;margin-top:8px;border-top:1px solid var(--line-soft)}
   .think-tool b{color:var(--accent-press);font-weight:600}
   .a-text{font:400 16.5px/1.9 var(--ui);color:var(--ink);white-space:pre-wrap;word-break:break-word}
   .a-usage{font:400 11px var(--ui);font-variant-numeric:tabular-nums;color:var(--fainter)}
@@ -197,6 +199,16 @@
   .think-sheet-body{padding:16px 20px calc(28px + var(--safe-bottom));max-height:50vh;overflow:auto;font:400 14.5px/1.85 var(--ui);color:var(--dim);white-space:pre-wrap;word-break:break-word;-webkit-overflow-scrolling:touch}
   .think-sheet-body .tool-ln{font:400 12.5px/1.7 var(--ui);color:var(--dim);padding:8px 0 0;border-top:1px solid var(--line-soft);margin-top:10px}
   .think-sheet-body .tool-ln b{color:var(--accent-press);font-weight:600}
+  /* ---- 删除记忆二次确认(居中弹窗,非底部弹层——一次性判断,不需要抓手/拖拽语义) ---- */
+  .confirm-ov{position:absolute;inset:0;background:rgba(20,20,19,.4);z-index:140;display:flex;align-items:center;justify-content:center;opacity:0;pointer-events:none;transition:opacity .2s}
+  .confirm-ov.open{opacity:1;pointer-events:auto}
+  .confirm-card{width:280px;background:var(--card);border-radius:16px;padding:20px 20px 16px;box-shadow:0 20px 60px rgba(31,30,29,.18);transform:scale(.96);transition:transform .15s}
+  .confirm-ov.open .confirm-card{transform:scale(1)}
+  .confirm-tt{font:600 15px var(--ui);color:var(--text)}
+  .confirm-sub{font:400 13px/1.6 var(--ui);color:var(--faint);margin-top:6px}
+  .confirm-btns{display:flex;gap:8px;margin-top:18px}
+  .confirm-btns button{flex:1;border-radius:10px;padding:10px;font:500 13.5px var(--ui);cursor:pointer}
+  .btn-danger-fill{border:none;background:var(--danger);color:#fff}
   /* ---- context indicator (chat header) ---- */
   .ctx-slot{position:relative;flex-shrink:0}
   .ctx-btn{display:inline-flex;align-items:center;gap:6px;border:none;background:var(--card);border-radius:9999px;padding:3px 10px 3px 5px;cursor:pointer;box-shadow:0 1px 3px rgba(31,30,29,.06)}
@@ -313,6 +325,11 @@
     @media (hover:hover){
       .navitem:hover,.sitem:hover,.model-opt:hover,.set-menu .mi:hover{background:var(--surface)}
     }
+    /* 权限弹层桌面态:不再是打断式的底部弹层,改成右下角悬浮通知——
+       背景透明且 pointer-events:none(不挡身后操作),只有卡片本身可点 */
+    #perm-ov{background:transparent;align-items:flex-end;justify-content:flex-end;padding:22px;pointer-events:none}
+    #perm-ov .sheet{width:380px;max-width:380px;border-radius:16px;box-shadow:0 14px 40px rgba(31,30,29,.16);pointer-events:auto}
+    #perm-ov .sheet-grab{display:none}
   }
 </style>
 </head>
@@ -430,6 +447,18 @@
         <button class="icon-btn" onclick="closeThinkSheet()" aria-label="关闭"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"></path></svg></button>
       </div>
       <div class="think-sheet-body" id="think-sheet-body"></div>
+    </div>
+  </div>
+
+  <!-- ============ 删除记忆二次确认(居中弹窗,Pando Kit 备注要求)============ -->
+  <div class="confirm-ov" id="confirm-ov" onclick="if(event.target===this)closeConfirm()">
+    <div class="confirm-card">
+      <div class="confirm-tt">删除这条记忆?</div>
+      <div class="confirm-sub">删除后无法恢复。</div>
+      <div class="confirm-btns">
+        <button class="btn-ghost" onclick="closeConfirm()">取消</button>
+        <button class="btn-danger-fill" onclick="confirmDeleteMemory()">删除</button>
+      </div>
     </div>
   </div>
 
@@ -635,7 +664,13 @@ async function renderMemories(){
     return `<div class="mem-card"><div class="tx">${text}</div><div class="ft"><span class="mem-date">${date}</span><button class="mem-del" onclick="deleteMemory('${m.id}')">${TRASH}</button></div></div>`;
   }).join('');
 }
-async function deleteMemory(id){ try{ const r=await fetch(`/memory-admin/memory/${id}`,{method:'DELETE'}); if(r.ok){ toast('已删除记忆'); loadMemory(); } }catch(e){} }
+let pendingDeleteId=null;
+function deleteMemory(id){ pendingDeleteId=id; $('confirm-ov').classList.add('open'); }
+function closeConfirm(){ pendingDeleteId=null; $('confirm-ov').classList.remove('open'); }
+async function confirmDeleteMemory(){
+  const id=pendingDeleteId; if(!id) return; closeConfirm();
+  try{ const r=await fetch(`/memory-admin/memory/${id}`,{method:'DELETE'}); if(r.ok){ toast('已删除记忆'); loadMemory(); } }catch(e){}
+}
 
 /* ===== STATUS ===== */
 async function loadStatus(){
@@ -806,7 +841,15 @@ function fmtThinkCount(n){ return n>=1000 ? (n/1000).toFixed(1)+'k' : String(n);
 const IC_WRENCH='<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 7l-1.5-1.5a3 3 0 0 0-4 0l-.5.5 5.5 5.5.5-.5a3 3 0 0 0 0-4zM4 20l4-1 8-8-3-3-8 8-1 4z"></path></svg>';
 // thinking 收起态 pill(Pando Kit chip 规格:象牙底不描边 + 图标 + 「思考 · 1.2k ▸」纯文本——
 // 原型 CHAT 屏这处没跟 Kit 同步,按用户裁决以 Kit 为准,忽略原型)
-// → 点开底部弹窗展示(不打断正文阅读、不跳滚动);工具行折叠进同一弹窗
+// → 移动端点开底部弹窗(不打断正文阅读、不跳滚动);桌面端(≥880px)在原文处就地展开,不弹层
+const DESKTOP_MQ = window.matchMedia('(min-width:880px)');
+function renderThinkLines(container, thinking, tools, toolClass){
+  container.innerHTML='';
+  if(thinking){ const tx=document.createElement('div'); tx.textContent=thinking; container.appendChild(tx); }
+  (tools||[]).forEach(tl=>{ const ln=document.createElement('div'); ln.className=toolClass;
+    const nm=escHtml(tl.tool||''); const pv=escHtml((tl.preview||'').replace(/\s+/g,' ').trim().slice(0,200));
+    ln.innerHTML=`<b>${nm}</b>${pv?' · '+pv:''}`; container.appendChild(ln); });
+}
 function addThinking(row, thinking, tools, durationMs){
   thinking=thinking||''; tools=tools||[];
   if(!thinking && !tools.length) return;
@@ -814,20 +857,29 @@ function addThinking(row, thinking, tools, durationMs){
   const pill=document.createElement('button'); pill.className='think-pill'+(thinking?'':' tool-only');
   const icon = thinking ? PANDO_LOGO(11) : IC_WRENCH;
   const label = thinking ? `思考 · ${fmtDur(durationMs)}` : `工具 · ${tools.length}`;
-  pill.innerHTML=`${icon}<span>${label} ▸</span>`;
-  pill.onclick=()=>openThinkSheet(thinking, tools, durationMs);
+  pill.innerHTML=`${icon}<span>${label}</span><span class="tp-car"> ▸</span>`;
+  pill.onclick=()=> DESKTOP_MQ.matches ? toggleThinkInline(pill, thinking, tools, durationMs) : openThinkSheet(thinking, tools, durationMs);
   head.insertAdjacentElement('afterend', pill);
+}
+function toggleThinkInline(pill, thinking, tools, durationMs){
+  const car=pill.querySelector('.tp-car');
+  const existing=pill.nextElementSibling;
+  if(existing && existing.classList.contains('think-body')){ existing.remove(); car.textContent=' ▸'; return; }
+  const panel=document.createElement('div'); panel.className='think-body';
+  const metaParts=[]; if(durationMs) metaParts.push(fmtDur(durationMs));
+  if(thinking) metaParts.push(fmtThinkCount(thinking.length)+' tokens');
+  if(metaParts.length){ const m=document.createElement('div'); m.className='ti-meta'; m.textContent=metaParts.join(' · '); panel.appendChild(m); }
+  const inner=document.createElement('div'); panel.appendChild(inner);
+  renderThinkLines(inner, thinking, tools, 'think-tool');
+  pill.insertAdjacentElement('afterend', panel);
+  car.textContent=' ▾';
 }
 function openThinkSheet(thinking, tools, durationMs){
   // 弹窗头部保留时长 + token 数两项(用户澄清:上一轮误删了 token 数,只有 chip 上不要它)
   const metaParts=[]; if(durationMs) metaParts.push(fmtDur(durationMs));
   if(thinking) metaParts.push(fmtThinkCount(thinking.length)+' tokens');
   $('think-sheet-meta').textContent = metaParts.join(' · ');
-  const body=$('think-sheet-body'); body.innerHTML='';
-  if(thinking){ const tx=document.createElement('div'); tx.textContent=thinking; body.appendChild(tx); }
-  (tools||[]).forEach(tl=>{ const ln=document.createElement('div'); ln.className='tool-ln';
-    const nm=escHtml(tl.tool||''); const pv=escHtml((tl.preview||'').replace(/\s+/g,' ').trim().slice(0,200));
-    ln.innerHTML=`<b>${nm}</b>${pv?' · '+pv:''}`; body.appendChild(ln); });
+  renderThinkLines($('think-sheet-body'), thinking, tools, 'tool-ln');
   $('think-ov').classList.add('open');
 }
 function closeThinkSheet(){ $('think-ov').classList.remove('open'); }
