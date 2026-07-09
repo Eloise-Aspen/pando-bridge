@@ -430,6 +430,25 @@
   .ob-skip { margin-top: 10px; padding: 10px; background: none; border: none; cursor: pointer;
              color: var(--text4); font-family: var(--font-cn); font-size: 13px; min-height: 40px; }
   .ob-skip:active { color: var(--text2); }
+
+  /* ---- 会话搜索 + 分时段分组(侧边栏)---- */
+  .sidebar-search { padding: 8px 8px 4px; }
+  .sidebar-search input { width: 100%; background: var(--surface); border: 1px solid var(--border);
+                          border-radius: var(--r-input); color: var(--text); font-family: var(--font-cn);
+                          font-size: 14px; padding: 9px 12px; outline: none; }
+  .sidebar-search input:focus { border-color: var(--accent-border); }
+  .session-group-label { font-family: var(--font-cn); font-size: 11px; color: var(--text3);
+                         letter-spacing: 0.04em; padding: 10px 12px 4px; }
+  /* ---- 设置开关行 + 开关(kit「开关行」)---- */
+  .set-toggle-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .toggle { width: 44px; height: 26px; border-radius: var(--r-pill); background: var(--c-toggle-off);
+            border: none; position: relative; cursor: pointer; flex-shrink: 0; padding: 0; transition: background .18s; }
+  .toggle::after { content: ''; position: absolute; top: 3px; left: 3px; width: 20px; height: 20px;
+                   border-radius: 50%; background: var(--c-surface); transition: transform .18s;
+                   box-shadow: 0 1px 3px rgba(20,20,19,0.2); }
+  .toggle.on { background: var(--accent); }
+  .toggle.on::after { transform: translateX(18px); }
+  @media (prefers-reduced-motion: reduce) { .toggle, .toggle::after { transition: none; } }
 </style>
 </head>
 <body>
@@ -443,6 +462,10 @@
   <div class="sidebar-header">
     <h2 data-i18n="sidebarTitle">对话记录</h2>
     <button class="new-chat-btn" onclick="newConversation()"><i class="ti ti-plus"></i> <span data-i18n="newChat">新对话</span></button>
+  </div>
+  <div class="sidebar-search">
+    <input id="session-search" type="search" autocomplete="off" data-i18n-ph="searchPlaceholder"
+           placeholder="搜索对话" oninput="renderSessions(this.value)">
   </div>
   <div class="session-list" id="session-list"></div>
   <div class="sidebar-divider"></div>
@@ -501,7 +524,7 @@
         onchange="onFilesSelected(event)">
       <button class="attach-btn" id="attach-btn" onclick="onAttachClick()" data-i18n-aria="ariaAttach" aria-label="添加附件"><i class="ti ti-paperclip"></i></button>
       <textarea id="input" rows="1" placeholder="在这里输入…" data-i18n-ph="inputPlaceholder"
-        onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();send();}"></textarea>
+        onkeydown="onInputKey(event)"></textarea>
       <button class="send-btn" id="btn" onclick="onSendBtn()" data-i18n-aria="ariaSend" aria-label="发送"><i class="ti ti-arrow-up"></i></button>
     </div>
   </div>
@@ -604,7 +627,9 @@ const $msg = $('messages'), $input = $('input'), $btn = $('btn'),
       $dot = $('dot'), $greeting = $('greeting'),
       $status = $('topbar-status');
 
-let currentModel = '';  // 会话内记住的模型选择,空 = 走 CLI 默认模型
+let currentModel = localStorage.getItem('defaultModel') || '';  // 默认模型(localStorage 持久化),空 = 走 CLI 默认
+let enterToSend = localStorage.getItem('enterToSend') !== '0';  // 回车即发送开关,默认开
+let allSessions = [];  // 侧边栏会话原始列表(搜索/分组基于它重渲染)
 
 const escHtml = s => (s || '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
@@ -652,6 +677,8 @@ const I18N = {
     memNoMatch: '没有匹配的记忆', memEmpty: '暂无记忆',
     memDeleteConfirm: '删除这条记忆?', memDeleteFailed: '删除失败',
     setNick: '你的昵称', setAsst: '助手名称', setTheme: '主题', setServer: '服务端信息', setUsage: '用量统计',
+    setModel: '默认模型', setEnter: '回车即发送', searchPlaceholder: '搜索对话', noMatch: '没有匹配的对话',
+    grpToday: '今天', grpYesterday: '昨天', grpWeek: '本周内', grpEarlier: '更早',
     themeDefault: '简洁(默认)', themeSmoke: '占位主题(验证用)',
     svVersion: '版本', svService: '服务', svHost: '主机', svCli: 'Claude CLI', svMemory: '记忆服务',
     memUnconf: '未配置', memOnline: '已配置 · 在线', memOffline: '已配置 · 离线',
@@ -702,6 +729,8 @@ const I18N = {
     memNoMatch: 'No matching memories', memEmpty: 'No memories yet',
     memDeleteConfirm: 'Delete this memory?', memDeleteFailed: 'Delete failed',
     setNick: 'Your nickname', setAsst: 'Assistant name', setTheme: 'Theme', setServer: 'Server info', setUsage: 'Usage',
+    setModel: 'Default model', setEnter: 'Enter to send', searchPlaceholder: 'Search chats', noMatch: 'No matching chats',
+    grpToday: 'Today', grpYesterday: 'Yesterday', grpWeek: 'This week', grpEarlier: 'Earlier',
     themeDefault: 'Simple (default)', themeSmoke: 'Placeholder (test)',
     svVersion: 'Version', svService: 'Service', svHost: 'Host', svCli: 'Claude CLI', svMemory: 'Memory service',
     memUnconf: 'Not configured', memOnline: 'Configured · online', memOffline: 'Configured · offline',
@@ -722,7 +751,7 @@ function applyI18n() {
   document.querySelectorAll('[data-i18n-ph]').forEach(el => el.placeholder = t(el.dataset.i18nPh));
   document.querySelectorAll('[data-i18n-title]').forEach(el => el.title = t(el.dataset.i18nTitle));
   document.querySelectorAll('[data-i18n-aria]').forEach(el => el.setAttribute('aria-label', t(el.dataset.i18nAria)));
-  $('model-btn').textContent = t('modelDefault') + ' ▾';
+  applyModel(currentModel);  // 按持久化的默认模型刷 label + popup 选中态(语言切换时也刷)
   $('greeting-name').textContent = t('greeting')(USER_NICKNAME);  // 先按默认昵称铺一遍,loadConfig 再细化
 }
 
@@ -771,10 +800,38 @@ function closeSidebar() { $('sidebar').classList.remove('open'); $('overlay').cl
 
 async function loadSessions() {
   try {
-    const sessions = await (await fetch('/sessions?limit=30')).json();
-    const list = $('session-list');
-    list.innerHTML = '';
-    sessions.forEach(s => {
+    allSessions = await (await fetch('/sessions?limit=30')).json();
+    renderSessions($('session-search') ? $('session-search').value : '');
+  } catch (e) { console.error('loadSessions', e); }
+}
+// 分时段分组:今天/昨天/本周内/更早(按 updated_at)
+function sessionBucket(ts) {
+  if (!ts) return 'grpEarlier';
+  const now = new Date();
+  const startToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const day = 86400000, t0 = new Date(ts).getTime();
+  if (t0 >= startToday) return 'grpToday';
+  if (t0 >= startToday - day) return 'grpYesterday';
+  if (t0 >= startToday - 6 * day) return 'grpWeek';
+  return 'grpEarlier';
+}
+// 会话搜索(按标题过滤)+ 分时段分组渲染;两者都基于 allSessions 重算
+function renderSessions(query) {
+  const list = $('session-list'); if (!list) return;
+  list.innerHTML = '';
+  const q = (query || '').trim().toLowerCase();
+  const items = allSessions.filter(s => !q || (s.title || '').toLowerCase().includes(q));
+  if (!items.length) {
+    const e = document.createElement('div'); e.className = 'mem-empty';
+    e.textContent = q ? t('noMatch') : ''; list.appendChild(e); return;
+  }
+  const groups = {};
+  items.forEach(s => { const b = sessionBucket(s.updated_at); (groups[b] = groups[b] || []).push(s); });
+  ['grpToday', 'grpYesterday', 'grpWeek', 'grpEarlier'].forEach(b => {
+    if (!groups[b]) return;
+    const h = document.createElement('div'); h.className = 'session-group-label'; h.textContent = t(b);
+    list.appendChild(h);
+    groups[b].forEach(s => {
       const el = document.createElement('div');
       el.className = 'session-item' + (s.id === currentSessionId ? ' active' : '');
       const date = s.updated_at ? new Date(s.updated_at).toLocaleDateString(LANG === 'zh' ? 'zh-CN' : 'en-US', {month:'short', day:'numeric', hour:'2-digit', minute:'2-digit'}) : '';
@@ -783,7 +840,7 @@ async function loadSessions() {
       el.onclick = () => switchSession(s.id);
       list.appendChild(el);
     });
-  } catch (e) { console.error('loadSessions', e); }
+  });
 }
 
 async function switchSession(sid) {
@@ -1074,26 +1131,57 @@ function toggleModelPopup() {
   const p = $('model-popup');
   p.style.display = p.style.display === 'none' ? 'block' : 'none';
 }
-function selectModel(el) {
-  currentModel = el.dataset.value;
-  $('model-btn').textContent = el.textContent + ' ▾';
-  document.querySelectorAll('#model-popup .model-option').forEach(o => o.classList.remove('selected'));
-  el.classList.add('selected');
-  $('model-popup').style.display = 'none';
+const MODEL_LABELS = { 'claude-fable-5':'Fable 5', 'claude-opus-4-8':'Opus 4.8',
+                       'claude-sonnet-5':'Sonnet 5', 'claude-haiku-4-5-20251001':'Haiku 4.5' };
+const modelLabel = id => MODEL_LABELS[id] || id;
+// 统一的模型应用:更新输入区 label + popup 选中态 + localStorage 持久化 + 设置页选择器联动。
+// 输入区与设置页共用它——「默认模型」改一处两处同步(spec 吸收小件)。
+function applyModel(value) {
+  currentModel = value || '';
+  $('model-btn').textContent = (currentModel ? modelLabel(currentModel) : t('modelDefault')) + ' ▾';
+  document.querySelectorAll('#model-popup .model-option').forEach(o =>
+    o.classList.toggle('selected', (o.dataset.value || '') === currentModel));
+  if (currentModel) localStorage.setItem('defaultModel', currentModel);
+  else localStorage.removeItem('defaultModel');
+  const sel = document.getElementById('set-model');
+  if (sel) syncModelSelect(sel);
 }
+function syncModelSelect(sel) {
+  // 当前模型是自定义 id(不在预置项里)时,补一个 option 让 select 能显示它
+  if (currentModel && ![...sel.options].some(o => o.value === currentModel)) {
+    const o = document.createElement('option');
+    o.value = currentModel; o.textContent = modelLabel(currentModel); sel.appendChild(o);
+  }
+  sel.value = currentModel || '';
+}
+function selectModel(el) { applyModel(el.dataset.value); $('model-popup').style.display = 'none'; }
 // 自定义模型:输入任意 model id,经 WS → CLI --model 透传(旧模型不穷举,自定义兜底)
 function selectCustomModel() {
   $('model-popup').style.display = 'none';
   const id = (prompt(t('customModelPrompt'), currentModel) || '').trim();
-  if (!id) return;
-  currentModel = id;
-  $('model-btn').textContent = id + ' ▾';
-  document.querySelectorAll('#model-popup .model-option').forEach(o => o.classList.remove('selected'));
+  if (id) applyModel(id);
 }
 // 点 popup 之外的区域关闭它
 document.addEventListener('click', e => {
   if (!e.target.closest('.model-slot')) $('model-popup').style.display = 'none';
 });
+
+// 回车即发送开关(localStorage 持久化):开=回车发送/Shift+回车换行(旧行为);
+// 关=回车换行,发送靠发送键或 Cmd/Ctrl+回车。
+function onInputKey(e) {
+  if (e.key !== 'Enter') return;
+  const doSend = enterToSend ? !e.shiftKey : (e.metaKey || e.ctrlKey);
+  if (doSend) { e.preventDefault(); send(); }
+}
+function setEnterToSend(on) {
+  enterToSend = !!on;
+  if (enterToSend) localStorage.removeItem('enterToSend'); else localStorage.setItem('enterToSend', '0');
+}
+function toggleEnterSetting() {
+  setEnterToSend(!enterToSend);
+  const b = $('set-enter');
+  if (b) { b.classList.toggle('on', enterToSend); b.setAttribute('aria-checked', String(enterToSend)); }
+}
 
 /* ===== Toast ===== */
 // 轻量瞬时提示(附件报错等)。自建元素、2.6s 后淡出移除,不依赖任何库。
@@ -1484,6 +1572,22 @@ function loadSettings() {
       </select>
     </div>
     <div class="set-group">
+      <div class="set-label">${t('setModel')}</div>
+      <select class="set-input" id="set-model" onchange="applyModel(this.value)">
+        <option value="">${t('modelDefault')}</option>
+        <option value="claude-fable-5">Fable 5</option>
+        <option value="claude-opus-4-8">Opus 4.8</option>
+        <option value="claude-sonnet-5">Sonnet 5</option>
+        <option value="claude-haiku-4-5-20251001">Haiku 4.5</option>
+      </select>
+    </div>
+    <div class="set-group">
+      <div class="set-toggle-row">
+        <span class="set-label" style="margin-bottom:0">${t('setEnter')}</span>
+        <button class="toggle" id="set-enter" role="switch" onclick="toggleEnterSetting()"></button>
+      </div>
+    </div>
+    <div class="set-group">
       <div class="set-label">${t('setServer')}</div>
       <div id="server-info"><div class="set-row"><span class="k">${t('loading')}</span><span class="v"></span></div></div>
     </div>
@@ -1494,6 +1598,8 @@ function loadSettings() {
   $('set-nick').value = localStorage.getItem('userNickname') || (USER_NICKNAME === 'User' ? '' : USER_NICKNAME);
   $('set-asst').value = localStorage.getItem('assistantName') || (ASSISTANT_NAME === 'Claude' ? '' : ASSISTANT_NAME);
   $('set-theme').value = localStorage.getItem('theme') || '';
+  syncModelSelect($('set-model'));  // 默认模型选择器回填当前值(与输入区联动)
+  const et = $('set-enter'); et.classList.toggle('on', enterToSend); et.setAttribute('aria-checked', String(enterToSend));
   $('set-nick').oninput = debounce(saveIdentity, 400);
   $('set-asst').oninput = debounce(saveIdentity, 400);
   loadServerInfo();
