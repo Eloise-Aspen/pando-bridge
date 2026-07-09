@@ -70,7 +70,7 @@
   .recent-h{font:600 10.5px var(--ui);letter-spacing:.1em;color:var(--hint);text-transform:uppercase;padding:0 0 2px}
   .recent-item{display:flex;align-items:baseline;gap:10px;padding:11px 0;border-bottom:1px solid rgba(31,30,29,.05);cursor:pointer}
   .recent-item .t{flex:1;font:400 14px var(--ui);color:var(--text2);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .recent-item .w{font:400 11px var(--code);color:var(--fainter);flex-shrink:0}
+  .recent-item .w{font:400 11px var(--ui);color:var(--fainter);flex-shrink:0}
 
   /* ---- composer ---- */
   .composer{padding:12px 18px 16px;flex-shrink:0}
@@ -84,7 +84,8 @@
   .attach-chip.error{border-color:var(--danger);color:var(--danger)}
   .chip-x{cursor:pointer;display:flex;color:var(--faint)}
   .chip-spin{width:12px;height:12px;border:2px solid var(--faint);border-top-color:transparent;border-radius:50%}
-  .comp-line{display:flex;align-items:center;gap:8px}
+  .comp-line{display:flex;align-items:flex-end;gap:8px}
+  .comp-line>.icon-btn.lead{align-self:flex-start}
   .comp-line.home{border-top:1px solid var(--line);padding-top:12px}
   #input{flex:1;min-width:0;border:none;outline:none;background:none;resize:none;font:400 15px var(--ui);color:var(--ink);max-height:120px;line-height:1.5;padding:2px 0}
   .model-slot{position:relative;flex-shrink:0}
@@ -109,12 +110,12 @@
   .a-head .nm{font:600 11px var(--ui);letter-spacing:.06em;color:var(--icon);text-transform:uppercase}
   .think-pill{align-self:flex-start;display:inline-flex;align-items:center;gap:6px;background:var(--surface);border:1px solid var(--line);border-radius:9999px;padding:5px 12px;cursor:pointer}
   .think-pill .lb{font:500 11px var(--ui);letter-spacing:.05em;color:var(--icon);text-transform:uppercase}
-  .think-pill .ca{font:600 10px var(--code);color:var(--faint)}
+  .think-pill .ca{font:600 10px var(--ui);color:var(--faint)}
   .think-body{align-self:stretch;border-left:2px solid rgba(217,119,87,.3);padding-left:14px;font:400 13px/1.75 var(--ui);color:var(--faint);white-space:pre-wrap}
-  .think-tool{font:400 12px/1.7 var(--code);color:var(--dim)}
+  .think-tool{font:400 12px/1.7 var(--ui);color:var(--dim)}
   .think-tool b{color:var(--accent-press);font-weight:600}
   .a-text{font:400 16.5px/1.9 var(--ui);color:var(--ink);white-space:pre-wrap;word-break:break-word}
-  .a-usage{display:flex;gap:8px;font:400 11px var(--code);color:var(--fainter)}
+  .a-usage{display:flex;gap:8px;font:400 11px var(--ui);color:var(--fainter)}
   .a-tools{display:flex;align-items:center;gap:2px;margin-top:2px}
   .a-tool{border:none;background:none;padding:7px;color:var(--faint);cursor:pointer;display:flex}
   .a-tool:active{color:var(--accent-press)}
@@ -145,8 +146,8 @@
   .sitem{padding:9px 12px;border-radius:9px;cursor:pointer}
   .sitem.active,.sitem:active{background:var(--surface)}
   .sitem .t{font:400 14px var(--ui);color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-  .sitem .m{font:400 12px var(--code);color:var(--fainter);margin-top:2px}
-  .dfoot{padding:12px 16px;border-top:1px solid var(--line);font:400 11px var(--code);letter-spacing:.04em;color:var(--fainter);flex-shrink:0}
+  .sitem .m{font:400 12px var(--ui);color:var(--fainter);margin-top:2px}
+  .dfoot{padding:12px 16px;border-top:1px solid var(--line);font:400 11px var(--ui);letter-spacing:.04em;color:var(--fainter);flex-shrink:0}
 
   /* ---- permission sheet ---- */
   .sheet-ov{position:absolute;inset:0;background:rgba(20,20,19,.4);z-index:130;display:flex;align-items:flex-end;justify-content:center;opacity:0;pointer-events:none;transition:opacity .2s}
@@ -166,6 +167,11 @@
   .perm-row2{display:flex;gap:9px}
   .btn-ghost{flex:1;border:1px solid var(--line-strong);background:var(--card);color:var(--text2);border-radius:12px;padding:12px;font:500 14px var(--ui);cursor:pointer}
   .btn-deny{flex:1;border:1px solid rgba(181,51,51,.28);background:var(--card);color:var(--danger-text);border-radius:12px;padding:12px;font:500 14px var(--ui);cursor:pointer}
+  /* ---- thinking sheet ---- */
+  .think-sheet-hd{display:flex;align-items:center;justify-content:space-between;font:600 14px var(--ui);color:var(--text2);letter-spacing:.03em;margin-bottom:12px}
+  .think-sheet-body{max-height:56vh;overflow:auto;font:400 14px/1.8 var(--ui);color:var(--dim);white-space:pre-wrap;word-break:break-word;-webkit-overflow-scrolling:touch}
+  .think-sheet-body .tool-ln{font:400 12.5px/1.7 var(--ui);color:var(--dim);padding:8px 0 0;border-top:1px solid var(--line-soft);margin-top:10px}
+  .think-sheet-body .tool-ln b{color:var(--accent-press);font-weight:600}
 
   /* ---- toast ---- */
   .toast{position:absolute;left:50%;bottom:calc(84px + var(--safe-bottom));transform:translateX(-50%) translateY(6px);background:var(--ink);color:#FAF9F5;font:400 13px var(--ui);padding:9px 16px;border-radius:9999px;z-index:200;max-width:82%;text-align:center;opacity:0;pointer-events:none;transition:opacity .2s,transform .2s}
@@ -191,7 +197,7 @@
   .mem-card .tx{font:400 15px/1.72 var(--ui);color:var(--ink)}
   .mem-card .ft{display:flex;align-items:center;gap:8px;margin-top:11px}
   .mem-tag{border-radius:6px;padding:2px 8px;font:500 11px var(--ui)}
-  .mem-date{font:400 11px var(--code);color:var(--fainter)}
+  .mem-date{font:400 11px var(--ui);color:var(--fainter)}
   .mem-del{margin-left:auto;border:none;background:none;padding:2px;color:#D6D3C9;cursor:pointer;display:flex}
   /* status */
   .st-grid{display:grid;grid-template-columns:1fr 1fr;gap:11px;padding:18px 20px 0}
@@ -199,17 +205,17 @@
   .st-card.dim{opacity:.5}
   .st-card .lb{display:flex;align-items:center;gap:7px;font:500 12px var(--ui);color:var(--dim)}
   .st-card .vl{font:500 18px var(--ui);color:var(--text);margin-top:11px}
-  .st-card .sb{font:400 11px var(--code);color:var(--faint);margin-top:4px}
+  .st-card .sb{font:400 11px var(--ui);color:var(--faint);margin-top:4px}
   .st-sec{font:600 11px var(--ui);letter-spacing:.07em;color:var(--fainter);text-transform:uppercase;margin:24px 22px 12px}
   .st-box{margin:0 20px;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px}
   .st-box.rows{padding:0;overflow:hidden}
   .quota+.quota{margin-top:18px}
   .quota .qh{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px}
   .quota .qh .k{font:400 13px var(--ui);color:var(--text2)}
-  .quota .qh .p{font:500 13px var(--code);color:var(--dim)}
+  .quota .qh .p{font:500 13px var(--ui);color:var(--dim)}
   .qbar{height:6px;border-radius:3px;background:var(--track);overflow:hidden}
   .qbar>div{height:100%;border-radius:3px}
-  .quota .rs{font:400 10.5px var(--code);color:var(--faint);margin-top:6px}
+  .quota .rs{font:400 10.5px var(--ui);color:var(--faint);margin-top:6px}
   .tool-row{display:flex;align-items:center;gap:11px;padding:13px 15px;border-bottom:1px solid var(--line-soft)}
   .tool-row:last-child{border-bottom:none}
   .tool-row .nm{flex:1;font:400 14px var(--ui);color:var(--ink)}
@@ -220,7 +226,7 @@
   .set-field .lb{font:400 12px var(--ui);color:var(--faint);margin-bottom:8px}
   .set-input{width:100%;background:var(--card);border:1px solid var(--line-strong);border-radius:10px;padding:11px 13px;font:400 15px var(--ui);color:var(--ink);outline:none}
   .set-sec{font:600 11px var(--ui);letter-spacing:.07em;color:var(--fainter);text-transform:uppercase;margin:0 2px 10px}
-  .set-group{background:var(--card);border:1px solid var(--line);border-radius:14px;overflow:hidden;position:relative;margin-bottom:22px}
+  .set-group{background:var(--card);border:1px solid var(--line);border-radius:14px;position:relative;margin-bottom:22px}
   .set-row{display:flex;align-items:center;padding:13px 15px;border-bottom:1px solid var(--line-soft)}
   .set-row:last-child{border-bottom:none}
   .set-row .k{flex:1;font:400 14.5px var(--ui);color:var(--ink)}
@@ -324,6 +330,15 @@
     </div>
   </div>
 
+  <!-- ============ THINKING SHEET ============ -->
+  <div class="sheet-ov" id="think-ov" onclick="if(event.target===this)closeThinkSheet()">
+    <div class="sheet think-sheet">
+      <div class="grab"></div>
+      <div class="think-sheet-hd"><span>思考过程</span><button class="icon-btn" onclick="closeThinkSheet()" style="margin:-6px -6px 0 0" aria-label="关闭"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"></path></svg></button></div>
+      <div class="think-sheet-body" id="think-sheet-body"></div>
+    </div>
+  </div>
+
   <div class="toast" id="toast"></div>
   <input type="file" id="file-input" multiple style="display:none" onchange="onFilesSelected(event)">
 </div>
@@ -389,7 +404,7 @@ function renderChips(){
 /* ===== composer (shared, rendered into both home & chat) ===== */
 function composerHTML(){
   return `<button class="icon-btn lead" onclick="$('file-input').click()" aria-label="附件">${IC.attach}</button>`+
-    `<textarea id="input" rows="1" placeholder="写点什么…" onkeydown="onInputKey(event)"></textarea>`+
+    `<textarea id="input" rows="1" placeholder="写点什么…" onkeydown="onInputKey(event)" oninput="autoGrow(this)"></textarea>`+
     `<span class="model-slot"><button class="model-btn" id="model-btn" onclick="toggleModel(event)">${escHtml(modelLabel(currentModel))} ▾</button>`+
     `<div class="model-pop" id="model-pop" style="display:none"></div></span>`+
     `<button class="send" id="send-btn" onclick="onSendBtn()" aria-label="发送">${IC.send}</button>`;
@@ -425,6 +440,7 @@ document.addEventListener('click',e=>{ if(!e.target.closest('.model-slot')) docu
 
 let enterToSend = localStorage.getItem('enterToSend')!=='0';
 function onInputKey(e){ if(e.key!=='Enter') return; const s = enterToSend?!e.shiftKey:(e.metaKey||e.ctrlKey); if(s){ e.preventDefault(); send(); } }
+function autoGrow(el){ el.style.height='auto'; el.style.height=Math.min(el.scrollHeight,120)+'px'; }
 
 /* ===== view routing ===== */
 function go(v){
@@ -454,6 +470,9 @@ async function loadMemory(){
   renderMemories();
 }
 function fmtChars(n){ if(!n) return '0 字'; return n>=1000?`${(n/1000).toFixed(1)}k 字`:`${n} 字`; }
+function fmtReset(iso){ if(!iso) return ''; const d=new Date(iso), now=new Date();
+  const hh=String(d.getHours()).padStart(2,'0'), mm=String(d.getMinutes()).padStart(2,'0');
+  return d.toDateString()===now.toDateString()?`${hh}:${mm} 重置`:`${d.getMonth()+1}月${d.getDate()}日 ${hh}:${mm} 重置`; }
 function setMemTag(t){ memActiveTag=t; document.querySelectorAll('#mem-tags .tag-chip').forEach(c=>c.classList.toggle('on',c.textContent===t)); renderMemories(); }
 async function renderMemories(){
   const list=$('mem-list'); if(!list) return;
@@ -479,15 +498,15 @@ async function loadStatus(){
   try{ const r=await fetch('/health'); if(r.ok) health=await r.json(); }catch(e){}
   try{ const r=await fetch('/usage/quota'); if(r.ok) quota=await r.json(); }catch(e){}
   try{ const r=await fetch('/memory-admin/memory/stats'); if(r.ok) memst=await r.json(); }catch(e){}
-  const online=!!(health&&health.claude_ok);
+  const online=!!(health&&health.claude_cli==='found');
   const dot=`<span style="width:6px;height:6px;border-radius:50%;background:${online?'var(--online)':'var(--danger)'}"></span>`;
   const card=(lb,vl,sb,dim)=>`<div class="st-card${dim?' dim':''}"><div class="lb">${lb}</div><div class="vl">${vl}</div><div class="sb">${sb}</div></div>`;
   const quotaBar=(k,pct,reset)=>{ const c=pct<60?'var(--online)':(pct<85?'var(--warn)':'var(--danger)');
     return `<div class="quota"><div class="qh"><span class="k">${k}</span><span class="p">${pct}%</span></div><div class="qbar"><div style="width:${pct}%;background:${c}"></div></div><div class="rs">${reset||''}</div></div>`; };
   let usageHtml='';
-  if(quota&&(quota.five_hour||quota.weekly||quota.session)){
-    const a=quota.five_hour||quota.session||{}, b=quota.weekly||{};
-    usageHtml=`<div class="st-sec">用量</div><div class="st-box">${quotaBar('5 小时窗',Math.round((a.used_pct??a.pct??0)),a.resets_at||a.reset||'')}${quotaBar('周限额',Math.round((b.used_pct??b.pct??0)),b.resets_at||b.reset||'')}</div>`;
+  if(quota&&quota.available&&(quota.five_hour||quota.seven_day)){
+    const a=quota.five_hour||{}, b=quota.seven_day||{};
+    usageHtml=`<div class="st-sec">用量</div><div class="st-box">${quotaBar('5 小时窗',Math.round(a.utilization||0),fmtReset(a.resets_at))}${quotaBar('周限额',Math.round(b.utilization||0),fmtReset(b.resets_at))}</div>`;
   } else {
     usageHtml=`<div class="st-sec">用量</div><div class="st-box"><div class="sub-empty" style="padding:8px">需登录本地 Claude 订阅后显示额度</div></div>`;
   }
@@ -631,23 +650,26 @@ function addAssistant(text){
   $('msgs').appendChild(row); scrollDown(); return row;
 }
 function updateAssistant(row,text){ const t=row.querySelector('.a-text[data-role=text]'); if(t) t.textContent=text; scrollDown(); }
-// thinking 收起态 pill + 点开就地展开(clay 左边框);工具行折叠进同一披露区
+// thinking 收起态 pill → 点开底部弹窗展示(不打断正文阅读、不跳滚动);工具行折叠进同一弹窗
 function addThinking(row, thinking, tools){
   thinking=thinking||''; tools=tools||[];
   if(!thinking && !tools.length) return;
   const head=row.querySelector('.a-head');
   const pill=document.createElement('button'); pill.className='think-pill';
-  const durLabel = thinking ? `思考 ${(thinking.length/1000).toFixed(1)}k` : `工具 ${tools.length}`;
-  pill.innerHTML=`<span class="lb">${durLabel}</span><span class="ca">▸</span>`;
-  const body=document.createElement('div'); body.className='think-body'; body.style.display='none';
-  if(thinking){ const tx=document.createElement('div'); tx.textContent=thinking; body.appendChild(tx); }
-  tools.forEach(tl=>{ const ln=document.createElement('div'); ln.className='think-tool';
-    const nm=escHtml(tl.tool||''); const pv=escHtml((tl.preview||'').replace(/\s+/g,' ').trim().slice(0,120));
-    ln.innerHTML=`<b>${nm}</b>${pv?' · '+pv:''}`; body.appendChild(ln); });
-  pill.onclick=()=>{ const open=body.style.display!=='none'; body.style.display=open?'none':'block'; pill.querySelector('.ca').textContent=open?'▸':'▾'; scrollDown(); };
-  head.insertAdjacentElement('afterend', body);
+  const label = thinking ? `思考 ${(thinking.length/1000).toFixed(1)}k` : `工具 ${tools.length}`;
+  pill.innerHTML=`<span class="lb">${label}</span><span class="ca">▸</span>`;
+  pill.onclick=()=>openThinkSheet(thinking, tools);
   head.insertAdjacentElement('afterend', pill);
 }
+function openThinkSheet(thinking, tools){
+  const body=$('think-sheet-body'); body.innerHTML='';
+  if(thinking){ const tx=document.createElement('div'); tx.textContent=thinking; body.appendChild(tx); }
+  (tools||[]).forEach(tl=>{ const ln=document.createElement('div'); ln.className='tool-ln';
+    const nm=escHtml(tl.tool||''); const pv=escHtml((tl.preview||'').replace(/\s+/g,' ').trim().slice(0,200));
+    ln.innerHTML=`<b>${nm}</b>${pv?' · '+pv:''}`; body.appendChild(ln); });
+  $('think-ov').classList.add('open');
+}
+function closeThinkSheet(){ $('think-ov').classList.remove('open'); }
 function addUsage(row,meta){
   const parts=[]; if(meta.duration_ms) parts.push((meta.duration_ms/1000).toFixed(1)+'s');
   if(meta.cost_usd) parts.push('$'+Number(meta.cost_usd).toFixed(4));
