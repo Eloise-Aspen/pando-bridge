@@ -126,10 +126,8 @@
   .a-head .nm{font:600 11px var(--ui);letter-spacing:.06em;color:var(--icon);text-transform:uppercase}
   /* Chip(Pando Kit)——自带底色不描边 */
   /* 思考 chip(Pando 原型 CHAT 屏实况规格,非 Kit 通用图例):图标 + 大写字距标签 + 独立等宽 caret */
-  .think-pill{align-self:flex-start;display:inline-flex;align-items:center;gap:6px;background:var(--surface);border:none;border-radius:9999px;padding:5px 12px;cursor:pointer}
-  .think-pill .lb{font:500 11px var(--ui);letter-spacing:.05em;color:var(--icon);text-transform:uppercase}
-  .think-pill.tool-only .lb{color:#B07A5E}
-  .think-pill .ca{font:600 10px var(--ui);color:var(--faint)}
+  .think-pill{align-self:flex-start;display:inline-flex;align-items:center;gap:5px;background:var(--surface);border:none;border-radius:9999px;padding:4px 10px;cursor:pointer;font:500 11px var(--ui);color:var(--icon)}
+  .think-pill.tool-only{color:#B07A5E}
   .think-pill svg{flex-shrink:0}
   .think-body{align-self:stretch;border-left:2px solid rgba(217,119,87,.3);padding-left:14px;font:400 13px/1.75 var(--ui);color:var(--faint);white-space:pre-wrap}
   .think-tool{font:400 12px/1.7 var(--ui);color:var(--dim)}
@@ -790,23 +788,27 @@ function addAssistant(text){
 }
 function updateAssistant(row,text){ const t=row.querySelector('.a-text[data-role=text]'); if(t) t.textContent=text; scrollDown(); }
 function fmtDur(ms){ return ms ? Math.round(ms/1000)+'s' : ''; }
+function fmtThinkCount(n){ return n>=1000 ? (n/1000).toFixed(1)+'k' : String(n); }
 const IC_WRENCH='<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 7l-1.5-1.5a3 3 0 0 0-4 0l-.5.5 5.5 5.5.5-.5a3 3 0 0 0 0-4zM4 20l4-1 8-8-3-3-8 8-1 4z"></path></svg>';
-// thinking 收起态 pill(Pando 原型 CHAT 屏实况:图标 + 大写字距「思考 8s」+ 独立等宽 caret)
-// → 点开底部弹窗展示(不打断正文阅读、不跳滚动);工具行折叠进同一弹窗;展示时长而非 token 数
+// thinking 收起态 pill(Pando Kit chip 规格:象牙底不描边 + 图标 + 「思考 · 1.2k ▸」纯文本——
+// 原型 CHAT 屏这处没跟 Kit 同步,按用户裁决以 Kit 为准,忽略原型)
+// → 点开底部弹窗展示(不打断正文阅读、不跳滚动);工具行折叠进同一弹窗
 function addThinking(row, thinking, tools, durationMs){
   thinking=thinking||''; tools=tools||[];
   if(!thinking && !tools.length) return;
   const head=row.querySelector('.a-head');
   const pill=document.createElement('button'); pill.className='think-pill'+(thinking?'':' tool-only');
-  const icon = thinking ? PANDO_LOGO(12) : IC_WRENCH;
-  const label = thinking ? `思考 ${fmtDur(durationMs)}` : `工具 ${tools.length}`;
-  pill.innerHTML=`${icon}<span class="lb">${label}</span><span class="ca">▸</span>`;
+  const icon = thinking ? PANDO_LOGO(11) : IC_WRENCH;
+  const label = thinking ? `思考 · ${fmtThinkCount(thinking.length)}` : `工具 · ${tools.length}`;
+  pill.innerHTML=`${icon}<span>${label} ▸</span>`;
   pill.onclick=()=>openThinkSheet(thinking, tools, durationMs);
   head.insertAdjacentElement('afterend', pill);
 }
 function openThinkSheet(thinking, tools, durationMs){
-  // 头部标题+时长同行(Pando 原型:仅时长,不带 token 数——已按用户实测反馈从 token 改回时长)
-  $('think-sheet-meta').textContent = fmtDur(durationMs);
+  // 弹窗头部保留时长 + token 数两项(用户澄清:上一轮误删了 token 数,只有 chip 上不要它)
+  const metaParts=[]; if(durationMs) metaParts.push(fmtDur(durationMs));
+  if(thinking) metaParts.push(fmtThinkCount(thinking.length)+' tokens');
+  $('think-sheet-meta').textContent = metaParts.join(' · ');
   const body=$('think-sheet-body'); body.innerHTML='';
   if(thinking){ const tx=document.createElement('div'); tx.textContent=thinking; body.appendChild(tx); }
   (tools||[]).forEach(tl=>{ const ln=document.createElement('div'); ln.className='tool-ln';
