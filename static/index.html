@@ -8,7 +8,6 @@
 <meta name="theme-color" content="#faf9f5">
 <link rel="manifest" href="/manifest.json">
 <link rel="apple-touch-icon" href="/icon-192.png">
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@3.19.0/dist/tabler-icons.min.css">
 <title>Claude Code Bridge</title>
 <style>
   /* JetBrains Mono 自托管（CONSTRAINTS 禁 CDN 外链）——简洁模式仅代码/工具参数 JSON 用等宽 */
@@ -16,6 +15,28 @@
                font-display:swap; src:url('/fonts/jetbrains-mono-400.woff2') format('woff2'); }
   @font-face { font-family:'JetBrains Mono'; font-style:normal; font-weight:500;
                font-display:swap; src:url('/fonts/jetbrains-mono-500.woff2') format('woff2'); }
+  /* Tabler Icons 子集自托管(仅 demo 用到的 19 枚;CONSTRAINTS 禁 CDN 外链)。 源 @tabler/icons-webfont@3.19.0 MIT。 */
+  @font-face { font-family:"tabler-icons"; font-style:normal; font-weight:400; font-display:swap; src:url("/fonts/tabler-icons-subset.woff2") format("woff2"); }
+  .ti { font-family:"tabler-icons" !important; speak:none; font-style:normal; font-weight:normal; font-variant:normal; text-transform:none; line-height:1; -webkit-font-smoothing:antialiased; -moz-osx-font-smoothing:grayscale; display:inline-block; }
+  .ti-activity:before { content:"\ed23"; }
+  .ti-arrow-left:before { content:"\ea19"; }
+  .ti-arrow-up:before { content:"\ea25"; }
+  .ti-brain:before { content:"\f59f"; }
+  .ti-check:before { content:"\ea5e"; }
+  .ti-copy:before { content:"\ea7a"; }
+  .ti-menu-2:before { content:"\ec42"; }
+  .ti-paperclip:before { content:"\eb02"; }
+  .ti-player-stop:before { content:"\ed4a"; }
+  .ti-player-stop-filled:before { content:"\f695"; }
+  .ti-plus:before { content:"\eb0b"; }
+  .ti-refresh:before { content:"\eb13"; }
+  .ti-settings:before { content:"\eb20"; }
+  .ti-shield-lock:before { content:"\ed58"; }
+  .ti-sparkles:before { content:"\f6d7"; }
+  .ti-tool:before { content:"\eb40"; }
+  .ti-trash:before { content:"\eb41"; }
+  .ti-volume:before { content:"\eb51"; }
+  .ti-x:before { content:"\eb55"; }
 
   * { box-sizing: border-box; margin: 0; padding: 0; }
   :root {
