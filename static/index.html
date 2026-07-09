@@ -61,6 +61,16 @@
   .top-id .nm{font:600 13.5px var(--ui);color:var(--text)}
   .dot{width:6px;height:6px;border-radius:50%;background:var(--online);box-shadow:0 0 0 3px rgba(91,154,91,.16)}
   .dot.off{background:var(--danger);box-shadow:0 0 0 3px rgba(181,51,51,.14)}
+  /* 顶栏「在线」标识(原型更新:名字后不再是裸 点+文字,改绿/红色调胶囊徽标) */
+  .status-badge{display:inline-flex;align-items:center;gap:5px;border-radius:9999px;padding:3px 9px 3px 7px}
+  .status-badge.on{background:rgba(91,154,91,.12)}
+  .status-badge.off{background:rgba(181,51,51,.12)}
+  .status-badge .bdot{width:5px;height:5px;border-radius:50%}
+  .status-badge.on .bdot{background:var(--online)}
+  .status-badge.off .bdot{background:var(--danger)}
+  .status-badge .blabel{font:500 12px var(--ui)}
+  .status-badge.on .blabel{color:#4A7F4A}
+  .status-badge.off .blabel{color:var(--danger-text)}
   .divider{margin:12px 18px 0;height:1px;background:var(--line-soft);flex-shrink:0}
 
   /* ---- home ---- */
@@ -96,7 +106,7 @@
   #input{width:100%;border:none;outline:none;background:none;resize:none;font:400 15px/1.55 var(--ui);color:var(--ink);min-height:24px;max-height:160px;padding:2px 0}
   .model-slot{position:relative;flex-shrink:0}
   .model-btn{display:inline-flex;align-items:center;gap:3px;border:1px solid var(--line-strong);background:var(--card);border-radius:9999px;padding:5px 11px;font:500 12px var(--ui);color:var(--text2);cursor:pointer;white-space:nowrap}
-  .model-pop{position:absolute;right:0;bottom:calc(100% + 6px);background:var(--card);border:1px solid var(--line-strong);border-radius:10px;padding:4px;min-width:150px;box-shadow:0 10px 30px rgba(31,30,29,.16);z-index:20}
+  .model-pop{position:absolute;left:0;bottom:calc(100% + 6px);background:var(--card);border:1px solid var(--line-strong);border-radius:10px;padding:4px;min-width:150px;box-shadow:0 10px 30px rgba(31,30,29,.16);z-index:20}
   .model-opt{padding:9px 12px;border-radius:7px;font:400 13.5px var(--ui);color:var(--dim);cursor:pointer}
   .model-opt.sel{background:var(--accent-bg);color:var(--accent-press);font-weight:500}
   .model-opt.custom{border-top:1px solid var(--line-soft);margin-top:2px;color:var(--faint)}
@@ -115,14 +125,17 @@
   .a-head{display:flex;align-items:center;gap:7px}
   .a-head .nm{font:600 11px var(--ui);letter-spacing:.06em;color:var(--icon);text-transform:uppercase}
   /* Chip(Pando Kit)——自带底色不描边 */
-  .think-pill{align-self:flex-start;display:inline-flex;align-items:center;gap:5px;background:var(--surface);border:none;border-radius:9999px;padding:4px 10px;cursor:pointer;font:500 11px var(--ui);color:var(--icon)}
-  .think-pill.tool-only{color:#B07A5E}
+  /* 思考 chip(Pando 原型 CHAT 屏实况规格,非 Kit 通用图例):图标 + 大写字距标签 + 独立等宽 caret */
+  .think-pill{align-self:flex-start;display:inline-flex;align-items:center;gap:6px;background:var(--surface);border:none;border-radius:9999px;padding:5px 12px;cursor:pointer}
+  .think-pill .lb{font:500 11px var(--ui);letter-spacing:.05em;color:var(--icon);text-transform:uppercase}
+  .think-pill.tool-only .lb{color:#B07A5E}
+  .think-pill .ca{font:600 10px var(--ui);color:var(--faint)}
   .think-pill svg{flex-shrink:0}
   .think-body{align-self:stretch;border-left:2px solid rgba(217,119,87,.3);padding-left:14px;font:400 13px/1.75 var(--ui);color:var(--faint);white-space:pre-wrap}
   .think-tool{font:400 12px/1.7 var(--ui);color:var(--dim)}
   .think-tool b{color:var(--accent-press);font-weight:600}
   .a-text{font:400 16.5px/1.9 var(--ui);color:var(--ink);white-space:pre-wrap;word-break:break-word}
-  .a-usage{display:flex;gap:8px;font:400 11px var(--ui);color:var(--fainter)}
+  .a-usage{font:400 11px var(--ui);font-variant-numeric:tabular-nums;color:var(--fainter)}
   .a-footer{display:flex;align-items:center;gap:10px;margin-top:2px}
   .a-tools{display:flex;align-items:center;gap:2px}
   .a-tool{border:none;background:none;padding:7px;color:var(--faint);cursor:pointer;display:flex}
@@ -157,13 +170,18 @@
   /* ---- permission sheet ---- */
   .sheet-ov{position:absolute;inset:0;background:rgba(20,20,19,.4);z-index:130;display:flex;align-items:flex-end;justify-content:center;opacity:0;pointer-events:none;transition:opacity .2s}
   .sheet-ov.open{opacity:1;pointer-events:auto}
-  .sheet{width:100%;max-width:520px;background:var(--card);border-radius:22px 22px 0 0;padding:16px 20px calc(22px + var(--safe-bottom));transform:translateY(12px);transition:transform .2s}
+  /* 权限弹层与思考弹窗同构(Pando 原型统一规格):抓手 + 标题栏(下分隔线) + 内容区;
+     圆角只上不下(flush bottom,避免真机实装时底部露出缝隙) */
+  .sheet{width:100%;max-width:520px;background:var(--card);border-radius:20px 20px 0 0;box-shadow:0 -16px 48px rgba(31,30,29,.13);padding:0;transform:translateY(12px);transition:transform .2s}
   .sheet-ov.open .sheet{transform:none}
-  .grab{width:38px;height:4px;border-radius:9999px;background:#E4E1D8;margin:0 auto 20px}
-  .perm-hd{display:flex;align-items:center;gap:12px;margin-bottom:16px}
-  .perm-ic{width:44px;height:44px;border-radius:12px;background:var(--accent-bg);display:flex;align-items:center;justify-content:center;flex-shrink:0}
-  .perm-tt{font:600 16px var(--ui);color:var(--text)}
+  .sheet-grab{display:flex;justify-content:center;padding:10px 0 3px}
+  .sheet-grab .bar{width:36px;height:4px;border-radius:9999px;background:rgba(31,30,29,.14)}
+  .sheet-hd{display:flex;align-items:center;border-bottom:1px solid rgba(31,30,29,.07)}
+  .perm-hd{gap:12px;padding:8px 20px 14px}
+  .perm-ic{width:40px;height:40px;border-radius:11px;background:var(--accent-bg);display:flex;align-items:center;justify-content:center;flex-shrink:0}
+  .perm-tt{font:600 15px var(--ui);color:var(--text)}
   .perm-sub{font:400 12.5px var(--ui);color:var(--faint);margin-top:2px}
+  .perm-body{padding:16px 20px calc(22px + var(--safe-bottom))}
   .perm-params{background:var(--bg);border:1px solid rgba(31,30,29,.09);border-radius:12px;padding:12px 14px;font:400 12px/1.6 var(--code);color:var(--text2);white-space:pre-wrap;word-break:break-word;max-height:150px;overflow:auto}
   .perm-note{font:400 12px/1.55 var(--ui);color:var(--fainter);margin:12px 2px 18px}
   .perm-note b{color:var(--dim);font-weight:500}
@@ -172,35 +190,30 @@
   .perm-row2{display:flex;gap:9px}
   .btn-ghost{flex:1;border:1px solid var(--line-strong);background:var(--card);color:var(--text2);border-radius:12px;padding:12px;font:500 14px var(--ui);cursor:pointer}
   .btn-deny{flex:1;border:1px solid rgba(181,51,51,.28);background:var(--card);color:var(--danger-text);border-radius:12px;padding:12px;font:500 14px var(--ui);cursor:pointer}
-  /* ---- thinking sheet ---- */
-  /* think-sheet:Pando Kit「思考弹窗」精确规格——圆角 20/20/16/16、上投影、抓手更浅、
-     标题+时长同行、内容区独立内边距(覆盖 .sheet 通用值) */
-  .think-sheet{border-radius:20px 20px 16px 16px;box-shadow:0 -16px 48px rgba(31,30,29,.13);padding:0}
-  .think-grab-wrap{display:flex;justify-content:center;padding:9px 0 3px}
-  .think-grab-wrap .grab{background:rgba(31,30,29,.14);margin:0}
-  .think-sheet-hd{display:flex;align-items:center;gap:9px;padding:8px 16px 12px;border-bottom:1px solid rgba(31,30,29,.07)}
+  /* ---- thinking sheet(与权限弹层同构,共用 .sheet/.sheet-grab/.sheet-hd)---- */
+  .think-sheet-hd{gap:9px;padding:8px 20px 12px}
   .think-sheet-hd .tt-wrap{flex:1}
-  .think-sheet-hd .tt{font:600 14px var(--ui);color:var(--text)}
-  .think-sheet-hd .meta{font:400 12px var(--code);color:var(--fainter);margin-left:7px}
+  .think-sheet-hd .tt{font:600 15px var(--ui);color:var(--text)}
+  .think-sheet-hd .meta{font:400 12px var(--ui);font-variant-numeric:tabular-nums;color:var(--fainter);margin-left:7px}
   .think-sheet-hd .icon-btn{padding:4px;color:var(--faint)}
-  .think-sheet-body{padding:14px 16px calc(18px + var(--safe-bottom));max-height:45vh;overflow:auto;font:400 13.5px/1.85 var(--ui);color:var(--dim);white-space:pre-wrap;word-break:break-word;-webkit-overflow-scrolling:touch}
+  .think-sheet-body{padding:16px 20px calc(28px + var(--safe-bottom));max-height:50vh;overflow:auto;font:400 14.5px/1.85 var(--ui);color:var(--dim);white-space:pre-wrap;word-break:break-word;-webkit-overflow-scrolling:touch}
   .think-sheet-body .tool-ln{font:400 12.5px/1.7 var(--ui);color:var(--dim);padding:8px 0 0;border-top:1px solid var(--line-soft);margin-top:10px}
   .think-sheet-body .tool-ln b{color:var(--accent-press);font-weight:600}
   /* ---- context indicator (chat header) ---- */
   .ctx-slot{position:relative;flex-shrink:0}
   .ctx-btn{display:inline-flex;align-items:center;gap:6px;border:none;background:var(--card);border-radius:9999px;padding:3px 10px 3px 5px;cursor:pointer;box-shadow:0 1px 3px rgba(31,30,29,.06)}
-  .ctx-lb{font:500 11.5px var(--code);color:var(--dim);white-space:nowrap}
+  .ctx-lb{font:500 11.5px var(--ui);font-variant-numeric:tabular-nums;color:var(--dim);white-space:nowrap}
   .ctx-cap{color:var(--fainter)}
-  .ctx-pop{position:absolute;right:0;top:calc(100% + 8px);background:var(--card);border-radius:14px;padding:14px 15px;box-shadow:0 14px 40px rgba(31,30,29,.14);width:236px;z-index:30;display:flex;flex-direction:column;gap:11px}
+  .ctx-pop{position:absolute;right:0;top:calc(100% + 8px);background:var(--card);border-radius:14px;padding:14px 15px;box-shadow:0 14px 40px rgba(31,30,29,.1);width:236px;z-index:30;display:flex;flex-direction:column;gap:11px}
   .ctx-h{display:flex;align-items:baseline;justify-content:space-between;font:600 12.5px var(--ui);color:var(--text)}
-  .ctx-h span:last-child{font:500 11.5px var(--code);color:var(--dim)}
+  .ctx-h span:last-child{font:500 11.5px var(--ui);font-variant-numeric:tabular-nums;color:var(--dim)}
   .ctx-track{height:5px;border-radius:9999px;background:rgba(31,30,29,.1);overflow:hidden}
   .ctx-track>div{height:100%;border-radius:9999px;background:var(--online);width:0;transition:width .2s}
   .ctx-rows{display:flex;flex-direction:column;gap:6px}
   .ctx-r{display:flex;align-items:center;justify-content:space-between;font:400 11.5px var(--ui);color:var(--text2)}
   .ctx-r>span:first-child{display:inline-flex;align-items:center;gap:6px}
   .ctx-r i{width:7px;height:7px;border-radius:2px;display:inline-block}
-  .ctx-r>span:last-child{font-family:var(--code);color:var(--dim)}
+  .ctx-r>span:last-child{font-variant-numeric:tabular-nums;color:var(--dim)}
   .ctx-sep{height:1px;background:rgba(31,30,29,.08)}
   .ctx-btns{display:flex;gap:8px}
   .ctx-b1{flex:1;border:none;background:var(--surface);color:var(--text2);border-radius:10px;padding:8px;font:500 12px var(--ui);cursor:pointer}
@@ -220,8 +233,9 @@
   .conv-card .mt{font:400 11px var(--ui);color:var(--fainter);margin-top:7px}
 
   /* ---- toast ---- */
-  .toast{position:absolute;left:50%;bottom:calc(84px + var(--safe-bottom));transform:translateX(-50%) translateY(6px);background:var(--ink);color:#FAF9F5;font:400 13px var(--ui);padding:9px 16px;border-radius:9999px;z-index:200;max-width:82%;text-align:center;opacity:0;pointer-events:none;transition:opacity .2s,transform .2s}
-  .toast.show{opacity:1;transform:translateX(-50%)}
+  /* 白底 toast(原型实况:非黑底) */
+  .toast{position:absolute;left:50%;bottom:calc(96px + var(--safe-bottom));transform:translateX(-50%);background:var(--card);color:var(--text2);border:1px solid var(--e0-border);box-shadow:0 6px 18px rgba(31,30,29,.1);font:400 13px var(--ui);padding:10px 16px;border-radius:9999px;z-index:200;max-width:80%;white-space:nowrap;text-align:center;opacity:0;pointer-events:none;transition:opacity .2s}
+  .toast.show{opacity:1}
 
   /* ---- subpage shared ---- */
   .ph-body{flex:1;display:flex;align-items:center;justify-content:center;color:var(--fainter);font:400 14px var(--ui);padding:40px}
@@ -298,7 +312,7 @@
     <div class="top">
       <button class="icon-btn lead" onclick="openSidebar()" aria-label="菜单">
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"></path></svg></button>
-      <div class="top-id"><span class="nm" id="home-asst">Claude</span><span class="dot" id="home-dot"></span><span class="nm" id="home-stat">在线</span></div>
+      <div class="top-id"><span class="nm" id="home-asst">Claude</span><span class="status-badge on" id="home-badge"><span class="bdot"></span><span class="blabel" id="home-stat">在线</span></span></div>
     </div>
     <div class="home-body">
       <div class="hero">
@@ -322,7 +336,7 @@
     <div class="top">
       <button class="icon-btn lead" onclick="openSidebar()" aria-label="菜单">
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"></path></svg></button>
-      <div class="top-id"><span class="nm" id="chat-asst">Claude</span><span class="dot" id="chat-dot"></span><span class="nm" id="chat-stat">在线</span></div>
+      <div class="top-id"><span class="nm" id="chat-asst">Claude</span><span class="status-badge on" id="chat-badge"><span class="bdot"></span><span class="blabel" id="chat-stat">在线</span></span></div>
       <span class="ctx-slot" id="ctx-slot" style="display:none">
         <button class="ctx-btn" onclick="toggleCtx(event)" aria-label="上下文用量">
           <svg width="17" height="17" viewBox="0 0 20 20"><circle id="ctx-ring-track" cx="10" cy="10" r="7" fill="none" stroke="rgba(31,30,29,.12)" stroke-width="2.6"></circle><circle id="ctx-arc" cx="10" cy="10" r="7" fill="none" stroke="var(--online)" stroke-width="2.6" stroke-linecap="round" stroke-dasharray="0 44" transform="rotate(-90 10 10)"></circle></svg>
@@ -373,33 +387,35 @@
     <div class="dfoot" id="side-ver">Pando</div>
   </div>
 
-  <!-- ============ PERMISSION SHEET ============ -->
+  <!-- ============ PERMISSION SHEET(与思考弹窗同构)============ -->
   <div class="sheet-ov" id="perm-ov">
     <div class="sheet">
-      <div class="grab"></div>
-      <div class="perm-hd">
-        <span class="perm-ic"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#C6613F" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6z"></path><path d="M9 12l2 2 4-4"></path></svg></span>
+      <div class="sheet-grab"><div class="bar"></div></div>
+      <div class="sheet-hd perm-hd">
+        <span class="perm-ic"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#C6613F" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6z"></path><path d="M9 12l2 2 4-4"></path></svg></span>
         <div><div class="perm-tt">允许执行 <span id="perm-tool">工具</span>?</div><div class="perm-sub">Claude 请求调用工具</div></div>
       </div>
-      <div class="perm-params" id="perm-params"></div>
-      <div class="perm-note"><span id="perm-queue"></span>仅本次会话有效。你可以在 设置 › 工具权限 中随时收回。 <span id="perm-countdown"></span></div>
-      <div class="perm-btns">
-        <button class="btn-primary" onclick="respondPermission(true)">始终允许</button>
-        <div class="perm-row2">
-          <button class="btn-ghost" onclick="respondPermission(true)">只允许一次</button>
-          <button class="btn-deny" onclick="respondPermission(false)">拒绝</button>
+      <div class="perm-body">
+        <div class="perm-params" id="perm-params"></div>
+        <div class="perm-note"><span id="perm-queue"></span>仅本次会话有效。你可以在 设置 › 工具权限 中随时收回。 <span id="perm-countdown"></span></div>
+        <div class="perm-btns">
+          <button class="btn-primary" onclick="respondPermission(true)">始终允许</button>
+          <div class="perm-row2">
+            <button class="btn-ghost" onclick="respondPermission(true)">只允许一次</button>
+            <button class="btn-deny" onclick="respondPermission(false)">拒绝</button>
+          </div>
         </div>
       </div>
     </div>
   </div>
 
-  <!-- ============ THINKING SHEET(Pando Kit 组件规格)============ -->
+  <!-- ============ THINKING SHEET(与权限弹层同构)============ -->
   <div class="sheet-ov" id="think-ov" onclick="if(event.target===this)closeThinkSheet()">
-    <div class="sheet think-sheet">
-      <div class="think-grab-wrap"><div class="grab"></div></div>
-      <div class="think-sheet-hd">
+    <div class="sheet">
+      <div class="sheet-grab"><div class="bar"></div></div>
+      <div class="sheet-hd think-sheet-hd">
         <div class="tt-wrap"><span class="tt">思考过程</span><span class="meta" id="think-sheet-meta"></span></div>
-        <button class="icon-btn" onclick="closeThinkSheet()" aria-label="关闭"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"></path></svg></button>
+        <button class="icon-btn" onclick="closeThinkSheet()" aria-label="关闭"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"></path></svg></button>
       </div>
       <div class="think-sheet-body" id="think-sheet-body"></div>
     </div>
@@ -427,10 +443,13 @@ const IC = {
 /* ===== state ===== */
 let ws, busy=false, currentAssistantRow=null, assistantText='', roundTools=[];
 let currentSessionId = localStorage.getItem('currentSessionId') || null;
-let currentModel = localStorage.getItem('defaultModel') || '';
+// 无「默认」占位项(看不出具体哪个模型);composer 显示的就是设置页选的默认模型——
+// 首次无持久化值时落到 Sonnet 5(与 Pando 原型初始态一致),并立即写回 localStorage
+let currentModel = localStorage.getItem('defaultModel') || 'claude-sonnet-5';
+if(!localStorage.getItem('defaultModel')) localStorage.setItem('defaultModel', currentModel);
 let allSessions = [], typingEl=null, lastMsgTime=null, view='home';
 let ASST='Claude';
-const MODELS = [['','默认'],['claude-fable-5','Fable 5'],['claude-opus-4-8','Opus 4.8'],['claude-sonnet-5','Sonnet 5'],['claude-haiku-4-5-20251001','Haiku 4.5']];
+const MODELS = [['claude-fable-5','Fable 5'],['claude-opus-4-8','Opus 4.8'],['claude-sonnet-5','Sonnet 5'],['claude-haiku-4-5-20251001','Haiku 4.5']];
 const modelLabel = id => (MODELS.find(m=>m[0]===id)||['',id])[1] || id;
 
 /* ===== attachments ===== */
@@ -498,10 +517,10 @@ function toggleModel(e){ e.stopPropagation(); const host=activeComposer(); const
 function selectModel(id){ applyModel(id); const host=activeComposer(); host.querySelector('#model-pop').style.display='none'; }
 function selectCustomModel(){ const host=activeComposer(); host.querySelector('#model-pop').style.display='none'; const id=(prompt('输入模型 id(经 CLI --model 透传):',currentModel)||'').trim(); if(id) applyModel(id); }
 function applyModel(id){
-  currentModel=id||'';
-  if(currentModel) localStorage.setItem('defaultModel',currentModel); else localStorage.removeItem('defaultModel');
+  if(!id) return;  // 无「默认」空态可选,忽略空值(自定义弹窗已在源头挡了空输入)
+  currentModel=id;
+  localStorage.setItem('defaultModel', currentModel);
   document.querySelectorAll('#model-btn').forEach(b=>b.textContent=modelLabel(currentModel)+' ▾');
-  document.querySelectorAll('.model-pop').forEach(pop=>{ /* refresh sel on next open */ });
   renderModelPop();
 }
 document.addEventListener('click',e=>{ if(!e.target.closest('.model-slot')) document.querySelectorAll('.model-pop').forEach(p=>p.style.display='none');
@@ -666,7 +685,7 @@ function loadSettings(){
       </div>
       <div class="set-sec">模型与记忆</div>
       <div class="set-group">
-        <div class="set-row tap" onclick="cycleDefaultModel()"><span class="k">默认模型</span><span class="v" id="s-model">${currentModel?modelLabel(currentModel):'默认'}</span>${CHEV}</div>
+        <div class="set-row tap" onclick="cycleDefaultModel()"><span class="k">默认模型</span><span class="v" id="s-model">${modelLabel(currentModel)}</span>${CHEV}</div>
         <div class="set-row"><span class="k">自动记住上下文</span><button class="tog${autoMem?' on':''}" id="s-automem" onclick="toggleAutoMem()"></button></div>
       </div>
       <div class="set-sec">工具权限</div>
@@ -688,7 +707,7 @@ function toggleAutoMem(){ const on=localStorage.getItem('autoMemory')!=='0'; if(
 function toggleLocalFile(){ const on=localStorage.getItem('permLocalFile')!=='0'; if(on) localStorage.setItem('permLocalFile','0'); else localStorage.removeItem('permLocalFile'); $('s-local').classList.toggle('on',!on); }
 function toggleThemeMenu(e){ e.stopPropagation(); const m=$('theme-menu'); m.style.display=m.style.display==='none'?'block':'none'; }
 function pickTheme(t){ if(t) localStorage.setItem('theme',t); else localStorage.removeItem('theme'); $('theme-menu').style.display='none'; $('s-theme').textContent=t==='_smoke'?'简洁·烟':'简洁'; toast('主题已切换(需刷新生效)'); }
-function cycleDefaultModel(){ const ids=MODELS.map(m=>m[0]); const i=ids.indexOf(currentModel); const next=ids[(i+1)%ids.length]; applyModel(next); $('s-model').textContent=next?modelLabel(next):'默认'; }
+function cycleDefaultModel(){ const ids=MODELS.map(m=>m[0]); const i=ids.indexOf(currentModel); const next=ids[(i+1)%ids.length]; applyModel(next); $('s-model').textContent=modelLabel(next); }
 function clearPerms(){ localStorage.removeItem('permLocalFile'); toast('已清除本地授权记录'); }
 function openSidebar(){ loadSessions(); $('overlay').classList.add('open'); $('drawer').classList.add('open'); }
 function closeSidebar(){ $('overlay').classList.remove('open'); $('drawer').classList.remove('open'); }
@@ -735,6 +754,9 @@ async function loadHistory(sid){
   try{
     const msgs=await (await fetch(`/sessions/${sid}/messages`)).json();
     if(!msgs.length){ showEmpty(); return; }
+    // 对话页时钟:打开既有对话时也要有开场时间戳(此前只在实时发送路径里加,切历史会话时漏了)
+    addTimeDivider(msgs[0].created_at ? new Date(msgs[0].created_at) : new Date());
+    lastMsgTime=Date.now();
     msgs.forEach(x=>{
       if(x.role==='user') addUser(x.content, (x.metadata&&x.metadata.attachments)||[]);
       else if(x.role==='assistant'){ const row=addAssistant(x.content); if(x.metadata&&x.metadata.thinking) addThinking(row, x.metadata.thinking, null, x.metadata.duration_ms); addToolbar(row,x.content,x.metadata);
@@ -746,10 +768,12 @@ async function loadHistory(sid){
 /* ===== message rendering (原型样式) ===== */
 function ensureChat(){ if(view!=='chat') go('chat'); clearEmpty(); }
 function scrollDown(){ const m=$('msgs'); m.scrollTop=m.scrollHeight; }
-function maybeTimeDivider(){ const now=Date.now(); if(!lastMsgTime||(now-lastMsgTime)>3e5){ const d=new Date();
+function fmtTimeDiv(d){
   const w=['周日','周一','周二','周三','周四','周五','周六'];
-  const el=document.createElement('div'); el.className='time-div'; el.textContent=`${d.getMonth()+1}月${d.getDate()}日 ${w[d.getDay()]} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
-  $('msgs').appendChild(el);} lastMsgTime=now; }
+  return `${d.getMonth()+1}月${d.getDate()}日 ${w[d.getDay()]} ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+}
+function addTimeDivider(d){ const el=document.createElement('div'); el.className='time-div'; el.textContent=fmtTimeDiv(d); $('msgs').appendChild(el); }
+function maybeTimeDivider(){ const now=Date.now(); if(!lastMsgTime||(now-lastMsgTime)>3e5) addTimeDivider(new Date()); lastMsgTime=now; }
 function addUser(text, atts){
   ensureChat();
   const row=document.createElement('div'); row.className='row user';
@@ -760,31 +784,29 @@ function addUser(text, atts){
 function addAssistant(text){
   ensureChat();
   const row=document.createElement('div'); row.className='row assistant';
-  const head=document.createElement('div'); head.className='a-head'; head.innerHTML=PANDO_LOGO(14)+`<span class="nm">${escHtml(ASST)}</span>`; row.appendChild(head);
+  const head=document.createElement('div'); head.className='a-head'; head.innerHTML=`<span class="nm">${escHtml(ASST)}</span>`; row.appendChild(head);
   const t=document.createElement('div'); t.className='a-text'; t.textContent=text||''; t.dataset.role='text'; row.appendChild(t);
   $('msgs').appendChild(row); scrollDown(); return row;
 }
 function updateAssistant(row,text){ const t=row.querySelector('.a-text[data-role=text]'); if(t) t.textContent=text; scrollDown(); }
-function fmtThinkCount(n){ return n>=1000 ? (n/1000).toFixed(1)+'k' : String(n); }
+function fmtDur(ms){ return ms ? Math.round(ms/1000)+'s' : ''; }
 const IC_WRENCH='<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 7l-1.5-1.5a3 3 0 0 0-4 0l-.5.5 5.5 5.5.5-.5a3 3 0 0 0 0-4zM4 20l4-1 8-8-3-3-8 8-1 4z"></path></svg>';
-// thinking 收起态 pill(Pando Kit chip 规格:象牙底不描边 + 图标 + 「思考 · 1.2k ▸」纯文本)
-// → 点开底部弹窗展示(不打断正文阅读、不跳滚动);工具行折叠进同一弹窗
+// thinking 收起态 pill(Pando 原型 CHAT 屏实况:图标 + 大写字距「思考 8s」+ 独立等宽 caret)
+// → 点开底部弹窗展示(不打断正文阅读、不跳滚动);工具行折叠进同一弹窗;展示时长而非 token 数
 function addThinking(row, thinking, tools, durationMs){
   thinking=thinking||''; tools=tools||[];
   if(!thinking && !tools.length) return;
   const head=row.querySelector('.a-head');
   const pill=document.createElement('button'); pill.className='think-pill'+(thinking?'':' tool-only');
-  const icon = thinking ? PANDO_LOGO(11) : IC_WRENCH;
-  const label = thinking ? `思考 · ${fmtThinkCount(thinking.length)}` : `工具 · ${tools.length}`;
-  pill.innerHTML=`${icon}<span>${label} ▸</span>`;
+  const icon = thinking ? PANDO_LOGO(12) : IC_WRENCH;
+  const label = thinking ? `思考 ${fmtDur(durationMs)}` : `工具 ${tools.length}`;
+  pill.innerHTML=`${icon}<span class="lb">${label}</span><span class="ca">▸</span>`;
   pill.onclick=()=>openThinkSheet(thinking, tools, durationMs);
   head.insertAdjacentElement('afterend', pill);
 }
 function openThinkSheet(thinking, tools, durationMs){
-  // 头部标题+元信息同行(Pando Kit「思考弹窗」:时长 · token 数,等宽)
-  const metaParts=[]; if(durationMs) metaParts.push((durationMs/1000).toFixed(0)+'s');
-  if(thinking) metaParts.push(fmtThinkCount(thinking.length)+' tokens');
-  $('think-sheet-meta').textContent = metaParts.join(' · ');
+  // 头部标题+时长同行(Pando 原型:仅时长,不带 token 数——已按用户实测反馈从 token 改回时长)
+  $('think-sheet-meta').textContent = fmtDur(durationMs);
   const body=$('think-sheet-body'); body.innerHTML='';
   if(thinking){ const tx=document.createElement('div'); tx.textContent=thinking; body.appendChild(tx); }
   (tools||[]).forEach(tl=>{ const ln=document.createElement('div'); ln.className='tool-ln';
@@ -800,7 +822,18 @@ function addUsage(row,meta){
   if(!parts.length) return; const el=document.createElement('div'); el.className='a-usage'; el.textContent=parts.join('  '); row.appendChild(el);
 }
 function addStopped(row){ const el=document.createElement('div'); el.className='a-usage'; el.textContent='已停止'; row.appendChild(el); }
-function usageParts(meta){ if(!meta) return ''; const parts=[]; if(meta.duration_ms) parts.push((meta.duration_ms/1000).toFixed(1)+'s'); if(meta.cost_usd) parts.push('$'+Number(meta.cost_usd).toFixed(4)); const u=meta.usage||{}; if(u.input_tokens||u.output_tokens) parts.push(`↓${u.input_tokens||0} ↑${u.output_tokens||0}`); return parts.slice(0,3).join('  '); }
+// 回复结尾数字:仅成本 + 缓存命中率(原型实况;时长/token 计数留给上下文用量,不在此重复),
+// 中间用 middot 分隔(此前用两个空格拼接,视觉挤成一团——用户实测反馈)
+function usageParts(meta){
+  if(!meta) return '';
+  const parts=[]; if(meta.cost_usd) parts.push('$'+Number(meta.cost_usd).toFixed(4));
+  const u=meta.usage||{};
+  const cacheRead=u.cache_read_input_tokens??u.cache_read??0, cacheCreate=u.cache_creation_input_tokens??u.cache_create??0;
+  const used=(u.input_tokens||0)+cacheRead+cacheCreate;
+  const cachePct = (u.cache_hit_pct!=null) ? Math.round(u.cache_hit_pct) : (used?Math.round(cacheRead/used*100):null);
+  if(cachePct!=null) parts.push(`缓存 ${cachePct}%`);
+  return parts.join(' · ');
+}
 // 助手工具条:复制/朗读 + 用量同一行(用量靠右,原型 v2)
 function addToolbar(row,text,meta){
   const foot=document.createElement('div'); foot.className='a-footer';
@@ -843,7 +876,7 @@ function send(){
 }
 
 /* ===== WebSocket ===== */
-function setStatus(on){ ['home','chat'].forEach(v=>{ const d=$(v+'-dot'), s=$(v+'-stat'); if(d) d.className='dot'+(on?'':' off'); if(s) s.textContent=on?'在线':'离线'; }); }
+function setStatus(on){ ['home','chat'].forEach(v=>{ const b=$(v+'-badge'), s=$(v+'-stat'); if(b) b.className='status-badge '+(on?'on':'off'); if(s) s.textContent=on?'在线':'离线'; }); }
 function setBusy(b){ busy=b; document.querySelectorAll('#send-btn').forEach(btn=>{ btn.className='send'+(b?' stop':''); btn.innerHTML=b?IC.stop:IC.send; }); }
 function connect(){
   const proto=location.protocol==='https:'?'wss':'ws';
