@@ -300,6 +300,20 @@
   .set-menu .mi.sel{background:var(--accent-bg);color:var(--accent-press);font-weight:500}
   .set-ver{font:400 11.5px var(--ui);color:var(--fainter);text-align:center;margin:22px 0 0}
   @media (prefers-reduced-motion:reduce){.tog,.tog::after{transition:none}}
+
+  /* ---- 桌面响应式(≥880px):侧栏常驻 + 内容居中限宽,复用既有组件与配色,不重画界面 ---- */
+  @media (min-width:880px){
+    html,body{overflow:auto}
+    .app{max-width:none;flex-direction:row}
+    .overlay{display:none}
+    .drawer{position:static;transform:none;width:280px;flex-shrink:0;height:auto;transition:none;order:-1}
+    .view{min-width:0}
+    .view.active>*{max-width:720px;width:100%;margin-left:auto;margin-right:auto}
+    .top .icon-btn.lead{display:none}
+    @media (hover:hover){
+      .navitem:hover,.sitem:hover,.model-opt:hover,.set-menu .mi:hover{background:var(--surface)}
+    }
+  }
 </style>
 </head>
 <body>
