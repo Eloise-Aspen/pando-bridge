@@ -582,7 +582,7 @@ function go(v){
 /* ===== CONVERSATIONS ===== */
 function loadConversations(){
   const v=$('v-conversations');
-  v.innerHTML=`<div class="sub-top"><div class="r"><button class="icon-btn lead" onclick="go('home')">${BACK}</button><span class="sub-h">对话</span><span class="sub-meta" id="conv-count"></span></div></div>
+  v.innerHTML=`<div class="sub-top"><div class="r"><button class="icon-btn lead" onclick="openSidebar()" aria-label="菜单">${MENU}</button><span class="sub-h">对话</span><span class="sub-meta" id="conv-count"></span></div></div>
     <div class="conv-search">${SEARCHIC}<input id="conv-q" placeholder="搜索对话…" oninput="renderConversations()" autocomplete="off"></div>
     <div class="conv-list pd-scroll" id="conv-list"></div>`;
   loadSessions().then(renderConversations);
@@ -629,7 +629,8 @@ function updateCtx(c){
 function toggleCtx(e){ e.stopPropagation(); const p=$('ctx-pop'); p.style.display=p.style.display==='none'?'flex':'none'; }
 function compactCtx(){ $('ctx-pop').style.display='none'; toast('上下文压缩:接入后可用'); }
 function hideCtx(){ const s=$('ctx-slot'); if(s) s.style.display='none'; const p=$('ctx-pop'); if(p) p.style.display='none'; }
-const BACK='<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"></path></svg>';
+// 侧边栏导航进来的子页(对话/记忆/状态/设置)左上是「打开侧边栏」汉堡键,不是返回——对齐原型
+const MENU='<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"></path></svg>';
 const TRASH='<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M6 7l1 13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-13"></path></svg>';
 const SEARCHIC='<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#8B8A83" stroke-width="1.7" stroke-linecap="round"><circle cx="11" cy="11" r="7"></circle><path d="M20 20l-3.2-3.2"></path></svg>';
 const CHEV='<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#C2C0B6" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"></path></svg>';
@@ -639,7 +640,7 @@ const TAG_COLORS={ '项目':['#2360A8','rgba(44,132,219,.1)'], '偏好':['#B15A3
 let memActiveTag='全部', memStatsCache=null;
 async function loadMemory(){
   const v=$('v-memory');
-  v.innerHTML=`<div class="sub-top"><div class="r"><button class="icon-btn lead" onclick="go('home')">${BACK}</button><span class="sub-h">记忆</span><span class="sub-meta" id="mem-count"></span></div></div>
+  v.innerHTML=`<div class="sub-top"><div class="r"><button class="icon-btn lead" onclick="openSidebar()" aria-label="菜单">${MENU}</button><span class="sub-h">记忆</span><span class="sub-meta" id="mem-count"></span></div></div>
     <div class="mem-search"><div class="box">${SEARCHIC}<input id="mem-q" placeholder="搜索记忆…" oninput="renderMemories()" autocomplete="off"></div></div>
     <div class="sub-body pd-scroll"><div class="mem-list" id="mem-list"></div></div>`;
   try{ const r=await fetch('/memory-admin/memory/stats'); if(r.ok){ memStatsCache=await r.json();
@@ -693,7 +694,7 @@ async function loadStatus(){
   } else {
     usageHtml=`<div class="st-sec">用量</div><div class="st-box"><div class="sub-empty" style="padding:8px">需登录本地 Claude 订阅后显示额度</div></div>`;
   }
-  v.innerHTML=`<div class="sub-top"><div class="r"><button class="icon-btn lead" onclick="go('home')">${BACK}</button><span class="sub-h">状态</span><span class="sub-meta">${dot}${online?'刚刚同步':'离线'}</span></div></div>
+  v.innerHTML=`<div class="sub-top"><div class="r"><button class="icon-btn lead" onclick="openSidebar()" aria-label="菜单">${MENU}</button><span class="sub-h">状态</span><span class="sub-meta">${dot}${online?'刚刚同步':'离线'}</span></div></div>
     <div class="sub-body pd-scroll">
       <div class="st-grid">
         ${card(dot+'连接',online?'在线':'离线',online?'CLI 已就绪':'CLI 未就绪')}
@@ -718,7 +719,7 @@ function loadSettings(){
   const nick=localStorage.getItem('userNickname')||''; const asst=localStorage.getItem('assistantName')||'';
   const autoMem=localStorage.getItem('autoMemory')!=='0'; const localFile=localStorage.getItem('permLocalFile')!=='0';
   const themeLabel=localStorage.getItem('theme')==='_smoke'?'简洁·烟':'简洁';
-  v.innerHTML=`<div class="sub-top"><div class="r"><button class="icon-btn lead" onclick="go('home')">${BACK}</button><span class="sub-h">设置</span></div></div>
+  v.innerHTML=`<div class="sub-top"><div class="r"><button class="icon-btn lead" onclick="openSidebar()" aria-label="菜单">${MENU}</button><span class="sub-h">设置</span></div></div>
     <div class="sub-body pd-scroll set-body">
       <div class="set-field"><div class="lb">你的昵称</div><input class="set-input" id="s-nick" value="${escHtml(nick)}" oninput="saveIdentity()" autocomplete="off"></div>
       <div class="set-field"><div class="lb">助手名称</div><input class="set-input" id="s-asst" value="${escHtml(asst)}" placeholder="Claude" oninput="saveIdentity()" autocomplete="off"></div>
