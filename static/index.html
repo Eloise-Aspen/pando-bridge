@@ -581,7 +581,7 @@ function updateCtx(u){
   $('ctx-in').textContent=fmtTok(u.input_tokens||0); $('ctx-out').textContent=fmtTok(u.output_tokens||0); $('ctx-cache').textContent=cachePct+'%';
   $('ctx-slot').style.display='inline';
 }
-function toggleCtx(e){ e.stopPropagation(); const p=$('ctx-pop'); p.style.display=p.style.display==='none'?'block':'none'; }
+function toggleCtx(e){ e.stopPropagation(); const p=$('ctx-pop'); p.style.display=p.style.display==='none'?'flex':'none'; }
 function compactCtx(){ $('ctx-pop').style.display='none'; toast('上下文压缩:接入后可用'); }
 function hideCtx(){ const s=$('ctx-slot'); if(s) s.style.display='none'; const p=$('ctx-pop'); if(p) p.style.display='none'; }
 const BACK='<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"></path></svg>';
