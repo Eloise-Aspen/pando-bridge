@@ -28,6 +28,10 @@
     --accent:#D97757; --accent-press:#C6613F; --accent-bg:rgba(217,119,87,.1); --accent-bd:rgba(217,119,87,.22);
     --online:#5B9A5B; --warn:#D6A417; --danger:#B53333; --danger-text:#B15A32; --link:#2C84DB;
     --tag-proj:#2360A8; --tag-pref:#B15A32; --tag-life:#436426; --tag-read:#6B52A8;
+    /* 卡片层级(Pando Kit「卡片层级」三阶):E0 查看信息(描边无阴影)/ E1 本页可交互(阴影无描边)/ E2 跳转(阴影更重+hover) */
+    --e0-border:rgba(31,30,29,.07);
+    --e1-shadow:0 1px 3px rgba(31,30,29,.05);
+    --e2-shadow:0 4px 14px rgba(31,30,29,.06); --e2-shadow-hover:0 8px 22px rgba(31,30,29,.09);
     --safe-bottom:env(safe-area-inset-bottom,0px);
   }
   *{box-sizing:border-box;margin:0;padding:0}
@@ -110,9 +114,10 @@
   .u-att{display:inline-flex;align-items:center;gap:5px;background:var(--surface);border-radius:8px;padding:3px 8px;font:400 11px var(--ui);color:var(--icon)}
   .a-head{display:flex;align-items:center;gap:7px}
   .a-head .nm{font:600 11px var(--ui);letter-spacing:.06em;color:var(--icon);text-transform:uppercase}
-  .think-pill{align-self:flex-start;display:inline-flex;align-items:center;gap:6px;background:var(--surface);border:1px solid var(--line);border-radius:9999px;padding:5px 12px;cursor:pointer}
-  .think-pill .lb{font:500 11px var(--ui);letter-spacing:.05em;color:var(--icon);text-transform:uppercase}
-  .think-pill .ca{font:600 10px var(--ui);color:var(--faint)}
+  /* Chip(Pando Kit)——自带底色不描边 */
+  .think-pill{align-self:flex-start;display:inline-flex;align-items:center;gap:5px;background:var(--surface);border:none;border-radius:9999px;padding:4px 10px;cursor:pointer;font:500 11px var(--ui);color:var(--icon)}
+  .think-pill.tool-only{color:#B07A5E}
+  .think-pill svg{flex-shrink:0}
   .think-body{align-self:stretch;border-left:2px solid rgba(217,119,87,.3);padding-left:14px;font:400 13px/1.75 var(--ui);color:var(--faint);white-space:pre-wrap}
   .think-tool{font:400 12px/1.7 var(--ui);color:var(--dim)}
   .think-tool b{color:var(--accent-press);font-weight:600}
@@ -135,16 +140,13 @@
           transition:transform .24s ease;display:flex;flex-direction:column;border-right:1px solid var(--line)}
   .drawer.open{transform:none}
   .dh{display:flex;align-items:center;gap:10px;padding:16px;border-bottom:1px solid var(--line)}
-  .dh .t{flex:1;font:400 16px var(--ui);color:var(--text)}
-  .newchat{display:inline-flex;align-items:center;gap:6px;background:var(--accent-bg);color:var(--accent-press);border:1px solid var(--accent-bd);border-radius:10px;padding:7px 12px;font:400 13px var(--ui);cursor:pointer}
+  .dh .t{flex:1;font:600 16px var(--ui);color:var(--text)}
+  .newchat{display:inline-flex;align-items:center;gap:6px;background:var(--accent-bg);color:var(--accent-press);border:none;border-radius:10px;padding:7px 12px;font:400 13px var(--ui);cursor:pointer}
   .dnav{padding:8px 8px 6px;display:flex;flex-direction:column;gap:2px;flex-shrink:0}
   .navitem{display:flex;align-items:center;gap:11px;border:none;background:none;text-align:left;padding:10px 12px;border-radius:9px;color:var(--text2);font:400 14px var(--ui);cursor:pointer}
   .navitem svg{opacity:.75;color:var(--icon)}
   .navitem:active{background:var(--surface)}
-  .dsep{height:1px;background:var(--line);margin:4px 12px;flex-shrink:0}
-  .dsearch{padding:8px 12px 4px}
-  .dsearch input{width:100%;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:8px 11px;font:400 13.5px var(--ui);color:var(--ink);outline:none}
-  .slist{flex:1;overflow:auto;padding:2px 8px;min-height:0}
+  .slist{flex:1;overflow:auto;padding:8px 8px 2px;min-height:0}
   .sgroup{font:600 10px var(--ui);letter-spacing:.08em;color:var(--fainter);text-transform:uppercase;padding:10px 12px 4px}
   .sitem{padding:9px 12px;border-radius:9px;cursor:pointer}
   .sitem.active,.sitem:active{background:var(--surface)}
@@ -171,25 +173,34 @@
   .btn-ghost{flex:1;border:1px solid var(--line-strong);background:var(--card);color:var(--text2);border-radius:12px;padding:12px;font:500 14px var(--ui);cursor:pointer}
   .btn-deny{flex:1;border:1px solid rgba(181,51,51,.28);background:var(--card);color:var(--danger-text);border-radius:12px;padding:12px;font:500 14px var(--ui);cursor:pointer}
   /* ---- thinking sheet ---- */
-  .think-sheet-hd{display:flex;align-items:center;justify-content:space-between;font:600 14px var(--ui);color:var(--text2);letter-spacing:.03em;margin-bottom:12px}
-  .think-sheet-body{max-height:56vh;overflow:auto;font:400 14px/1.8 var(--ui);color:var(--dim);white-space:pre-wrap;word-break:break-word;-webkit-overflow-scrolling:touch}
+  /* think-sheet:Pando Kit「思考弹窗」精确规格——圆角 20/20/16/16、上投影、抓手更浅、
+     标题+时长同行、内容区独立内边距(覆盖 .sheet 通用值) */
+  .think-sheet{border-radius:20px 20px 16px 16px;box-shadow:0 -16px 48px rgba(31,30,29,.13);padding:0}
+  .think-grab-wrap{display:flex;justify-content:center;padding:9px 0 3px}
+  .think-grab-wrap .grab{background:rgba(31,30,29,.14);margin:0}
+  .think-sheet-hd{display:flex;align-items:center;gap:9px;padding:8px 16px 12px;border-bottom:1px solid rgba(31,30,29,.07)}
+  .think-sheet-hd .tt-wrap{flex:1}
+  .think-sheet-hd .tt{font:600 14px var(--ui);color:var(--text)}
+  .think-sheet-hd .meta{font:400 12px var(--code);color:var(--fainter);margin-left:7px}
+  .think-sheet-hd .icon-btn{padding:4px;color:var(--faint)}
+  .think-sheet-body{padding:14px 16px calc(18px + var(--safe-bottom));max-height:45vh;overflow:auto;font:400 13.5px/1.85 var(--ui);color:var(--dim);white-space:pre-wrap;word-break:break-word;-webkit-overflow-scrolling:touch}
   .think-sheet-body .tool-ln{font:400 12.5px/1.7 var(--ui);color:var(--dim);padding:8px 0 0;border-top:1px solid var(--line-soft);margin-top:10px}
   .think-sheet-body .tool-ln b{color:var(--accent-press);font-weight:600}
   /* ---- context indicator (chat header) ---- */
   .ctx-slot{position:relative;flex-shrink:0}
   .ctx-btn{display:inline-flex;align-items:center;gap:6px;border:none;background:var(--card);border-radius:9999px;padding:3px 10px 3px 5px;cursor:pointer;box-shadow:0 1px 3px rgba(31,30,29,.06)}
-  .ctx-lb{font:500 11px var(--ui);color:var(--accent);white-space:nowrap}
+  .ctx-lb{font:500 11.5px var(--code);color:var(--dim);white-space:nowrap}
   .ctx-cap{color:var(--fainter)}
   .ctx-pop{position:absolute;right:0;top:calc(100% + 8px);background:var(--card);border-radius:14px;padding:14px 15px;box-shadow:0 14px 40px rgba(31,30,29,.14);width:236px;z-index:30;display:flex;flex-direction:column;gap:11px}
   .ctx-h{display:flex;align-items:baseline;justify-content:space-between;font:600 12.5px var(--ui);color:var(--text)}
-  .ctx-h span:last-child{font:500 11.5px var(--ui);color:var(--dim)}
+  .ctx-h span:last-child{font:500 11.5px var(--code);color:var(--dim)}
   .ctx-track{height:5px;border-radius:9999px;background:rgba(31,30,29,.1);overflow:hidden}
-  .ctx-track>div{height:100%;border-radius:9999px;background:var(--accent);width:0;transition:width .2s}
+  .ctx-track>div{height:100%;border-radius:9999px;background:var(--online);width:0;transition:width .2s}
   .ctx-rows{display:flex;flex-direction:column;gap:6px}
   .ctx-r{display:flex;align-items:center;justify-content:space-between;font:400 11.5px var(--ui);color:var(--text2)}
   .ctx-r>span:first-child{display:inline-flex;align-items:center;gap:6px}
   .ctx-r i{width:7px;height:7px;border-radius:2px;display:inline-block}
-  .ctx-r>span:last-child{color:var(--dim)}
+  .ctx-r>span:last-child{font-family:var(--code);color:var(--dim)}
   .ctx-sep{height:1px;background:rgba(31,30,29,.08)}
   .ctx-btns{display:flex;gap:8px}
   .ctx-b1{flex:1;border:none;background:var(--surface);color:var(--text2);border-radius:10px;padding:8px;font:500 12px var(--ui);cursor:pointer}
@@ -198,9 +209,11 @@
   .conv-search{padding:14px 20px 10px;flex-shrink:0;position:relative}
   .conv-search svg{position:absolute;left:33px;top:calc(50% + 2px);transform:translateY(-50%);pointer-events:none}
   .conv-search input{width:100%;border:none;outline:none;background:var(--surface);border-radius:11px;padding:10px 13px 10px 38px;font:400 14px var(--ui);color:var(--ink)}
+  /* 焦点态:去浏览器默认蓝框,统一 clay 环(与原型 v2 搜索框 style-focus 一致)——只用在搜索框/名字输入框 */
+  .mem-search input:focus,.conv-search input:focus,.set-input:focus{outline:none;box-shadow:0 0 0 2px rgba(217,119,87,.4)}
   .conv-list{flex:1;overflow:auto;padding:4px 20px 16px;display:flex;flex-direction:column;gap:9px;min-height:0}
-  .conv-card{display:flex;align-items:center;gap:10px;background:var(--card);box-shadow:0 4px 14px rgba(31,30,29,.06);border-radius:13px;padding:13px 15px;cursor:pointer;transition:box-shadow .15s,transform .15s}
-  .conv-card:active{box-shadow:0 8px 22px rgba(31,30,29,.09);transform:translateY(-1px)}
+  .conv-card{display:flex;align-items:center;gap:10px;background:var(--card);box-shadow:var(--e2-shadow);border-radius:13px;padding:13px 15px;cursor:pointer;transition:box-shadow .15s,transform .15s}
+  .conv-card:hover,.conv-card:active{box-shadow:var(--e2-shadow-hover);transform:translateY(-1px)}
   .conv-card .body{flex:1;min-width:0}
   .conv-card .tt{font:500 15px var(--ui);color:var(--text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .conv-card .pv{font:400 13px var(--ui);color:var(--faint);margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -226,7 +239,7 @@
   .tag-chip{flex-shrink:0;white-space:nowrap;border-radius:9999px;padding:6px 14px;font:400 12.5px var(--ui);cursor:pointer;background:var(--card);border:1px solid var(--line-strong);color:var(--text2)}
   .tag-chip.on{background:var(--accent-press);border-color:var(--accent-press);color:#fff;font-weight:500}
   .mem-list{padding:14px 20px 16px;display:flex;flex-direction:column;gap:11px}
-  .mem-card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px 15px}
+  .mem-card{background:var(--card);border:1px solid var(--e0-border);border-radius:14px;padding:14px 15px}
   .mem-card .tx{font:400 15px/1.72 var(--ui);color:var(--ink)}
   .mem-card .ft{display:flex;align-items:center;gap:8px;margin-top:11px}
   .mem-tag{border-radius:6px;padding:2px 8px;font:500 11px var(--ui)}
@@ -234,13 +247,13 @@
   .mem-del{margin-left:auto;border:none;background:none;padding:2px;color:#D6D3C9;cursor:pointer;display:flex}
   /* status */
   .st-grid{display:grid;grid-template-columns:1fr 1fr;gap:11px;padding:18px 20px 0}
-  .st-card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:15px}
+  .st-card{background:var(--card);border:1px solid var(--e0-border);border-radius:14px;padding:15px}
   .st-card.dim{opacity:.5}
   .st-card .lb{display:flex;align-items:center;gap:7px;font:500 12px var(--ui);color:var(--dim)}
   .st-card .vl{font:500 18px var(--ui);color:var(--text);margin-top:11px}
   .st-card .sb{font:400 11px var(--ui);color:var(--faint);margin-top:4px}
   .st-sec{font:600 11px var(--ui);letter-spacing:.07em;color:var(--fainter);text-transform:uppercase;margin:24px 22px 12px}
-  .st-box{margin:0 20px;background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px}
+  .st-box{margin:0 20px;background:var(--card);border:1px solid var(--e0-border);border-radius:14px;padding:16px}
   .st-box.rows{padding:0;overflow:hidden}
   .quota+.quota{margin-top:18px}
   .quota .qh{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px}
@@ -259,7 +272,7 @@
   .set-field .lb{font:400 12px var(--ui);color:var(--faint);margin-bottom:8px}
   .set-input{width:100%;background:var(--card);border:1px solid var(--line-strong);border-radius:10px;padding:11px 13px;font:400 15px var(--ui);color:var(--ink);outline:none}
   .set-sec{font:600 11px var(--ui);letter-spacing:.07em;color:var(--fainter);text-transform:uppercase;margin:0 2px 10px}
-  .set-group{background:var(--card);border:1px solid var(--line);border-radius:14px;position:relative;margin-bottom:22px}
+  .set-group{background:var(--card);box-shadow:var(--e1-shadow);border-radius:14px;position:relative;margin-bottom:22px}
   .set-row{display:flex;align-items:center;padding:13px 15px;border-bottom:1px solid var(--line-soft)}
   .set-row:last-child{border-bottom:none}
   .set-row .k{flex:1;font:400 14.5px var(--ui);color:var(--ink)}
@@ -312,7 +325,7 @@
       <div class="top-id"><span class="nm" id="chat-asst">Claude</span><span class="dot" id="chat-dot"></span><span class="nm" id="chat-stat">在线</span></div>
       <span class="ctx-slot" id="ctx-slot" style="display:none">
         <button class="ctx-btn" onclick="toggleCtx(event)" aria-label="上下文用量">
-          <svg width="17" height="17" viewBox="0 0 20 20"><circle cx="10" cy="10" r="7" fill="none" stroke="rgba(31,30,29,.12)" stroke-width="2.6"></circle><circle id="ctx-arc" cx="10" cy="10" r="7" fill="none" stroke="var(--accent)" stroke-width="2.6" stroke-linecap="round" stroke-dasharray="0 44" transform="rotate(-90 10 10)"></circle></svg>
+          <svg width="17" height="17" viewBox="0 0 20 20"><circle id="ctx-ring-track" cx="10" cy="10" r="7" fill="none" stroke="rgba(31,30,29,.12)" stroke-width="2.6"></circle><circle id="ctx-arc" cx="10" cy="10" r="7" fill="none" stroke="var(--online)" stroke-width="2.6" stroke-linecap="round" stroke-dasharray="0 44" transform="rotate(-90 10 10)"></circle></svg>
           <span class="ctx-lb" id="ctx-lb">—<span class="ctx-cap"> / 200k</span></span>
         </button>
         <div class="ctx-pop" id="ctx-pop" style="display:none">
@@ -356,8 +369,6 @@
       <button class="navitem" onclick="go('status')"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3 8 4-16 3 8h4"></path></svg>状态</button>
       <button class="navitem" onclick="go('settings')"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"></path></svg>设置</button>
     </nav>
-    <div class="dsep"></div>
-    <div class="dsearch"><input id="side-search" type="search" placeholder="搜索对话" oninput="renderSessions()" autocomplete="off"></div>
     <div class="slist pd-scroll" id="side-list"></div>
     <div class="dfoot" id="side-ver">Pando</div>
   </div>
@@ -382,11 +393,14 @@
     </div>
   </div>
 
-  <!-- ============ THINKING SHEET ============ -->
+  <!-- ============ THINKING SHEET(Pando Kit 组件规格)============ -->
   <div class="sheet-ov" id="think-ov" onclick="if(event.target===this)closeThinkSheet()">
     <div class="sheet think-sheet">
-      <div class="grab"></div>
-      <div class="think-sheet-hd"><span>思考过程</span><button class="icon-btn" onclick="closeThinkSheet()" style="margin:-6px -6px 0 0" aria-label="关闭"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"></path></svg></button></div>
+      <div class="think-grab-wrap"><div class="grab"></div></div>
+      <div class="think-sheet-hd">
+        <div class="tt-wrap"><span class="tt">思考过程</span><span class="meta" id="think-sheet-meta"></span></div>
+        <button class="icon-btn" onclick="closeThinkSheet()" aria-label="关闭"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"></path></svg></button>
+      </div>
       <div class="think-sheet-body" id="think-sheet-body"></div>
     </div>
   </div>
@@ -529,18 +543,24 @@ function renderConversations(){
 }
 /* ===== context indicator ===== */
 const CTX_CAP=200000;
-function fmtTok(n){ n=n||0; return n>=1000?(n/1000).toFixed(n>=100000?0:1)+'k':String(n); }
+function fmtTok(n){ n=n||0; return n>=1000?(n/1000).toFixed(n>=100000?0:1)+'K':String(n); }
+// 三档水位色(Pando Kit「上下文用量」组件定值):常态绿 ≤75% → 琥珀 >75% → 红 >90%(非 clay)
+function ctxState(pct){
+  if(pct>90) return { ring:'#BE4B3B', track:'rgba(190,75,59,.18)', label:'#BE4B3B', cap:'rgba(190,75,59,.6)', bar:'#BE4B3B' };
+  if(pct>75) return { ring:'#BE8A2D', track:'rgba(31,30,29,.12)', label:'var(--dim)', cap:'var(--fainter)', bar:'#BE8A2D' };
+  return { ring:'#5B9A5B', track:'rgba(31,30,29,.12)', label:'var(--dim)', cap:'var(--fainter)', bar:'var(--online)' };
+}
 function updateCtx(u){
   if(!u) return;
   const cacheRead=u.cache_read_input_tokens??u.cache_read??0, cacheCreate=u.cache_creation_input_tokens??u.cache_create??0;
   const used=(u.input_tokens||0)+cacheRead+cacheCreate;
   const cachePct = (u.cache_hit_pct!=null) ? Math.round(u.cache_hit_pct) : (used?Math.round(cacheRead/used*100):0);
-  const pct=Math.min(100, used/CTX_CAP*100), circ=44;
-  const col = pct<70?'var(--accent)':(pct<88?'var(--warn)':'var(--danger)');
-  const arc=$('ctx-arc'); if(arc){ arc.setAttribute('stroke-dasharray',`${(pct/100*circ).toFixed(1)} ${circ}`); arc.setAttribute('stroke',col); }
-  const lb=$('ctx-lb'); lb.innerHTML=`${fmtTok(used)}<span class="ctx-cap"> / ${fmtTok(CTX_CAP)}</span>`; lb.style.color=col;
+  const pct=Math.min(100, used/CTX_CAP*100), circ=44, st=ctxState(pct);
+  const arc=$('ctx-arc'); if(arc){ arc.setAttribute('stroke-dasharray',`${(pct/100*circ).toFixed(1)} ${circ}`); arc.setAttribute('stroke',st.ring); }
+  const trk=$('ctx-ring-track'); if(trk) trk.setAttribute('stroke',st.track);
+  const lb=$('ctx-lb'); lb.innerHTML=`${fmtTok(used)}<span class="ctx-cap" style="color:${st.cap}"> / ${fmtTok(CTX_CAP)}</span>`; lb.style.color=st.label;
   $('ctx-h-val').textContent=`${fmtTok(used)} / ${fmtTok(CTX_CAP)}`;
-  const f=$('ctx-track-fill'); f.style.width=pct+'%'; f.style.background=col;
+  const f=$('ctx-track-fill'); f.style.width=pct+'%'; f.style.background=st.bar;
   $('ctx-in').textContent=fmtTok(u.input_tokens||0); $('ctx-out').textContent=fmtTok(u.output_tokens||0); $('ctx-cache').textContent=cachePct+'%';
   $('ctx-slot').style.display='inline';
 }
@@ -679,11 +699,11 @@ function sessBucket(ts){ if(!ts) return '更早'; const now=new Date(); const t0
   const start=new Date(now.getFullYear(),now.getMonth(),now.getDate()).getTime(); const day=864e5;
   if(t0>=start) return '今天'; if(t0>=start-day) return '昨天'; if(t0>=start-6*day) return '本周内'; return '更早'; }
 function fmtWhen(ts){ if(!ts) return ''; return new Date(ts).toLocaleDateString('zh-CN',{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}); }
+// 侧边栏「近期」flat 分组列表(原型无搜索框;搜索在独立的「对话」整屏)
 function renderSessions(){
   const list=$('side-list'); if(!list) return; list.innerHTML='';
-  const q=($('side-search').value||'').trim().toLowerCase();
-  const items=allSessions.filter(s=>!q||(s.title||'').toLowerCase().includes(q));
-  if(!items.length){ const e=document.createElement('div'); e.className='ph-body'; e.style.padding='30px'; e.textContent=q?'没有匹配的对话':'还没有对话'; list.appendChild(e); return; }
+  const items=allSessions;
+  if(!items.length){ const e=document.createElement('div'); e.className='ph-body'; e.style.padding='30px'; e.textContent='还没有对话'; list.appendChild(e); return; }
   const groups={}; items.forEach(s=>{ const b=sessBucket(s.updated_at); (groups[b]=groups[b]||[]).push(s); });
   ['今天','昨天','本周内','更早'].forEach(b=>{ if(!groups[b]) return;
     const h=document.createElement('div'); h.className='sgroup'; h.textContent=b; list.appendChild(h);
@@ -717,7 +737,7 @@ async function loadHistory(sid){
     if(!msgs.length){ showEmpty(); return; }
     msgs.forEach(x=>{
       if(x.role==='user') addUser(x.content, (x.metadata&&x.metadata.attachments)||[]);
-      else if(x.role==='assistant'){ const row=addAssistant(x.content); if(x.metadata&&x.metadata.thinking) addThinking(row, x.metadata.thinking, null); addToolbar(row,x.content,x.metadata);
+      else if(x.role==='assistant'){ const row=addAssistant(x.content); if(x.metadata&&x.metadata.thinking) addThinking(row, x.metadata.thinking, null, x.metadata.duration_ms); addToolbar(row,x.content,x.metadata);
         if(x.metadata&&x.metadata.usage) updateCtx(x.metadata.usage); }
     });
   }catch(e){ console.error(e); }
@@ -745,18 +765,26 @@ function addAssistant(text){
   $('msgs').appendChild(row); scrollDown(); return row;
 }
 function updateAssistant(row,text){ const t=row.querySelector('.a-text[data-role=text]'); if(t) t.textContent=text; scrollDown(); }
-// thinking 收起态 pill → 点开底部弹窗展示(不打断正文阅读、不跳滚动);工具行折叠进同一弹窗
-function addThinking(row, thinking, tools){
+function fmtThinkCount(n){ return n>=1000 ? (n/1000).toFixed(1)+'k' : String(n); }
+const IC_WRENCH='<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 7l-1.5-1.5a3 3 0 0 0-4 0l-.5.5 5.5 5.5.5-.5a3 3 0 0 0 0-4zM4 20l4-1 8-8-3-3-8 8-1 4z"></path></svg>';
+// thinking 收起态 pill(Pando Kit chip 规格:象牙底不描边 + 图标 + 「思考 · 1.2k ▸」纯文本)
+// → 点开底部弹窗展示(不打断正文阅读、不跳滚动);工具行折叠进同一弹窗
+function addThinking(row, thinking, tools, durationMs){
   thinking=thinking||''; tools=tools||[];
   if(!thinking && !tools.length) return;
   const head=row.querySelector('.a-head');
-  const pill=document.createElement('button'); pill.className='think-pill';
-  const label = thinking ? `思考 ${(thinking.length/1000).toFixed(1)}k` : `工具 ${tools.length}`;
-  pill.innerHTML=`<span class="lb">${label}</span><span class="ca">▸</span>`;
-  pill.onclick=()=>openThinkSheet(thinking, tools);
+  const pill=document.createElement('button'); pill.className='think-pill'+(thinking?'':' tool-only');
+  const icon = thinking ? PANDO_LOGO(11) : IC_WRENCH;
+  const label = thinking ? `思考 · ${fmtThinkCount(thinking.length)}` : `工具 · ${tools.length}`;
+  pill.innerHTML=`${icon}<span>${label} ▸</span>`;
+  pill.onclick=()=>openThinkSheet(thinking, tools, durationMs);
   head.insertAdjacentElement('afterend', pill);
 }
-function openThinkSheet(thinking, tools){
+function openThinkSheet(thinking, tools, durationMs){
+  // 头部标题+元信息同行(Pando Kit「思考弹窗」:时长 · token 数,等宽)
+  const metaParts=[]; if(durationMs) metaParts.push((durationMs/1000).toFixed(0)+'s');
+  if(thinking) metaParts.push(fmtThinkCount(thinking.length)+' tokens');
+  $('think-sheet-meta').textContent = metaParts.join(' · ');
   const body=$('think-sheet-body'); body.innerHTML='';
   if(thinking){ const tx=document.createElement('div'); tx.textContent=thinking; body.appendChild(tx); }
   (tools||[]).forEach(tl=>{ const ln=document.createElement('div'); ln.className='tool-ln';
@@ -838,7 +866,7 @@ function connect(){
       case 'result':
         removeTyping();
         if(m.text && !assistantText){ currentAssistantRow=addAssistant(m.text); assistantText=m.text; }
-        if(currentAssistantRow) addThinking(currentAssistantRow, m.thinking, roundTools);
+        if(currentAssistantRow) addThinking(currentAssistantRow, m.thinking, roundTools, m.duration_ms);
         if(currentAssistantRow && assistantText) addToolbar(currentAssistantRow, assistantText, m.stopped?null:{cost_usd:m.cost_usd,duration_ms:m.duration_ms,usage:m.usage});
         if(currentAssistantRow && m.stopped) addStopped(currentAssistantRow);
         if(m.usage) updateCtx(m.usage);
