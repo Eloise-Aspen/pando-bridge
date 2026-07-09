@@ -603,7 +603,10 @@ function renderConversations(){
 }
 /* ===== context indicator ===== */
 const CTX_CAP_FALLBACK=200000;
-function fmtTok(n){ n=n||0; return n>=1000?(n/1000).toFixed(n>=100000?0:1)+'K':String(n); }
+function fmtTok(n){ n=n||0;
+  if(n>=1000000) return (n/1000000).toFixed(n%1000000?1:0)+'M';  // 1M 窗口显示 1M,不是 1000K
+  if(n>=1000) return (n/1000).toFixed(n>=100000?0:1)+'K';
+  return String(n); }
 // 三档水位色(Pando Kit「上下文用量」组件定值):常态绿 ≤75% → 琥珀 >75% → 红 >90%(非 clay)
 function ctxState(pct){
   if(pct>90) return { ring:'#BE4B3B', track:'rgba(190,75,59,.18)', label:'#BE4B3B', cap:'rgba(190,75,59,.6)', bar:'#BE4B3B' };
