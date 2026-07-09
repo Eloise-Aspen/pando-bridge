@@ -1369,6 +1369,18 @@ def create_app(config) -> FastAPI:
             raise HTTPException(status_code=404, detail="icon not found")
         return FileResponse(icon_path, media_type="image/png")
 
+    @app.get("/fonts/{filename}")
+    async def font_asset(filename: str):
+        # 自托管字体(JetBrains Mono / Tabler 图标子集 woff2)。只放行 woff2,把解析后的
+        # 路径限制在 fonts/ 目录内,挡路径穿越(../ 等)——与 /themes 同一套白名单式防护。
+        if not filename.endswith(".woff2"):
+            raise HTTPException(status_code=404, detail="font not found")
+        fonts_root = (static_dir / "fonts").resolve()
+        target = (fonts_root / filename).resolve()
+        if fonts_root not in target.parents or not target.is_file():
+            raise HTTPException(status_code=404, detail="font not found")
+        return FileResponse(target, media_type="font/woff2")
+
     @app.get("/themes/{name}/{filename}")
     async def theme_asset(name: str, filename: str):
         # 主题资源:themes/<名>/theme.css（CSS 变量覆盖）或可选 theme.js（文案包/启动模块）。
