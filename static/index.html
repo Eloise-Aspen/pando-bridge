@@ -377,7 +377,6 @@
           <div class="ctx-rows">
             <div class="ctx-r"><span><i style="background:#D97757"></i>输入</span><span id="ctx-in">—</span></div>
             <div class="ctx-r"><span><i style="background:#E0A98F"></i>输出</span><span id="ctx-out">—</span></div>
-            <div class="ctx-r"><span><i style="background:#436426"></i>缓存命中</span><span id="ctx-cache" style="color:var(--tag-life)">—</span></div>
           </div>
           <div class="ctx-sep"></div>
           <div class="ctx-btns"><button class="ctx-b1" onclick="compactCtx()">压缩上下文</button><button class="ctx-b2" onclick="newChat()">开新对话</button></div>
@@ -613,20 +612,20 @@ function ctxState(pct){
   if(pct>75) return { ring:'#BE8A2D', track:'rgba(31,30,29,.12)', label:'var(--dim)', cap:'var(--fainter)', bar:'#BE8A2D' };
   return { ring:'#5B9A5B', track:'rgba(31,30,29,.12)', label:'var(--dim)', cap:'var(--fainter)', bar:'var(--online)' };
 }
-// c = 后端 result.context(最后一条 assistant 的 usage 快照):{used,window,input,output,cache_read,cache_hit_pct}
+// c = 后端 result.context(最后一条 assistant 的 usage 快照)。弹窗只渲染 used/window/input/output
+// 四项——缓存命中行已按 Kit 更新删掉(缓存已计入 used 总数,单列是重复信息)。
 // used=输入+缓存读+缓存写+输出=此刻上下文装了多少;window=该模型真实上下文窗口(不再写死 200k)。
 // 压缩后 used 回落是预期(上下文真变小了),不是 bug。
 function updateCtx(c){
   if(!c) return;
   const used=c.used||0, cap=c.window||CTX_CAP_FALLBACK;
-  const cachePct = (c.cache_hit_pct!=null) ? Math.round(c.cache_hit_pct) : 0;
   const pct=Math.min(100, used/cap*100), circ=44, st=ctxState(pct);
   const arc=$('ctx-arc'); if(arc){ arc.setAttribute('stroke-dasharray',`${(pct/100*circ).toFixed(1)} ${circ}`); arc.setAttribute('stroke',st.ring); }
   const trk=$('ctx-ring-track'); if(trk) trk.setAttribute('stroke',st.track);
   const lb=$('ctx-lb'); lb.innerHTML=`${fmtTok(used)}<span class="ctx-cap" style="color:${st.cap}"> / ${fmtTok(cap)}</span>`; lb.style.color=st.label;
   $('ctx-h-val').textContent=`${fmtTok(used)} / ${fmtTok(cap)}`;
   const f=$('ctx-track-fill'); f.style.width=pct+'%'; f.style.background=st.bar;
-  $('ctx-in').textContent=fmtTok(c.input||0); $('ctx-out').textContent=fmtTok(c.output||0); $('ctx-cache').textContent=cachePct+'%';
+  $('ctx-in').textContent=fmtTok(c.input||0); $('ctx-out').textContent=fmtTok(c.output||0);
   $('ctx-slot').style.display='inline';
 }
 function toggleCtx(e){ e.stopPropagation(); const p=$('ctx-pop'); p.style.display=p.style.display==='none'?'flex':'none'; }
