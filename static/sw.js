@@ -1,4 +1,4 @@
-const CACHE = 'bridge-v1';
+const CACHE = 'bridge-v2';   // v2:新 PWA 图标,bump 版本以清掉旧图标缓存
 const PRECACHE = ['/', '/manifest.json'];
 
 self.addEventListener('install', e => {
