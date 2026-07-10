@@ -39,10 +39,13 @@ def test_manifest_lists_js_files_sorted(tmp_path):
     (pdir / "a-one.js").write_text("//1", encoding="utf-8")
     (pdir / "server_side.py").write_text("# 不是前端插件", encoding="utf-8")
     c = TestClient(create_app(_config(tmp_path, pdir)))
-    assert c.get("/api/plugins").json() == [
-        {"id": "a-one", "src": "/plugin-assets/a-one.js"},
-        {"id": "b-two", "src": "/plugin-assets/b-two.js"},
-    ]
+    # src 带 ?v=<mtime> 版本参数(缓存失效);断言路径前缀与排序,版本值随文件系统变化
+    items = c.get("/api/plugins").json()
+    assert [m["id"] for m in items] == ["a-one", "b-two"]
+    for m in items:
+        path, _, ver = m["src"].partition("?v=")
+        assert path == f"/plugin-assets/{m['id']}.js"
+        assert ver.isdigit()
 
 
 def test_plugin_asset_served_and_traversal_blocked(tmp_path):

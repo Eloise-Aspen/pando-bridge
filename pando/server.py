@@ -1442,8 +1442,10 @@ def create_app(config) -> FastAPI:
         # 不接受任何用户输入路径、无外链。未配置目录 → []（demo 行为）。
         if frontend_plugins_dir is None or not frontend_plugins_dir.is_dir():
             return []
+        # src 带文件 mtime 版本参数:插件更新即换 URL,击穿浏览器 HTTP 启发式缓存与
+        # PWA sw 缓存(fix/fe-emotion-badge:真机曾因无失效机制拿到旧插件)
         return [
-            {"id": p.stem, "src": f"/plugin-assets/{p.name}"}
+            {"id": p.stem, "src": f"/plugin-assets/{p.name}?v={int(p.stat().st_mtime)}"}
             for p in sorted(frontend_plugins_dir.glob("*.js"))
             if p.is_file()
         ]
@@ -1457,7 +1459,13 @@ def create_app(config) -> FastAPI:
         target = (plugins_root / filename).resolve()
         if plugins_root not in target.parents or not target.is_file():
             raise HTTPException(status_code=404, detail="plugin not found")
-        return FileResponse(target, media_type="application/javascript")
+        # no-cache = 每次使用前必须向服务端重验(有 etag/last-modified,新鲜时回 304),
+        # 防移动端按启发式缓存拿到旧插件
+        return FileResponse(
+            target,
+            media_type="application/javascript",
+            headers={"Cache-Control": "no-cache"},
+        )
 
     @app.get("/", response_class=HTMLResponse)
     async def index():
