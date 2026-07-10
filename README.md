@@ -280,7 +280,11 @@ pytest
 
 ## 许可
 
-[MIT](LICENSE)。
+代码 [MIT](LICENSE)。
+
+界面「简洁模式」浅色主题的设计参考 **Anthropic MCP Apps UI kit**(CC BY 4.0)。
+打包的字体 JetBrains Mono(SIL OFL 1.1)与 Tabler Icons 子集(MIT)各遵其许可。
+完整第三方声明见 [NOTICE](NOTICE)。
 
 <br>
 
@@ -610,4 +614,9 @@ pytest
 
 ## License
 
-[MIT](LICENSE).
+Code is [MIT](LICENSE).
+
+The "simple mode" light theme's interface design is adapted from the
+**Anthropic MCP Apps UI kit** (CC BY 4.0). Bundled fonts — JetBrains Mono
+(SIL OFL 1.1) and a Tabler Icons subset (MIT) — remain under their own licenses.
+See [NOTICE](NOTICE) for the full third-party notices.
