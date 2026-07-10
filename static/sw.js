@@ -57,11 +57,13 @@ self.addEventListener('notificationclick', e => {
 
 self.addEventListener('fetch', e => {
   const url = new URL(e.request.url);
-  // Don't cache live API / WS requests
+  // Don't cache live API / WS requests; plugin assets 交给浏览器 HTTP 缓存
+  // (服务端 no-cache + manifest 版本参数负责失效,sw 不再兜一层旧副本)
   if (url.pathname.startsWith('/ws') ||
       url.pathname.startsWith('/sessions') ||
       url.pathname.startsWith('/memory') ||
       url.pathname.startsWith('/api/') ||
+      url.pathname.startsWith('/plugin-assets/') ||
       url.pathname.startsWith('/health')) {
     return;
   }
