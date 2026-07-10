@@ -719,7 +719,7 @@ async function loadStatus(){
     <div class="sub-body pd-scroll">
       <div class="st-grid">
         ${card(dot+'连接',online?'在线':'离线',online?'CLI 已就绪':'CLI 未就绪')}
-        ${card('记忆',memst?`${memst.count??0} 条`:'—',memst?fmtChars(memst.chars):'未配置')}
+        ${card('记忆',memst?`${memst.count??0} 条`:'—',memst?fmtChars(memst.total_chars??memst.chars):'未配置')}
         ${card('模型','Claude',currentModel?modelLabel(currentModel):'默认')}
         ${card('情感','未装配','—',true)}
       </div>
@@ -1132,6 +1132,14 @@ async function boot(){
   const nick=localStorage.getItem('userNickname');
   $('hero-name').textContent = nick? `${nick},你好` : '你好';
   $('hero-sub').textContent = new Date().toLocaleDateString('zh-CN',{year:'numeric',month:'2-digit',day:'2-digit'});
+  // 问候屏副行:日期 · N 条记忆 · 在线 D 天(记忆服务可用且带对应字段才追加,否则只留日期)
+  fetch('/memory-admin/memory/stats').then(r=>r.ok?r.json():null).then(s=>{
+    if(!s) return;
+    const parts=[new Date().toLocaleDateString('zh-CN',{year:'numeric',month:'2-digit',day:'2-digit'})];
+    if(s.count!=null) parts.push(`${s.count} 条记忆`);
+    if(s.earliest_date){ const days=Math.floor((Date.now()-new Date(s.earliest_date))/864e5)+1; if(days>0) parts.push(`在线 ${days} 天`); }
+    $('hero-sub').textContent=parts.join(' · ');
+  }).catch(()=>{});
   ['home-asst','chat-asst'].forEach(id=>$(id).textContent=ASST);
   try{ const h=await (await fetch('/health')).json(); if(h&&h.version) $('side-ver').textContent='Pando v'+h.version; }catch(e){}
   await loadSessions();
