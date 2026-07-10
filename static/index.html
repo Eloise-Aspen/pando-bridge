@@ -114,6 +114,8 @@
   .model-opt.sel{background:var(--accent-bg);color:var(--accent-press);font-weight:500}
   .model-opt.custom{border-top:1px solid var(--line-soft);margin-top:2px;color:var(--faint)}
   .send{width:38px;height:38px;flex-shrink:0;border-radius:50%;border:none;background:var(--accent);color:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:opacity .2s}
+  /* 插件 composer 动作按钮:发送键左侧,同尺寸浅灰圆底 */
+  .comp-act{width:38px;height:38px;flex-shrink:0;border-radius:50%;border:none;background:var(--track);color:var(--dim);cursor:pointer;display:flex;align-items:center;justify-content:center}
   /* 发送键默认态/聚焦态(原型 sendBtnStyle):无文字且无附件时半透明,有内容时全亮 */
   .send.idle{opacity:.35}
   .send.stop{background:var(--surface);color:var(--text2);border:1px solid var(--line-strong)}
@@ -127,8 +129,6 @@
   .row.assistant{align-items:flex-start;gap:10px}
   .bubble-user{max-width:82%;background:var(--accent-bg);border-radius:16px 16px 4px 16px;padding:10px 14px;font:400 14.5px/1.6 var(--ui);color:var(--ink);white-space:pre-wrap;word-break:break-word}
   .u-att{display:inline-flex;align-items:center;gap:5px;background:var(--surface);border-radius:8px;padding:3px 8px;font:400 11px var(--ui);color:var(--icon)}
-  .a-head{display:flex;align-items:center;gap:7px}
-  .a-head .nm{font:600 11px var(--ui);letter-spacing:.06em;color:var(--icon);text-transform:uppercase}
   /* Chip(Pando Kit)——自带底色不描边 */
   /* 思考 chip(Pando 原型 CHAT 屏实况规格,非 Kit 通用图例):图标 + 大写字距标签 + 独立等宽 caret */
   .think-pill{align-self:flex-start;display:inline-flex;align-items:center;gap:5px;background:var(--surface);border:none;border-radius:9999px;padding:4px 10px;cursor:pointer;font:500 11px var(--ui);color:var(--icon)}
@@ -553,9 +553,10 @@ function composerHTML(){
   return `<textarea id="input" rows="1" placeholder="写点什么…" onkeydown="onInputKey(event)" oninput="autoGrow(this)"></textarea>`+
     `<div class="comp-ctrl">`+
     `<button class="icon-btn lead" onclick="$('file-input').click()" aria-label="附件">${IC.attach}</button>`+
-    _pandoComposerActions.map(a=>`<button class="icon-btn" onclick="_pandoComposerClick('${a.id}')" aria-label="${escHtml(a.title||a.id)}" title="${escHtml(a.title||a.id)}">${a.icon||''}</button>`).join('')+
     `<span class="model-slot"><button class="model-btn" id="model-btn" onclick="toggleModel(event)">${escHtml(modelLabel(currentModel))} ▾</button>`+
     `<div class="model-pop" id="model-pop" style="display:none"></div></span>`+
+    // 插件动作按钮排在发送键左侧(设计稿:浅灰圆底,与发送键同尺寸)
+    _pandoComposerActions.map(a=>`<button class="comp-act" onclick="_pandoComposerClick('${a.id}')" aria-label="${escHtml(a.title||a.id)}" title="${escHtml(a.title||a.id)}">${a.icon||''}</button>`).join('')+
     `<button class="send" id="send-btn" onclick="onSendBtn()" aria-label="发送">${IC.send}</button>`+
     `</div>`;
 }
@@ -918,8 +919,8 @@ function addUser(text, atts){
 }
 function addAssistant(text){
   ensureChat();
+  // 回复行不再带助手名字头(与顶栏身份重复);思考 pill 直接插行首
   const row=document.createElement('div'); row.className='row assistant';
-  const head=document.createElement('div'); head.className='a-head'; head.innerHTML=`<span class="nm">${escHtml(ASST)}</span>`; row.appendChild(head);
   const t=document.createElement('div'); t.className='a-text'; t.textContent=text||''; t.dataset.role='text'; row.appendChild(t);
   $('msgs').appendChild(row); scrollDown(); return row;
 }
@@ -941,13 +942,12 @@ function renderThinkLines(container, thinking, tools, toolClass){
 function addThinking(row, thinking, tools, durationMs){
   thinking=thinking||''; tools=tools||[];
   if(!thinking && !tools.length) return;
-  const head=row.querySelector('.a-head');
   const pill=document.createElement('button'); pill.className='think-pill'+(thinking?'':' tool-only');
   const icon = thinking ? PANDO_LOGO(11) : IC_WRENCH;
   const label = thinking ? `思考 · ${fmtDur(durationMs)}` : `工具 · ${tools.length}`;
   pill.innerHTML=`${icon}<span>${label}</span><span class="tp-car"> ▸</span>`;
   pill.onclick=()=> DESKTOP_MQ.matches ? toggleThinkInline(pill, thinking, tools, durationMs) : openThinkSheet(thinking, tools, durationMs);
-  head.insertAdjacentElement('afterend', pill);
+  row.insertAdjacentElement('afterbegin', pill);
 }
 function toggleThinkInline(pill, thinking, tools, durationMs){
   const car=pill.querySelector('.tp-car');
