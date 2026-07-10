@@ -291,6 +291,23 @@
   .tool-row:last-child{border-bottom:none}
   .tool-row .nm{flex:1;font:400 14px var(--ui);color:var(--ink)}
   .pill-tag{font:500 11px var(--ui);border-radius:6px;padding:2px 8px}
+  /* 状态页指标卡(主/次指标行,原型 STATUS 屏紧凑卡规格)+ 插件插槽(metric/action)复用同款 */
+  .st-mrow{display:flex;gap:11px;margin-bottom:11px}
+  .st-mcard{flex:1;min-width:0;background:var(--card);border:1px solid var(--e0-border);border-radius:14px;padding:13px 15px}
+  .st-mcard.tap{cursor:pointer}
+  .st-mcard .mtop{display:flex;align-items:center;font:400 12px var(--ui);color:var(--dim)}
+  .st-mcard .mbig{font:500 15px var(--ui);color:var(--text);margin-top:4px}
+  .st-mcard .mbig .sub{font:400 11px var(--ui);color:var(--faint)}
+  .st-conn{display:flex;align-items:center;gap:10px}
+  .st-conn .cdot{width:6px;height:6px;border-radius:50%;flex-shrink:0}
+  .st-conn .cv{font:500 15px var(--ui);color:var(--text)}
+  .st-conn .cs{font:400 11px var(--ui);color:var(--faint);margin-top:2px}
+  /* 可操作插槽:紧凑列表卡,行间浅分隔,末行不描边 */
+  .st-actbox{background:var(--card);border:1px solid var(--e0-border);border-radius:14px;overflow:hidden;margin-bottom:11px}
+  .st-actbox>*{border-bottom:1px solid var(--line-soft)}
+  .st-actbox>*:last-child{border-bottom:none}
+  .st-arow{display:flex;align-items:center;gap:12px;padding:13px 15px;cursor:pointer}
+  .st-arow .nm{flex:1;font:400 14px var(--ui);color:var(--text)}
   /* settings */
   .set-body{padding:12px 20px 24px}
   .set-field{margin-bottom:20px}
@@ -408,7 +425,6 @@
     </div>
     <nav class="dnav">
       <button class="navitem" onclick="go('conversations')"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.4 8.4 0 0 1-8.5 8.5 8.6 8.6 0 0 1-3.8-.9L3 21l1.9-5.7A8.4 8.4 0 0 1 4 11.5 8.4 8.4 0 0 1 12.5 3 8.4 8.4 0 0 1 21 11.5z"></path></svg>对话</button>
-      <button class="navitem" onclick="go('memory')"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3a4 4 0 0 0-3.5 6A4 4 0 0 0 7 16.5 4 4 0 0 0 12 20a4 4 0 0 0 5-3.5A4 4 0 0 0 18.5 9 4 4 0 0 0 15 3a3.5 3.5 0 0 0-6 0z"></path><path d="M9 3v17M15 3v17"></path></svg>记忆</button>
       <button class="navitem" onclick="go('status')"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3 8 4-16 3 8h4"></path></svg>状态</button>
       <button class="navitem" onclick="go('settings')"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"></path></svg>设置</button>
     </nav>
@@ -708,7 +724,11 @@ async function loadStatus(){
   try{ const r=await fetch('/memory-admin/memory/stats'); if(r.ok) memst=await r.json(); }catch(e){}
   const online=!!(health&&health.claude_cli==='found');
   const dot=`<span style="width:6px;height:6px;border-radius:50%;background:${online?'var(--online)':'var(--danger)'}"></span>`;
-  const card=(lb,vl,sb,dim)=>`<div class="st-card${dim?' dim':''}"><div class="lb">${lb}</div><div class="vl">${vl}</div><div class="sb">${sb}</div></div>`;
+  // 连接卡副行:在线时显示服务版本(拿不到退「CLI 已就绪」),离线「CLI 未就绪」——不显示静态延迟数
+  const connSub=online?(health&&health.version?('Pando v'+health.version):'CLI 已就绪'):'CLI 未就绪';
+  const connColor=online?'var(--online)':'var(--danger)';
+  const connShadow=online?'0 0 0 3px rgba(91,154,91,.16)':'0 0 0 3px rgba(181,51,51,.14)';
+  const memVal=memst?`${memst.count??0} 条 <span class="sub">· ${fmtChars(memst.total_chars??memst.chars)}</span>`:'—';
   const quotaBar=(k,pct,reset)=>{ const c=pct<60?'var(--online)':(pct<85?'var(--warn)':'var(--danger)');
     return `<div class="quota"><div class="qh"><span class="k">${k}</span><span class="p">${pct}%</span></div><div class="qbar"><div style="width:${pct}%;background:${c}"></div></div><div class="rs">${reset||''}</div></div>`; };
   let usageHtml='';
@@ -718,14 +738,18 @@ async function loadStatus(){
   } else {
     usageHtml=`<div class="st-sec">用量</div><div class="st-box"><div class="sub-empty" style="padding:8px">需登录本地 Claude 订阅后显示额度</div></div>`;
   }
+  // 记忆卡小 chevron(原型 STATUS 屏次指标卡右侧指示可跳转)
+  const CHEV12='<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#B0AEA4" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="margin-left:auto"><path d="M9 6l6 6-6 6"></path></svg>';
   v.innerHTML=`<div class="sub-top"><div class="r"><button class="icon-btn lead" onclick="openSidebar()" aria-label="菜单">${MENU}</button><span class="sub-h">状态</span><span class="sub-meta">${dot}${online?'刚刚同步':'离线'}</span></div></div>
-    <div class="sub-body pd-scroll">
-      <div class="st-grid">
-        ${card(dot+'连接',online?'在线':'离线',online?'CLI 已就绪':'CLI 未就绪')}
-        ${card('记忆',memst?`${memst.count??0} 条`:'—',memst?fmtChars(memst.total_chars??memst.chars):'未配置')}
-        ${card('模型','Claude',currentModel?modelLabel(currentModel):'默认')}
-        ${card('情感','未装配','—',true)}
+    <div class="sub-body pd-scroll" style="padding:18px 20px 16px">
+      <div class="st-mrow">
+        <div class="st-mcard st-conn"><span class="cdot" style="background:${connColor};box-shadow:${connShadow}"></span><div><div class="cv">${online?'在线':'离线'}</div><div class="cs">${connSub}</div></div></div>
+        <div class="st-mcard"><div class="mbig" style="margin-top:0">${escHtml(modelLabel(currentModel))}</div><div class="cs">Claude</div></div>
       </div>
+      <div class="st-mrow" id="st-metric-row">
+        <div class="st-mcard tap" onclick="go('memory')"><div class="mtop">记忆${CHEV12}</div><div class="mbig">${memVal}</div></div>
+      </div>
+      <div id="st-action-wrap"></div>
       ${usageHtml}
       <div class="st-sec">已连接工具</div>
       <div class="st-box rows">
@@ -735,6 +759,24 @@ async function loadStatus(){
       </div>
       <div style="height:20px"></div>
     </div>`;
+  // 插件插槽:自有卡渲染完后按注册序补 metric(次指标行)与 action(可操作列表);
+  // 单卡渲染失败只警告不白屏(外部依赖无降级规范同款)
+  const metricRow=$('st-metric-row');
+  _pandoStatusCards.filter(c=>c.slot==='metric').forEach(c=>{
+    const el=document.createElement('div'); el.className='st-mcard';
+    metricRow.appendChild(el);
+    try{ c.render(el); }catch(e){ console.warn('[Pando] 状态卡渲染失败:',c.id,e); }
+  });
+  const actionCards=_pandoStatusCards.filter(c=>c.slot==='action');
+  if(actionCards.length){
+    const box=document.createElement('div'); box.className='st-actbox';
+    actionCards.forEach(c=>{
+      const el=document.createElement('div'); el.className='st-arow';
+      box.appendChild(el);
+      try{ c.render(el); }catch(e){ console.warn('[Pando] 状态行渲染失败:',c.id,e); }
+    });
+    $('st-action-wrap').appendChild(box);
+  }
 }
 
 /* ===== SETTINGS ===== */
@@ -1047,9 +1089,10 @@ function hidePerm(){ $('perm-ov').classList.remove('open'); }
 // theme_change(主题切换)、ws_status(连接状态)、send_payload(发送前,监听者可就地改 payload)。
 // 扩集(spec 补裁决 2026-07-10):registerComposerAction(composer 按钮)、
 // registerMessageAction(回复工具条动作,同 id 覆盖内置)、registerTopbarBadge(顶栏徽标装饰)、
-// registerMemoryDecorator(记忆页标签筛选/卡片装饰)。此外不再加。
+// registerMemoryDecorator(记忆页标签筛选/卡片装饰)。
+// 状态页插槽(spec 状态页 IA 重组):registerStatusCard(状态页 metric/action 插槽)。此外不再加。
 const _pandoEvents={}, _pandoMsgRenderers={}, _pandoSettingsSections=[], _pandoNavItems=[];
-const _pandoComposerActions=[], _pandoMsgActions=[], _pandoTopbarBadges=[], _pandoMemDecorators=[];
+const _pandoComposerActions=[], _pandoMsgActions=[], _pandoTopbarBadges=[], _pandoMemDecorators=[], _pandoStatusCards=[];
 function _pandoEmit(ev,data){ (_pandoEvents[ev]||[]).forEach(fn=>{ try{ fn(data); }catch(e){ console.warn('[Pando] 插件事件回调出错:',ev,e); } }); }
 window.Pando={
   apiVersion:1,
@@ -1063,10 +1106,19 @@ window.Pando={
     _pandoNavItems.push(item);
     const pv=document.createElement('div'); pv.className='view'; pv.id='v-plugin-'+item.id;
     $('app').insertBefore(pv,$('overlay'));
+    // item.hidden:只注册页面与路由、不放侧边栏(入口改由状态页插槽卡/行跳转)
+    if(item.hidden) return;
     const btn=document.createElement('button'); btn.className='navitem';
     btn.innerHTML=(item.icon||'')+escHtml(item.label||item.id);
     btn.onclick=()=>go('plugin-'+item.id);
     document.querySelector('.dnav').appendChild(btn);
+  },
+  registerStatusCard(card){
+    // 状态页插槽:{id, slot:'metric'|'action', render(el)}。metric=次指标行小卡,action=可操作列表行。
+    // loadStatus 渲染完自有卡后按注册序渲染;渲染失败只警告不白屏(外部依赖无降级规范同款)
+    if(!card||!card.id||typeof card.render!=='function'){ console.warn('[Pando] registerStatusCard: 缺 id/render:',card); return; }
+    if(card.slot!=='metric'&&card.slot!=='action'){ console.warn('[Pando] registerStatusCard: slot 需为 metric 或 action:',card); return; }
+    _pandoStatusCards.push(card);
   },
   registerComposerAction(item){
     // composer 按钮(如语音模式触发)。注册后重挂 composer 让按钮立即出现
