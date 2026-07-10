@@ -63,6 +63,8 @@
   .dot.off{background:var(--danger);box-shadow:0 0 0 3px rgba(181,51,51,.14)}
   /* 顶栏「在线」标识(原型更新:名字后不再是裸 点+文字,改绿/红色调胶囊徽标) */
   .status-badge{display:inline-flex;align-items:center;gap:5px;border-radius:9999px;padding:3px 9px 3px 7px}
+  /* 首帧防闪:连接状态未确定前徽标不露面(setStatus 首次调用时摘掉) */
+  .status-badge.pending{visibility:hidden}
   .status-badge.on{background:rgba(91,154,91,.12)}
   .status-badge.off{background:rgba(181,51,51,.12)}
   .status-badge .bdot{width:5px;height:5px;border-radius:50%}
@@ -339,7 +341,7 @@
     <div class="top">
       <button class="icon-btn lead" onclick="openSidebar()" aria-label="菜单">
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"></path></svg></button>
-      <div class="top-id"><span class="nm" id="home-asst">Claude</span><span class="status-badge on" id="home-badge"><span class="bdot"></span><span class="blabel" id="home-stat">在线</span></span></div>
+      <div class="top-id"><span class="nm" id="home-asst">Claude</span><span class="status-badge on pending" id="home-badge"><span class="bdot"></span><span class="blabel" id="home-stat">在线</span></span></div>
     </div>
     <div class="home-body">
       <div class="hero">
@@ -363,7 +365,7 @@
     <div class="top">
       <button class="icon-btn lead" onclick="openSidebar()" aria-label="菜单">
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"></path></svg></button>
-      <div class="top-id"><span class="nm" id="chat-asst">Claude</span><span class="status-badge on" id="chat-badge"><span class="bdot"></span><span class="blabel" id="chat-stat">在线</span></span></div>
+      <div class="top-id"><span class="nm" id="chat-asst">Claude</span><span class="status-badge on pending" id="chat-badge"><span class="bdot"></span><span class="blabel" id="chat-stat">在线</span></span></div>
       <span class="ctx-slot" id="ctx-slot" style="display:none">
         <button class="ctx-btn" onclick="toggleCtx(event)" aria-label="上下文用量">
           <svg width="17" height="17" viewBox="0 0 20 20"><circle id="ctx-ring-track" cx="10" cy="10" r="7" fill="none" stroke="rgba(31,30,29,.12)" stroke-width="2.6"></circle><circle id="ctx-arc" cx="10" cy="10" r="7" fill="none" stroke="var(--online)" stroke-width="2.6" stroke-linecap="round" stroke-dasharray="0 44" transform="rotate(-90 10 10)"></circle></svg>
@@ -978,6 +980,7 @@ function send(){
 
 /* ===== WebSocket ===== */
 function setStatus(on){ _lastOnline=!!on; ['home','chat'].forEach(v=>{ const b=$(v+'-badge'), s=$(v+'-stat'); if(b) b.className='status-badge '+(on?'on':'off'); if(s) s.textContent=on?'在线':'离线'; }); applyTopbarBadges(); _pandoEmit('ws_status',{online:!!on}); }
+// 注:setStatus 重建 className 时自然摘掉首帧的 pending,徽标此后跟随真实连接状态
 function setBusy(b){ busy=b; document.querySelectorAll('#send-btn').forEach(btn=>{ btn.className='send'+(b?' stop':''); btn.innerHTML=b?IC.stop:IC.send; }); }
 function connect(){
   const proto=location.protocol==='https:'?'wss':'ws';
@@ -1131,15 +1134,14 @@ async function boot(){
   try{ const cfg=await (await fetch('/config')).json(); ASST=cfg.assistant_name||localStorage.getItem('assistantName')||'Claude'; }catch(e){ ASST=localStorage.getItem('assistantName')||'Claude'; }
   const nick=localStorage.getItem('userNickname');
   $('hero-name').textContent = nick? `${nick},你好` : '你好';
-  $('hero-sub').textContent = new Date().toLocaleDateString('zh-CN',{year:'numeric',month:'2-digit',day:'2-digit'});
-  // 问候屏副行:日期 · N 条记忆 · 在线 D 天(记忆服务可用且带对应字段才追加,否则只留日期)
-  fetch('/memory-admin/memory/stats').then(r=>r.ok?r.json():null).then(s=>{
-    if(!s) return;
+  // 问候屏副行(首帧防闪):等 stats 落定后一次性写入完整副行,失败/缺字段只显示日期,
+  // 不再先写日期占位——避免「日期」闪变成「日期 · N 条记忆 · 在线 D 天」的中间态
+  fetch('/memory-admin/memory/stats').then(r=>r.ok?r.json():null).catch(()=>null).then(s=>{
     const parts=[new Date().toLocaleDateString('zh-CN',{year:'numeric',month:'2-digit',day:'2-digit'})];
-    if(s.count!=null) parts.push(`${s.count} 条记忆`);
-    if(s.earliest_date){ const days=Math.floor((Date.now()-new Date(s.earliest_date))/864e5)+1; if(days>0) parts.push(`在线 ${days} 天`); }
+    if(s&&s.count!=null) parts.push(`${s.count} 条记忆`);
+    if(s&&s.earliest_date){ const days=Math.floor((Date.now()-new Date(s.earliest_date))/864e5)+1; if(days>0) parts.push(`在线 ${days} 天`); }
     $('hero-sub').textContent=parts.join(' · ');
-  }).catch(()=>{});
+  });
   ['home-asst','chat-asst'].forEach(id=>$(id).textContent=ASST);
   try{ const h=await (await fetch('/health')).json(); if(h&&h.version) $('side-ver').textContent='Pando v'+h.version; }catch(e){}
   await loadSessions();
