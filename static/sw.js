@@ -1,5 +1,5 @@
-const CACHE = 'pando-v3';   // v3:PWA 改名 Pando + 图标换新文件名,bump 版本清掉旧缓存
-const PRECACHE = ['/', '/manifest.json'];
+const CACHE = 'pando-v4';   // v4:manifest 加版本号击穿安装弹窗缓存;bump 清掉旧缓存
+const PRECACHE = ['/'];     // manifest 不再预缓存(改为始终走网络,见 fetch 里的 bypass)
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(PRECACHE)));
@@ -64,6 +64,7 @@ self.addEventListener('fetch', e => {
       url.pathname.startsWith('/memory') ||
       url.pathname.startsWith('/api/') ||
       url.pathname.startsWith('/plugin-assets/') ||
+      url.pathname === '/manifest.json' ||   // manifest 始终走网络,避免安装弹窗读到旧副本
       url.pathname.startsWith('/health')) {
     return;
   }
