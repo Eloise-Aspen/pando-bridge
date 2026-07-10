@@ -279,8 +279,9 @@
   .st-card .lb{display:flex;align-items:center;gap:7px;font:500 12px var(--ui);color:var(--dim)}
   .st-card .vl{font:500 18px var(--ui);color:var(--text);margin-top:11px}
   .st-card .sb{font:400 11px var(--ui);color:var(--faint);margin-top:4px}
-  .st-sec{font:600 11px var(--ui);letter-spacing:.07em;color:var(--fainter);text-transform:uppercase;margin:24px 22px 12px}
-  .st-box{margin:0 20px;background:var(--card);border:1px solid var(--e0-border);border-radius:14px;padding:16px}
+  /* 状态页容器自带 20px 内边距,区块不再额外缩进(设计稿:分节题 2px 微缩进,盒子与指标卡等宽) */
+  .st-sec{font:600 11px var(--ui);letter-spacing:.07em;color:var(--fainter);text-transform:uppercase;margin:24px 2px 12px}
+  .st-box{background:var(--card);border:1px solid var(--e0-border);border-radius:14px;padding:16px}
   .st-box.rows{padding:0;overflow:hidden}
   .quota+.quota{margin-top:18px}
   .quota .qh{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px}
