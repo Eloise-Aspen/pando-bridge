@@ -529,12 +529,14 @@ function composerHTML(){
   return `<textarea id="input" rows="1" placeholder="写点什么…" onkeydown="onInputKey(event)" oninput="autoGrow(this)"></textarea>`+
     `<div class="comp-ctrl">`+
     `<button class="icon-btn lead" onclick="$('file-input').click()" aria-label="附件">${IC.attach}</button>`+
+    _pandoComposerActions.map(a=>`<button class="icon-btn" onclick="_pandoComposerClick('${a.id}')" aria-label="${escHtml(a.title||a.id)}" title="${escHtml(a.title||a.id)}">${a.icon||''}</button>`).join('')+
     `<span class="model-slot"><button class="model-btn" id="model-btn" onclick="toggleModel(event)">${escHtml(modelLabel(currentModel))} ▾</button>`+
     `<div class="model-pop" id="model-pop" style="display:none"></div></span>`+
     `<button class="send" id="send-btn" onclick="onSendBtn()" aria-label="发送">${IC.send}</button>`+
     `</div>`;
 }
 let $input=null;
+function _pandoComposerClick(id){ const a=_pandoComposerActions.find(x=>x.id===id); if(a){ try{ a.onClick(); }catch(e){ console.warn('[Pando] composer 动作失败:',id,e); } } }
 function mountComposers(){
   document.querySelectorAll('[data-composer]').forEach(el=>{ el.innerHTML=composerHTML(); });
   // 两个 composer 共享同一 id 会重复;改为只在当前视图的 composer 上取 #input
@@ -643,11 +645,16 @@ const TAG_COLORS={ '项目':['#2360A8','rgba(44,132,219,.1)'], '偏好':['#B15A3
 let memActiveTag='全部', memStatsCache=null;
 async function loadMemory(){
   const v=$('v-memory');
+  // 插件记忆装饰器(registerMemoryDecorator)可提供标签筛选;有标签时渲染 chip 行
+  const decoTags=_pandoMemDecorators.flatMap(d=>d.tags||[]);
+  const tagsHtml=decoTags.length?`<div class="mem-tags pd-scroll" id="mem-tags">`+
+    ['全部',...decoTags.map(t=>t.label)].map(lb=>`<div class="tag-chip${lb===memActiveTag?' on':''}" onclick="setMemTag('${lb}')">${lb}</div>`).join('')+`</div>`:'';
   v.innerHTML=`<div class="sub-top"><div class="r"><button class="icon-btn lead" onclick="openSidebar()" aria-label="菜单">${MENU}</button><span class="sub-h">记忆</span><span class="sub-meta" id="mem-count"></span></div></div>
     <div class="mem-search"><div class="box">${SEARCHIC}<input id="mem-q" placeholder="搜索记忆…" oninput="renderMemories()" autocomplete="off"></div></div>
+    ${tagsHtml}
     <div class="sub-body pd-scroll"><div class="mem-list" id="mem-list"></div></div>`;
   try{ const r=await fetch('/memory-admin/memory/stats'); if(r.ok){ memStatsCache=await r.json();
-    $('mem-count').textContent=`${memStatsCache.count??0} 条 · ${fmtChars(memStatsCache.chars)}`; } }catch(e){}
+    $('mem-count').textContent=`${memStatsCache.count??0} 条 · ${fmtChars(memStatsCache.total_chars??memStatsCache.chars)}`; } }catch(e){}
   renderMemories();
 }
 function fmtChars(n){ if(!n) return '0 字'; return n>=1000?`${(n/1000).toFixed(1)}k 字`:`${n} 字`; }
@@ -659,16 +666,22 @@ async function renderMemories(){
   const list=$('mem-list'); if(!list) return;
   const q=($('mem-q')?.value||'').trim();
   let items=null;
-  try{ const url=q?`/memory-admin/memory/search?q=${encodeURIComponent(q)}`:'/memory-admin/memory/list';
+  // 标签筛选:装饰器标签可携带 query 参数(如 klass=xxx),仅无搜索词时生效
+  const tagDef=_pandoMemDecorators.flatMap(d=>d.tags||[]).find(t=>t.label===memActiveTag);
+  const listUrl='/memory-admin/memory/list'+(tagDef&&tagDef.query?`?${tagDef.query}`:'');
+  try{ const url=q?`/memory-admin/memory/search?q=${encodeURIComponent(q)}`:listUrl;
     const r=await fetch(url); if(r.ok) items=await r.json(); else if(r.status===404) items='unconfigured'; }catch(e){ items='unconfigured'; }
   if(items==='unconfigured'){ list.innerHTML=`<div class="sub-empty">未配置记忆服务<br><span style="font-size:12px;color:var(--hint)">在宿主机指向 MEMORY_SERVICE_URL 后即可在此浏览记忆</span></div>`; return; }
-  items=Array.isArray(items)?items:[];
+  // 管理面契约(memory_stub 软约定)是 {items,total};容忍历史裸数组形状
+  items=Array.isArray(items)?items:(items&&Array.isArray(items.items)?items.items:[]);
   if(!items.length){ list.innerHTML=`<div class="sub-empty">${q?'没有匹配的记忆':'还没有记忆'}</div>`; return; }
-  // 开源服记忆无打标 → 只显示正文 + 时间;标签/筛选留给生产服
+  // 开源服记忆无打标 → 只显示正文 + 时间;标签/卡片装饰由插件 registerMemoryDecorator 提供
   list.innerHTML=items.map(m=>{
-    const text=escHtml(m.text||m.content||m.body||''); const date=fmtWhen(m.created_at||m.updated_at||m.date);
+    const text=escHtml(m.text||m.content||m.body||''); const date=fmtWhen(m.created_at||m.updated_at||m.origin_date||m.date);
     return `<div class="mem-card"><div class="tx">${text}</div><div class="ft"><span class="mem-date">${date}</span><button class="mem-del" onclick="deleteMemory('${m.id}')">${TRASH}</button></div></div>`;
   }).join('');
+  // 卡片装饰钩子:插件可在每张卡上补标签等(装饰失败只警告,不影响列表)
+  [...list.children].forEach((el,i)=>{ _pandoMemDecorators.forEach(d=>{ if(d.card){ try{ d.card(el,items[i]); }catch(e){ console.warn('[Pando] 记忆卡片装饰失败:',d.id,e); } } }); });
 }
 let pendingDeleteId=null;
 function deleteMemory(id){ pendingDeleteId=id; $('confirm-ov').classList.add('open'); }
@@ -913,11 +926,18 @@ function usageParts(meta){
 function addToolbar(row,text,meta){
   const foot=document.createElement('div'); foot.className='a-footer';
   const bar=document.createElement('div'); bar.className='a-tools';
-  const copy=document.createElement('button'); copy.className='a-tool'; copy.title='复制'; copy.innerHTML=IC.copy;
-  copy.onclick=()=>{ navigator.clipboard&&navigator.clipboard.writeText(text); toast('已复制'); };
-  const read=document.createElement('button'); read.className='a-tool'; read.title='朗读'; read.innerHTML=IC.read;
-  read.onclick=()=>speak(text,read);
-  bar.appendChild(copy); bar.appendChild(read); foot.appendChild(bar);
+  // 内置动作 + 插件动作(registerMessageAction)合并;插件同 id 覆盖内置(如换成服务端 TTS)
+  const builtins=[
+    {id:'copy',title:'复制',icon:IC.copy,onClick:()=>{ navigator.clipboard&&navigator.clipboard.writeText(text); toast('已复制'); }},
+    {id:'read',title:'朗读',icon:IC.read,onClick:(t,m,ctx)=>speak(text,ctx.btn)},
+  ];
+  const actions=[...builtins.filter(b=>!_pandoMsgActions.some(a=>a.id===b.id)),..._pandoMsgActions];
+  actions.forEach(a=>{
+    const btn=document.createElement('button'); btn.className='a-tool'; btn.title=a.title||a.id; btn.innerHTML=a.icon||'';
+    btn.onclick=()=>{ try{ a.onClick(text,meta,{row,btn}); }catch(e){ console.warn('[Pando] 消息动作失败:',a.id,e); } };
+    bar.appendChild(btn);
+  });
+  foot.appendChild(bar);
   const p=usageParts(meta); if(p){ const us=document.createElement('div'); us.className='a-usage'; us.textContent=p; foot.appendChild(us); }
   row.appendChild(foot);
 }
@@ -946,12 +966,13 @@ function send(){
   currentAssistantRow=null; assistantText=''; roundTools=[];
   const payload={text, model:currentModel||undefined};
   if(ready.length) payload.attachments=ready.map(a=>a.path);
+  _pandoEmit('send_payload',payload);   // 插件可就地改 payload(如语音模式加 voice_mode 标记)
   ws.send(JSON.stringify(payload));
   clearAttachments(); setBusy(true); showTyping();
 }
 
 /* ===== WebSocket ===== */
-function setStatus(on){ ['home','chat'].forEach(v=>{ const b=$(v+'-badge'), s=$(v+'-stat'); if(b) b.className='status-badge '+(on?'on':'off'); if(s) s.textContent=on?'在线':'离线'; }); _pandoEmit('ws_status',{online:!!on}); }
+function setStatus(on){ _lastOnline=!!on; ['home','chat'].forEach(v=>{ const b=$(v+'-badge'), s=$(v+'-stat'); if(b) b.className='status-badge '+(on?'on':'off'); if(s) s.textContent=on?'在线':'离线'; }); applyTopbarBadges(); _pandoEmit('ws_status',{online:!!on}); }
 function setBusy(b){ busy=b; document.querySelectorAll('#send-btn').forEach(btn=>{ btn.className='send'+(b?' stop':''); btn.innerHTML=b?IC.stop:IC.send; }); }
 function connect(){
   const proto=location.protocol==='https:'?'wss':'ws';
@@ -1014,8 +1035,12 @@ function hidePerm(){ $('perm-ov').classList.remove('open'); }
 // registerNavItem(侧边栏导航插槽)/ registerSettingsSection(设置分区)/
 // registerMessageRenderer(自定义 WS 消息类型)/ on·emit(事件总线)。
 // 事件名约定:session_switch(会话切换)、message_result(一轮回复完成)、
-// theme_change(主题切换)、ws_status(连接状态)。最小集之外不加——要新挂点先回 spec 扩。
+// theme_change(主题切换)、ws_status(连接状态)、send_payload(发送前,监听者可就地改 payload)。
+// 扩集(spec 补裁决 2026-07-10):registerComposerAction(composer 按钮)、
+// registerMessageAction(回复工具条动作,同 id 覆盖内置)、registerTopbarBadge(顶栏徽标装饰)、
+// registerMemoryDecorator(记忆页标签筛选/卡片装饰)。此外不再加。
 const _pandoEvents={}, _pandoMsgRenderers={}, _pandoSettingsSections=[], _pandoNavItems=[];
+const _pandoComposerActions=[], _pandoMsgActions=[], _pandoTopbarBadges=[], _pandoMemDecorators=[];
 function _pandoEmit(ev,data){ (_pandoEvents[ev]||[]).forEach(fn=>{ try{ fn(data); }catch(e){ console.warn('[Pando] 插件事件回调出错:',ev,e); } }); }
 window.Pando={
   apiVersion:1,
@@ -1034,7 +1059,33 @@ window.Pando={
     btn.onclick=()=>go('plugin-'+item.id);
     document.querySelector('.dnav').appendChild(btn);
   },
+  registerComposerAction(item){
+    // composer 按钮(如语音模式触发)。注册后重挂 composer 让按钮立即出现
+    if(!item||!item.id||typeof item.onClick!=='function'){ console.warn('[Pando] registerComposerAction: 缺 id/onClick:',item); return; }
+    _pandoComposerActions.push(item); mountComposers();
+  },
+  registerMessageAction(action){
+    // 每条回复工具条上的动作;与内置动作(copy/read)同 id 时覆盖内置(如换成服务端 TTS)
+    if(!action||!action.id||typeof action.onClick!=='function'){ console.warn('[Pando] registerMessageAction: 缺 id/onClick:',action); return; }
+    _pandoMsgActions.push(action);
+  },
+  registerTopbarBadge(fn){
+    // 顶栏状态徽标装饰:fn(badgeEl,{online})——每次连接状态刷新时对 home/chat 两枚徽标各调一次
+    if(typeof fn!=='function') return;
+    _pandoTopbarBadges.push(fn); applyTopbarBadges();
+  },
+  registerMemoryDecorator(dec){
+    // 记忆页装饰:{id, tags:[{label,query}], card(el,item)}——标签筛选走 list 查询参数
+    if(!dec||!dec.id){ console.warn('[Pando] registerMemoryDecorator: 缺 id:',dec); return; }
+    _pandoMemDecorators.push(dec);
+  },
 };
+// 顶栏徽标装饰统一入口(setStatus 与注册时各调一次;装饰失败只警告)
+let _lastOnline=false;
+function applyTopbarBadges(){
+  ['home','chat'].forEach(v=>{ const b=$(v+'-badge'); if(!b) return;
+    _pandoTopbarBadges.forEach(fn=>{ try{ fn(b,{online:_lastOnline}); }catch(e){ console.warn('[Pando] 顶栏徽标装饰失败:',e); } }); });
+}
 // 渲染设置页里插件注册的分区(loadSettings 每次重建 DOM 后调用)
 function renderPluginSettings(body){
   const anchor=body.querySelector('.set-ver');
@@ -1080,6 +1131,14 @@ async function boot(){
   try{ const h=await (await fetch('/health')).json(); if(h&&h.version) $('side-ver').textContent='Pando v'+h.version; }catch(e){}
   await loadSessions();
   await loadFrontendPlugins();   // 先装插件再连 WS,保证消息渲染器/事件监听先注册好
+  // PWA service worker:注册 + 把 sw 的通用转发消息(push_click)接到插件事件总线
+  if('serviceWorker' in navigator){
+    navigator.serviceWorker.register('/sw.js').catch(()=>{});
+    navigator.serviceWorker.addEventListener('message',e=>{ if(e.data&&e.data.type==='push_click') _pandoEmit('push_click',e.data.data||{}); });
+  }
+  // 冷启动经通知点击打开:?push=<json> 参数 → 同一事件口转发给插件后清掉参数
+  try{ const pp=new URLSearchParams(location.search).get('push');
+    if(pp){ _pandoEmit('push_click',JSON.parse(pp)); history.replaceState({},'',location.pathname); } }catch(e){}
   connect();
 }
 boot();
