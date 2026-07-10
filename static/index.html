@@ -654,7 +654,10 @@ async function loadMemory(){
   v.innerHTML=`<div class="sub-top"><div class="r"><button class="icon-btn lead" onclick="openSidebar()" aria-label="菜单">${MENU}</button><span class="sub-h">记忆</span><span class="sub-meta" id="mem-count"></span></div></div>
     <div class="mem-search"><div class="box">${SEARCHIC}<input id="mem-q" placeholder="搜索记忆…" oninput="renderMemories()" autocomplete="off"></div></div>
     ${tagsHtml}
+    <div id="mem-plugin-header"></div>
     <div class="sub-body pd-scroll"><div class="mem-list" id="mem-list"></div></div>`;
+  // 插件 header 槽(列表上方自定义内容;渲染失败只警告不影响列表)
+  _pandoMemDecorators.forEach(d=>{ if(d.header){ try{ d.header($('mem-plugin-header')); }catch(e){ console.warn('[Pando] 记忆页 header 装饰失败:',d.id,e); } } });
   try{ const r=await fetch('/memory-admin/memory/stats'); if(r.ok){ memStatsCache=await r.json();
     $('mem-count').textContent=`${memStatsCache.count??0} 条 · ${fmtChars(memStatsCache.total_chars??memStatsCache.chars)}`; } }catch(e){}
   renderMemories();
