@@ -34,7 +34,8 @@
     --e2-shadow:0 4px 14px rgba(31,30,29,.06); --e2-shadow-hover:0 8px 22px rgba(31,30,29,.09);
     --safe-bottom:env(safe-area-inset-bottom,0px);
   }
-  *{box-sizing:border-box;margin:0;padding:0}
+  /* -webkit-tap-highlight-color:移动端点按不再叠加系统蓝色高亮遮罩 */
+  *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
   html,body{height:100%}
   body{font-family:var(--ui);background:var(--bg);color:var(--text);-webkit-font-smoothing:antialiased;
        display:flex;flex-direction:column;height:100dvh;overflow:hidden}
