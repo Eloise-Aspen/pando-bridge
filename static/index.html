@@ -7,7 +7,7 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="theme-color" content="#faf9f5">
 <link rel="manifest" href="/manifest.json">
-<link rel="apple-touch-icon" href="/icon-192.png">
+<link rel="apple-touch-icon" href="/icon-192.png?v=pando3">
 <title>Pando</title>
 <style>
   /* 自托管字体(CONSTRAINTS 禁 CDN):Inter=UI/数字,JetBrains Mono=代码;中文走系统栈 */
@@ -92,8 +92,10 @@
 
   /* ---- composer ---- */
   .composer{padding:12px 18px 16px;flex-shrink:0}
-  .composer.home{border-top:none;padding-top:6px}
-  .composer.chat{border-top:1px solid var(--line)}
+  .composer.home{padding-top:6px}
+  /* 顶边线与 header .divider 对齐:两侧内缩 18px + 同色 --line-soft(不再顶满整宽) */
+  .composer.chat{position:relative}
+  .composer.chat::before{content:'';position:absolute;top:0;left:18px;right:18px;height:1px;background:var(--line-soft)}
   .attach-row{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:11px}
   .attach-row:empty{display:none}
   .attach-chip{display:inline-flex;align-items:center;gap:6px;background:var(--surface);border:1px solid var(--line);border-radius:10px;padding:5px 8px 5px 10px}

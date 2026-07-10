@@ -1,4 +1,4 @@
-const CACHE = 'bridge-v2';   // v2:新 PWA 图标,bump 版本以清掉旧图标缓存
+const CACHE = 'pando-v3';   // v3:PWA 改名 Pando + 图标换新文件名,bump 版本清掉旧缓存
 const PRECACHE = ['/', '/manifest.json'];
 
 self.addEventListener('install', e => {
@@ -26,8 +26,8 @@ self.addEventListener('push', e => {
   e.waitUntil(
     self.registration.showNotification(data.title || 'Pando', {
       body: data.body || '',
-      icon: '/icon-192.png',
-      badge: '/icon-192.png',
+      icon: '/icon-192.png?v=pando3',
+      badge: '/icon-192.png?v=pando3',
       tag: 'pando-push',
       renotify: true,
       data,
