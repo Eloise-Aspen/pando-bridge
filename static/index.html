@@ -647,8 +647,10 @@ async function loadMemory(){
   const v=$('v-memory');
   // 插件记忆装饰器(registerMemoryDecorator)可提供标签筛选;有标签时渲染 chip 行
   const decoTags=_pandoMemDecorators.flatMap(d=>d.tags||[]);
+  // 标签行 = 「全部」+ 插件标签(插件可自带「全部」定义其查询参数,去重保插件版)
+  const tagLabels=['全部',...decoTags.map(t=>t.label)].filter((lb,i,arr)=>arr.indexOf(lb)===i);
   const tagsHtml=decoTags.length?`<div class="mem-tags pd-scroll" id="mem-tags">`+
-    ['全部',...decoTags.map(t=>t.label)].map(lb=>`<div class="tag-chip${lb===memActiveTag?' on':''}" onclick="setMemTag('${lb}')">${lb}</div>`).join('')+`</div>`:'';
+    tagLabels.map(lb=>`<div class="tag-chip${lb===memActiveTag?' on':''}" onclick="setMemTag('${lb}')">${lb}</div>`).join('')+`</div>`:'';
   v.innerHTML=`<div class="sub-top"><div class="r"><button class="icon-btn lead" onclick="openSidebar()" aria-label="菜单">${MENU}</button><span class="sub-h">记忆</span><span class="sub-meta" id="mem-count"></span></div></div>
     <div class="mem-search"><div class="box">${SEARCHIC}<input id="mem-q" placeholder="搜索记忆…" oninput="renderMemories()" autocomplete="off"></div></div>
     ${tagsHtml}
