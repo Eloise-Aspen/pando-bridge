@@ -113,7 +113,9 @@
   .model-opt{padding:9px 12px;border-radius:7px;font:400 13.5px var(--ui);color:var(--dim);cursor:pointer}
   .model-opt.sel{background:var(--accent-bg);color:var(--accent-press);font-weight:500}
   .model-opt.custom{border-top:1px solid var(--line-soft);margin-top:2px;color:var(--faint)}
-  .send{width:38px;height:38px;flex-shrink:0;border-radius:50%;border:none;background:var(--accent);color:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center}
+  .send{width:38px;height:38px;flex-shrink:0;border-radius:50%;border:none;background:var(--accent);color:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:opacity .2s}
+  /* 发送键默认态/聚焦态(原型 sendBtnStyle):无文字且无附件时半透明,有内容时全亮 */
+  .send.idle{opacity:.35}
   .send.stop{background:var(--surface);color:var(--text2);border:1px solid var(--line-strong)}
   .send:disabled{background:var(--surface);color:var(--hint);cursor:default}
 
@@ -301,7 +303,8 @@
   .st-conn{display:flex;align-items:center;gap:10px}
   .st-conn .cdot{width:6px;height:6px;border-radius:50%;flex-shrink:0}
   .st-conn .cv{font:500 15px var(--ui);color:var(--text)}
-  .st-conn .cs{font:400 11px var(--ui);color:var(--faint);margin-top:2px}
+  /* .cs 提级到 .st-mcard 作用域:模型卡副行(模型名)与连接卡副行共用同一规格 */
+  .st-mcard .cs{font:400 11px var(--ui);color:var(--faint);margin-top:2px}
   /* 可操作插槽:紧凑列表卡,行间浅分隔,末行不描边 */
   .st-actbox{background:var(--card);border:1px solid var(--e0-border);border-radius:14px;overflow:hidden;margin-bottom:11px}
   .st-actbox>*{border-bottom:1px solid var(--line-soft)}
@@ -541,6 +544,7 @@ function renderChips(){
       box.appendChild(chip);
     });
   });
+  updateSendState();
 }
 
 /* ===== composer (shared, rendered into both home & chat) ===== */
@@ -560,6 +564,7 @@ function mountComposers(){
   document.querySelectorAll('[data-composer]').forEach(el=>{ el.innerHTML=composerHTML(); });
   // 两个 composer 共享同一 id 会重复;改为只在当前视图的 composer 上取 #input
   syncComposerRefs();
+  updateSendState();
 }
 function activeComposer(){ return view==='chat' ? $('v-chat') : $('v-home'); }
 function syncComposerRefs(){
@@ -587,7 +592,17 @@ document.addEventListener('click',e=>{ if(!e.target.closest('.model-slot')) docu
 
 let enterToSend = localStorage.getItem('enterToSend')!=='0';
 function onInputKey(e){ if(e.key!=='Enter') return; const s = enterToSend?!e.shiftKey:(e.metaKey||e.ctrlKey); if(s){ e.preventDefault(); send(); } }
-function autoGrow(el){ el.style.height='auto'; el.style.height=Math.min(el.scrollHeight,120)+'px'; }
+function autoGrow(el){ el.style.height='auto'; el.style.height=Math.min(el.scrollHeight,120)+'px'; updateSendState(); }
+// 发送键默认态/聚焦态:两个 composer 各按自己的输入框内容判定(附件为全局共享);
+// 忙碌(停止键形态)时不置灰。输入/附件/清空/收发各时机都会来刷新
+function updateSendState(){
+  document.querySelectorAll('[data-composer]').forEach(host=>{
+    const btn=host.querySelector('#send-btn'); if(!btn) return;
+    const ta=host.querySelector('#input');
+    const has=(ta&&ta.value.trim())||pendingAtts.length;
+    btn.classList.toggle('idle',!busy&&!has);
+  });
+}
 
 /* ===== view routing ===== */
 function go(v){
@@ -653,8 +668,10 @@ function updateCtx(c){
 function toggleCtx(e){ e.stopPropagation(); const p=$('ctx-pop'); p.style.display=p.style.display==='none'?'flex':'none'; }
 function compactCtx(){ $('ctx-pop').style.display='none'; toast('上下文压缩:接入后可用'); }
 function hideCtx(){ const s=$('ctx-slot'); if(s) s.style.display='none'; const p=$('ctx-pop'); if(p) p.style.display='none'; }
-// 侧边栏导航进来的子页(对话/记忆/状态/设置)左上是「打开侧边栏」汉堡键,不是返回——对齐原型
+// 侧边栏导航进来的子页(对话/状态/设置)左上是「打开侧边栏」汉堡键,不是返回——对齐原型;
+// 从状态页卡片进入的子页(记忆)左上是「返回」箭头(回状态页,样式对照档案子页返回键)
 const MENU='<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"></path></svg>';
+const BACK='<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"></path></svg>';
 const TRASH='<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 7h16M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2M6 7l1 13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-13"></path></svg>';
 const SEARCHIC='<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#8B8A83" stroke-width="1.7" stroke-linecap="round"><circle cx="11" cy="11" r="7"></circle><path d="M20 20l-3.2-3.2"></path></svg>';
 const CHEV='<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="#C2C0B6" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"></path></svg>';
@@ -670,7 +687,7 @@ async function loadMemory(){
   const tagLabels=['全部',...decoTags.map(t=>t.label)].filter((lb,i,arr)=>arr.indexOf(lb)===i);
   const tagsHtml=decoTags.length?`<div class="mem-tags pd-scroll" id="mem-tags">`+
     tagLabels.map(lb=>`<div class="tag-chip${lb===memActiveTag?' on':''}" onclick="setMemTag('${lb}')">${lb}</div>`).join('')+`</div>`:'';
-  v.innerHTML=`<div class="sub-top"><div class="r"><button class="icon-btn lead" onclick="openSidebar()" aria-label="菜单">${MENU}</button><span class="sub-h">记忆</span><span class="sub-meta" id="mem-count"></span></div></div>
+  v.innerHTML=`<div class="sub-top"><div class="r"><button class="icon-btn lead" style="color:var(--text2)" onclick="go('status')" aria-label="返回">${BACK}</button><span class="sub-h">记忆</span><span class="sub-meta" id="mem-count"></span></div></div>
     <div class="mem-search"><div class="box">${SEARCHIC}<input id="mem-q" placeholder="搜索记忆…" oninput="renderMemories()" autocomplete="off"></div></div>
     ${tagsHtml}
     <div id="mem-plugin-header"></div>
@@ -744,7 +761,7 @@ async function loadStatus(){
     <div class="sub-body pd-scroll" style="padding:18px 20px 16px">
       <div class="st-mrow">
         <div class="st-mcard st-conn"><span class="cdot" style="background:${connColor};box-shadow:${connShadow}"></span><div><div class="cv">${online?'在线':'离线'}</div><div class="cs">${connSub}</div></div></div>
-        <div class="st-mcard"><div class="mbig" style="margin-top:0">${escHtml(modelLabel(currentModel))}</div><div class="cs">Claude</div></div>
+        <div class="st-mcard"><div class="mbig" style="margin-top:0">Claude</div><div class="cs">${escHtml(modelLabel(currentModel))}</div></div>
       </div>
       <div class="st-mrow" id="st-metric-row">
         <div class="st-mcard tap" onclick="go('memory')"><div class="mtop">记忆${CHEV12}</div><div class="mbig">${memVal}</div></div>
@@ -1024,7 +1041,7 @@ function send(){
 /* ===== WebSocket ===== */
 function setStatus(on){ _lastOnline=!!on; ['home','chat'].forEach(v=>{ const b=$(v+'-badge'), s=$(v+'-stat'); if(b) b.className='status-badge '+(on?'on':'off'); if(s) s.textContent=on?'在线':'离线'; }); applyTopbarBadges(); _pandoEmit('ws_status',{online:!!on}); }
 // 注:setStatus 重建 className 时自然摘掉首帧的 pending,徽标此后跟随真实连接状态
-function setBusy(b){ busy=b; document.querySelectorAll('#send-btn').forEach(btn=>{ btn.className='send'+(b?' stop':''); btn.innerHTML=b?IC.stop:IC.send; }); }
+function setBusy(b){ busy=b; document.querySelectorAll('#send-btn').forEach(btn=>{ btn.className='send'+(b?' stop':''); btn.innerHTML=b?IC.stop:IC.send; }); updateSendState(); }
 function connect(){
   const proto=location.protocol==='https:'?'wss':'ws';
   ws=new WebSocket(`${proto}://${location.host}/ws`);
