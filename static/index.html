@@ -127,7 +127,12 @@
   .row{display:flex;flex-direction:column;gap:6px}
   .row.user{align-items:flex-end}
   .row.assistant{align-items:flex-start;gap:10px}
-  .bubble-user{max-width:82%;background:var(--accent-bg);border-radius:16px 16px 4px 16px;padding:10px 14px;font:400 14.5px/1.6 var(--ui);color:var(--ink);white-space:pre-wrap;word-break:break-word}
+  .bubble-user{max-width:100%;background:var(--accent-bg);border-radius:16px 16px 4px 16px;padding:10px 14px;font:400 14.5px/1.6 var(--ui);color:var(--ink);white-space:pre-wrap;word-break:break-word}
+  /* 用户气泡 + 重发按钮:按钮在气泡左侧,移动端常显(低透明度,点击重新发送) */
+  .user-wrap{display:flex;align-items:center;gap:6px;max-width:85%}
+  .retry-btn{flex-shrink:0;border:none;background:none;padding:4px;color:var(--icon);opacity:.4;cursor:pointer;display:flex;transition:opacity .15s}
+  .retry-btn:active{opacity:1;color:var(--accent-press)}
+  @media(hover:hover){.retry-btn{opacity:0}.row.user:hover .retry-btn{opacity:.55}}
   .u-att{display:inline-flex;align-items:center;gap:5px;background:var(--surface);border-radius:8px;padding:3px 8px;font:400 11px var(--ui);color:var(--icon)}
   /* Chip(Pando Kit)——自带底色不描边 */
   /* 思考 chip(Pando 原型 CHAT 屏实况规格,非 Kit 通用图例):图标 + 大写字距标签 + 独立等宽 caret */
@@ -430,7 +435,7 @@
     <nav class="dnav">
       <button class="navitem" onclick="go('conversations')"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M21 11.5a8.4 8.4 0 0 1-8.5 8.5 8.6 8.6 0 0 1-3.8-.9L3 21l1.9-5.7A8.4 8.4 0 0 1 4 11.5 8.4 8.4 0 0 1 12.5 3 8.4 8.4 0 0 1 21 11.5z"></path></svg>对话</button>
       <button class="navitem" onclick="go('status')"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3 8 4-16 3 8h4"></path></svg>状态</button>
-      <button class="navitem" onclick="go('settings')"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"></path></svg>设置</button>
+      <button class="navitem" id="nav-settings" onclick="go('settings')"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"></path></svg>设置</button>
     </nav>
     <div class="slist pd-scroll" id="side-list"></div>
     <div class="dfoot" id="side-ver">Pando</div>
@@ -490,7 +495,7 @@
 const $ = id => document.getElementById(id);
 const escHtml = s => (s||'').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 // Pando 根/立交桥标记(clay),原型同款
-const PANDO_LOGO = size => `<svg width="${size}" height="${size}" viewBox="0 0 92 91" fill="none"><line x1="75.89" y1="45.4" x2="15.89" y2="45.39" stroke="#D97757" stroke-width="8"></line><line y1="-3.5" x2="24" y2="-3.5" transform="matrix(-4.37114e-08 -1 -1 4.37114e-08 42 78)" stroke="#D97757" stroke-width="7"></line><path d="M44.9746 90.7773C42.9926 86.3882 41.8887 81.5175 41.8887 76.3887C41.8887 74.0134 42.1272 71.6937 42.5781 69.4512C49.3588 58.2688 58.7688 48.8588 69.9512 42.0781C72.1937 41.6272 74.5134 41.3887 76.8887 41.3887C82.0175 41.3887 86.8882 42.4926 91.2773 44.4746C69.1937 51.269 51.769 68.6937 44.9746 90.7773Z" fill="#D97757"></path><line y1="-3.5" x2="24" y2="-3.5" transform="matrix(4.37114e-08 1 1 -4.37114e-08 49.2773 12.7773)" stroke="#D97757" stroke-width="7"></line><path d="M46.3027 0C48.2847 4.38913 49.3887 9.25989 49.3887 14.3887C49.3887 16.764 49.1502 19.0837 48.6992 21.3262C41.9186 32.5086 32.5086 41.9186 21.3262 48.6992C19.0837 49.1502 16.764 49.3887 14.3887 49.3887C9.25989 49.3887 4.38913 48.2847 0 46.3027C22.0837 39.5084 39.5084 22.0837 46.3027 0Z" fill="#D97757"></path></svg>`;
+const PANDO_LOGO = size => `<svg width="${size}" height="${size}" viewBox="0 0 92 91" fill="none"><line x1="75.8883" y1="45.3965" x2="15.8883" y2="45.3916" stroke="#DF8457" stroke-width="8"></line><line y1="-3.5" x2="24" y2="-3.5" transform="matrix(-4.37114e-08 -1 -1 4.37114e-08 42 78)" stroke="#DF8457" stroke-width="7"></line><path d="M44.9746 90.7773C42.9926 86.3882 41.8887 81.5175 41.8887 76.3887C41.8887 74.0134 42.1272 71.6937 42.5781 69.4512C49.3588 58.2688 58.7688 48.8588 69.9512 42.0781C72.1937 41.6272 74.5134 41.3887 76.8887 41.3887C82.0175 41.3887 86.8882 42.4926 91.2773 44.4746C69.1937 51.269 51.769 68.6937 44.9746 90.7773Z" fill="#DF8457"></path><line y1="-3.5" x2="24" y2="-3.5" transform="matrix(4.37114e-08 1 1 -4.37114e-08 49.2773 12.7773)" stroke="#DF8457" stroke-width="7"></line><path d="M46.3027 0C48.2847 4.38913 49.3887 9.25989 49.3887 14.3887C49.3887 16.764 49.1502 19.0837 48.6992 21.3262C41.9186 32.5086 32.5086 41.9186 21.3262 48.6992C19.0837 49.1502 16.764 49.3887 14.3887 49.3887C9.25989 49.3887 4.38913 48.2847 0 46.3027C22.0837 39.5084 39.5084 22.0837 46.3027 0Z" fill="#DF8457"></path></svg>`;
 const IC = {
   attach:'<svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M20 11.5l-7.8 7.8a4 4 0 0 1-5.7-5.7l8-8a2.7 2.7 0 0 1 3.8 3.8l-8 8a1.3 1.3 0 0 1-1.9-1.9l7.2-7.2"></path></svg>',
   send:'<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V6M6 12l6-6 6 6"></path></svg>',
@@ -499,6 +504,7 @@ const IC = {
   read:'<svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M11 5 L6 9 H3 v6 h3 l5 4 z"></path><path d="M16 9a4 4 0 0 1 0 6"></path><path d="M19 7a7 7 0 0 1 0 10"></path></svg>',
   x:'<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"></path></svg>',
   clip:'<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M20 11.5l-7.8 7.8a4 4 0 0 1-5.7-5.7l8-8a2.7 2.7 0 0 1 3.8 3.8l-8 8a1.3 1.3 0 0 1-1.9-1.9l7.2-7.2"></path></svg>',
+  retry:'<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"></path><path d="M3 3v5h5"></path></svg>',
 };
 
 /* ===== state ===== */
@@ -914,7 +920,14 @@ function addUser(text, atts){
   ensureChat();
   const row=document.createElement('div'); row.className='row user';
   (atts||[]).forEach(name=>{ const a=document.createElement('div'); a.className='u-att'; a.innerHTML=IC.clip+escHtml(typeof name==='string'?name:(name.name||'')); row.appendChild(a); });
-  if(text){ const b=document.createElement('div'); b.className='bubble-user'; b.textContent=text; row.appendChild(b); }
+  if(text){
+    // 气泡 + 重发按钮同排:点击按原文与当前模型重新发一遍
+    const wrap=document.createElement('div'); wrap.className='user-wrap';
+    const rb=document.createElement('button'); rb.className='retry-btn'; rb.setAttribute('aria-label','重新发送'); rb.innerHTML=IC.retry;
+    rb.onclick=()=>retryMsg(text, atts);
+    const b=document.createElement('div'); b.className='bubble-user'; b.textContent=text;
+    wrap.appendChild(rb); wrap.appendChild(b); row.appendChild(wrap);
+  }
   $('msgs').appendChild(row); scrollDown(); return row;
 }
 function addAssistant(text){
@@ -1038,6 +1051,15 @@ function send(){
   ws.send(JSON.stringify(payload));
   clearAttachments(); setBusy(true); showTyping();
 }
+// 重发:用原文按当前模型再发一遍(不重复上屏用户气泡,直接进流式);忙碌或断线时忽略
+function retryMsg(text, atts){
+  if(busy||!ws||ws.readyState!==1||!text) return;
+  currentAssistantRow=null; assistantText=''; roundTools=[];
+  const payload={text, model:currentModel||undefined};
+  _pandoEmit('send_payload',payload);
+  ws.send(JSON.stringify(payload));
+  setBusy(true); showTyping();
+}
 
 /* ===== WebSocket ===== */
 function setStatus(on){ _lastOnline=!!on; ['home','chat'].forEach(v=>{ const b=$(v+'-badge'), s=$(v+'-stat'); if(b) b.className='status-badge '+(on?'on':'off'); if(s) s.textContent=on?'在线':'离线'; }); applyTopbarBadges(); _pandoEmit('ws_status',{online:!!on}); }
@@ -1129,7 +1151,9 @@ window.Pando={
     const btn=document.createElement('button'); btn.className='navitem';
     btn.innerHTML=(item.icon||'')+escHtml(item.label||item.id);
     btn.onclick=()=>go('plugin-'+item.id);
-    document.querySelector('.dnav').appendChild(btn);
+    // 插件导航项插在「设置」之前——设置恒定排在侧边栏最末
+    const settingsBtn=document.getElementById('nav-settings');
+    document.querySelector('.dnav').insertBefore(btn, settingsBtn||null);
   },
   registerStatusCard(card){
     // 状态页插槽:{id, slot:'metric'|'action', render(el)}。metric=次指标行小卡,action=可操作列表行。
