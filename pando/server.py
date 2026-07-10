@@ -240,6 +240,10 @@ def create_app(config) -> FastAPI:
     plugin_paths = _cfg(config, "PLUGINS", []) or []
     archive_interval = _cfg(config, "ARCHIVE_INTERVAL", 10 * 60)
     static_dir = Path(_cfg(config, "STATIC_DIR", _PACKAGE_STATIC_DIR))
+    # 前端插件目录（feat-frontend-plugin-arch）：调用方指向自己的插件包目录后，
+    # /api/plugins 按目录内实际 *.js 文件生成 manifest；不配置（demo/公开仓）则 manifest 为 []。
+    _frontend_plugins = _cfg(config, "FRONTEND_PLUGINS_DIR", None)
+    frontend_plugins_dir = Path(_frontend_plugins) if _frontend_plugins else None
     cors_origins = _cfg(config, "CORS_ORIGINS", ["*"])
     app_title = _cfg(config, "APP_TITLE", "Pando")
     app_version = _cfg(config, "APP_VERSION", __version__)
@@ -1431,6 +1435,29 @@ def create_app(config) -> FastAPI:
             raise HTTPException(status_code=404, detail="theme asset not found")
         media = "text/css" if filename.endswith(".css") else "application/javascript"
         return FileResponse(target, media_type=media)
+
+    @app.get("/api/plugins")
+    async def plugin_manifest():
+        # 前端插件 manifest：白名单 = 目录内实际存在的 *.js 文件（按文件名排序即加载顺序），
+        # 不接受任何用户输入路径、无外链。未配置目录 → []（demo 行为）。
+        if frontend_plugins_dir is None or not frontend_plugins_dir.is_dir():
+            return []
+        return [
+            {"id": p.stem, "src": f"/plugin-assets/{p.name}"}
+            for p in sorted(frontend_plugins_dir.glob("*.js"))
+            if p.is_file()
+        ]
+
+    @app.get("/plugin-assets/{filename}")
+    async def plugin_asset(filename: str):
+        # 插件文件伺服：只放行 .js，解析后路径限制在插件目录内，挡路径穿越（与 /fonts 同套防护）
+        if frontend_plugins_dir is None or not filename.endswith(".js"):
+            raise HTTPException(status_code=404, detail="plugin not found")
+        plugins_root = frontend_plugins_dir.resolve()
+        target = (plugins_root / filename).resolve()
+        if plugins_root not in target.parents or not target.is_file():
+            raise HTTPException(status_code=404, detail="plugin not found")
+        return FileResponse(target, media_type="application/javascript")
 
     @app.get("/", response_class=HTMLResponse)
     async def index():
