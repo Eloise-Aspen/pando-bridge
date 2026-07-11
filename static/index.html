@@ -137,6 +137,8 @@
   @media(hover:hover){.retry-btn{opacity:0}.row.user:hover .retry-btn{opacity:.55}}
   .u-att{display:inline-flex;align-items:center;gap:5px;background:var(--surface);border-radius:8px;padding:3px 8px;font:400 11px var(--ui);color:var(--icon)}
   /* Chip(Pando Kit)——自带底色不描边 */
+  /* 一轮的 chip(记忆/思考/工具)排在同一横向行:插件把自己的 chip 也加进这个容器 */
+  .chip-row{align-self:flex-start;display:flex;align-items:center;flex-wrap:wrap;gap:6px}
   /* 思考 chip(Pando 原型 CHAT 屏实况规格,非 Kit 通用图例):图标 + 大写字距标签 + 独立等宽 caret */
   .think-pill{align-self:flex-start;display:inline-flex;align-items:center;gap:5px;background:var(--surface);border:none;border-radius:9999px;padding:4px 10px;cursor:pointer;font:500 11px var(--ui);color:var(--icon)}
   .think-pill.tool-only{color:#B07A5E}
@@ -959,6 +961,12 @@ function renderThinkLines(container, thinking, tools, toolClass){
     const nm=escHtml(tl.tool||''); const pv=escHtml((tl.preview||'').replace(/\s+/g,' ').trim().slice(0,200));
     ln.innerHTML=`<b>${nm}</b>${pv?' · '+pv:''}`; container.appendChild(ln); });
 }
+// 助手行顶部的 chip 横向容器(记忆/思考/工具共用一排);插件可调此函数把 chip 加进同一行
+function assistantChipRow(row){
+  let r=row.querySelector(':scope > .chip-row');
+  if(!r){ r=document.createElement('div'); r.className='chip-row'; row.insertAdjacentElement('afterbegin', r); }
+  return r;
+}
 function addThinking(row, thinking, tools, durationMs){
   thinking=thinking||''; tools=tools||[];
   if(!thinking && !tools.length) return;
@@ -967,11 +975,12 @@ function addThinking(row, thinking, tools, durationMs){
   const label = thinking ? `思考 · ${fmtDur(durationMs)}` : `工具 · ${tools.length}`;
   pill.innerHTML=`${icon}<span>${label}</span><span class="tp-car"> ▸</span>`;
   pill.onclick=()=> DESKTOP_MQ.matches ? toggleThinkInline(pill, thinking, tools, durationMs) : openThinkSheet(thinking, tools, durationMs);
-  row.insertAdjacentElement('afterbegin', pill);
+  assistantChipRow(row).appendChild(pill);
 }
 function toggleThinkInline(pill, thinking, tools, durationMs){
   const car=pill.querySelector('.tp-car');
-  const existing=pill.nextElementSibling;
+  const anchor=pill.closest('.chip-row')||pill;   // 展开面板插在整排 chip 之后,不塞进横向 flex 行内
+  const existing=anchor.nextElementSibling;
   if(existing && existing.classList.contains('think-body')){ existing.remove(); car.textContent=' ▸'; return; }
   const panel=document.createElement('div'); panel.className='think-body';
   const metaParts=[]; if(durationMs) metaParts.push(fmtDur(durationMs));
@@ -979,7 +988,7 @@ function toggleThinkInline(pill, thinking, tools, durationMs){
   if(metaParts.length){ const m=document.createElement('div'); m.className='ti-meta'; m.textContent=metaParts.join(' · '); panel.appendChild(m); }
   const inner=document.createElement('div'); panel.appendChild(inner);
   renderThinkLines(inner, thinking, tools, 'think-tool');
-  pill.insertAdjacentElement('afterend', panel);
+  anchor.insertAdjacentElement('afterend', panel);
   car.textContent=' ▾';
 }
 function openThinkSheet(thinking, tools, durationMs){
