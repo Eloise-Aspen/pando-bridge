@@ -1083,7 +1083,7 @@ function connect(){
     switch(m.type){
       case 'hello': break;
       case 'session': setSessionId(m.session_id); break;
-      case 'memory_recall': break;
+      case 'memory_recall': _pandoEmit('memory_recall',m); break;   // 召回显示交给插件(chip);注入在服务端已完成
       case 'thinking': break;
       case 'tool_use': roundTools.push({tool:m.tool,preview:m.input_preview}); showTyping(); break;
       case 'text':
