@@ -967,7 +967,8 @@ function renderThinkLines(container, thinking, tools, toolClass){
   container.innerHTML='';
   if(thinking){ const tx=document.createElement('div'); tx.textContent=thinking; container.appendChild(tx); }
   (tools||[]).forEach(tl=>{ const ln=document.createElement('div'); ln.className=toolClass;
-    const nm=escHtml(tl.tool||''); const pv=escHtml((tl.preview||'').replace(/\s+/g,' ').trim().slice(0,200));
+    // 实时帧客户端存 .preview,历史 metadata 存 .input_preview——两个键都认,保证重开后工具细节不丢
+    const nm=escHtml(tl.tool||''); const pv=escHtml((tl.preview||tl.input_preview||'').replace(/\s+/g,' ').trim().slice(0,200));
     ln.innerHTML=`<b>${nm}</b>${pv?' · '+pv:''}`; container.appendChild(ln); });
 }
 // 助手行顶部的 chip 横向容器(记忆/思考/工具共用一排);插件可调此函数把 chip 加进同一行
