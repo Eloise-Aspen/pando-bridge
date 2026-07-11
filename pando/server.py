@@ -291,6 +291,10 @@ def create_app(config) -> FastAPI:
     )
 
     memory = get_provider(memory_service_url, timeout=memory_service_timeout)
+    # 记忆服务是否可用：NullMemoryProvider 表示未配置，前端据此决定「自动记住上下文」
+    # 开关是否可操作（不可用时置灰隐藏）。
+    from .providers.null import NullMemoryProvider
+    _has_memory = not isinstance(memory, NullMemoryProvider)
 
     app = FastAPI(title=app_title, version=app_version)
     app.add_middleware(
@@ -1099,6 +1103,9 @@ def create_app(config) -> FastAPI:
 
     session_archive_locks: dict[str, asyncio.Lock] = {}  # session_id -> lock，串行化存档防止竞态
     session_last_voice: dict[str, bool] = {}  # session_id -> 上一条消息是否为语音模式
+    # 每连接的存档偏好（feat-auto-archive-toggle）：默认 True（开），前端通过 WS
+    # 消息的 archive 字段切换。关闭后定时存档/换窗存档/断连存档全部跳过。
+    conn_archive_enabled: dict[WebSocket, bool] = {}
 
     def _get_archive_lock(session_id: str) -> asyncio.Lock:
         lock = session_archive_locks.get(session_id)
@@ -1109,12 +1116,18 @@ def create_app(config) -> FastAPI:
 
     async def _try_archive(session_id: str, ws: WebSocket | None = None,
                            model: str | None = None, effort: str | None = None,
-                           force: bool = False):
+                           force: bool = False, archive_enabled: bool = True):
         """存档新消息。Claude 写记忆正文（对话内注入）→ 记忆服务解析落库。
         游标持久化在 sessions.last_archived_id（重启不丢），
         per-session 锁串行化避免并发。
         条数门槛/JSON 解析/worthy 判断/task-state 提取全部交给记忆服务（契约 v2），
-        核心只管编排：要不要发起这次存档尝试、把 Claude 原始输出整段转发过去。"""
+        核心只管编排：要不要发起这次存档尝试、把 Claude 原始输出整段转发过去。
+
+        archive_enabled（feat-auto-archive-toggle）：前端「自动记住上下文」开关的
+        会话级偏好。False 时整个存档流程短路跳过，日志注明原因。"""
+        if not archive_enabled:
+            log.info("archive skipped: auto-archive disabled by user (session=%s)", session_id)
+            return
         lock = _get_archive_lock(session_id)
         async with lock:
             try:
@@ -1165,7 +1178,8 @@ def create_app(config) -> FastAPI:
         while True:
             sid = get_session_id()
             if sid:
-                await _try_archive(sid, ws, model=get_model(), effort=get_effort())
+                await _try_archive(sid, ws, model=get_model(), effort=get_effort(),
+                                   archive_enabled=conn_archive_enabled.get(ws, True))
             await asyncio.sleep(archive_interval)
 
     @app.websocket("/ws")
@@ -1183,6 +1197,7 @@ def create_app(config) -> FastAPI:
             "type": "hello",
             "message": "bridge connected",
             "server_time": now_iso(),
+            "has_memory": _has_memory,
         }, ensure_ascii=False))
 
         model = None
@@ -1240,6 +1255,10 @@ def create_app(config) -> FastAPI:
                         model = payload["model"]
                     if "effort" in payload:
                         effort = payload["effort"]
+                    # 「自动记住上下文」开关（feat-auto-archive-toggle）：前端随消息
+                    # 或连接初始化下发 archive 字段，更新本连接的存档偏好。
+                    if "archive" in payload:
+                        conn_archive_enabled[ws] = bool(payload["archive"])
                     voice_mode = payload.get("voice_mode", False)
                     mode = payload.get("mode", "chat")
                     attachments = payload.get("attachments") or []
@@ -1267,7 +1286,8 @@ def create_app(config) -> FastAPI:
                     # 主动换窗：先存档当前会话（跳过条数门槛），再重置状态
                     if payload.get("forge"):
                         if session_id:
-                            await _try_archive(session_id, ws, model=model, effort=effort, force=True)
+                            await _try_archive(session_id, ws, model=model, effort=effort, force=True,
+                                               archive_enabled=conn_archive_enabled.get(ws, True))
                         session_id = None
                         system_prompt = None
                         session_resumed = False
@@ -1390,7 +1410,10 @@ def create_app(config) -> FastAPI:
             permission_broker.unregister(ws)
             archive_task.cancel()
             if session_id:
-                await _try_archive(session_id, model=model, effort=effort)
+                await _try_archive(session_id, model=model, effort=effort,
+                                   archive_enabled=conn_archive_enabled.get(ws, True))
+            # 清理本连接的存档偏好（feat-auto-archive-toggle）
+            conn_archive_enabled.pop(ws, None)
 
     # -----------------------------------------------------------------------
     # Frontend（demo 前端或调用方传入的 static_dir）
