@@ -243,7 +243,9 @@
   .conv-search svg{position:absolute;left:33px;top:calc(50% + 2px);transform:translateY(-50%);pointer-events:none}
   .conv-search input{width:100%;border:none;outline:none;background:var(--surface);border-radius:11px;padding:10px 13px 10px 38px;font:400 14px var(--ui);color:var(--ink)}
   /* 焦点态:去浏览器默认蓝框,统一 clay 环(与原型 v2 搜索框 style-focus 一致)——只用在搜索框/名字输入框 */
-  .mem-search input:focus,.conv-search input:focus,.set-input:focus{outline:none;box-shadow:0 0 0 2px rgba(217,119,87,.4)}
+  .conv-search input:focus,.set-input:focus{outline:none;box-shadow:0 0 0 2px rgba(217,119,87,.4)}
+  /* 记忆搜索:input 内嵌在 .box 里,聚焦高亮整个胶囊(而非只裹文字的里层框) */
+  .mem-search .box:focus-within{border-color:var(--accent);box-shadow:0 0 0 2px rgba(217,119,87,.25)}
   .conv-list{flex:1;overflow:auto;padding:4px 20px 16px;display:flex;flex-direction:column;gap:9px;min-height:0}
   .conv-card{display:flex;align-items:center;gap:10px;background:var(--card);box-shadow:var(--e2-shadow);border-radius:13px;padding:13px 15px;cursor:pointer;transition:box-shadow .15s,transform .15s}
   .conv-card:hover,.conv-card:active{box-shadow:var(--e2-shadow-hover);transform:translateY(-1px)}
