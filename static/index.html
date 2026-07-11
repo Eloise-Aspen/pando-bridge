@@ -340,6 +340,8 @@
   .tog::after{content:'';position:absolute;top:3px;left:3px;width:20px;height:20px;border-radius:50%;background:#fff;transition:transform .18s;box-shadow:0 1px 3px rgba(20,20,19,.2)}
   .tog.on{background:var(--accent)}
   .tog.on::after{transform:translateX(18px)}
+  .tog.disabled{opacity:.35;pointer-events:none}
+  .set-hint{display:block;font:400 11px var(--ui);color:var(--faint);margin-top:2px}
   .set-menu{position:absolute;right:14px;background:var(--card);border:1px solid var(--line-strong);border-radius:10px;padding:4px;min-width:180px;box-shadow:0 10px 30px rgba(31,30,29,.16);z-index:20}
   .set-menu .mi{padding:9px 12px;border-radius:7px;font:400 13.5px var(--ui);color:var(--dim);cursor:pointer}
   .set-menu .mi.sel{background:var(--accent-bg);color:var(--accent-press);font-weight:500}
@@ -515,6 +517,7 @@ const IC = {
 
 /* ===== state ===== */
 let ws, busy=false, currentAssistantRow=null, assistantText='', roundTools=[];
+let _hasMemory=true; // hello 帧更新;false 时「自动记住上下文」开关置灰
 let currentSessionId = localStorage.getItem('currentSessionId') || null;
 // 无「默认」占位项(看不出具体哪个模型);composer 显示的就是设置页选的默认模型——
 // 首次无持久化值时落到 Sonnet 5(与 Pando 原型初始态一致),并立即写回 localStorage
@@ -833,7 +836,7 @@ function loadSettings(){
       <div class="set-sec">模型与记忆</div>
       <div class="set-group">
         <div class="set-row tap" onclick="cycleDefaultModel()"><span class="k">默认模型</span><span class="v" id="s-model">${modelLabel(currentModel)}</span>${CHEV}</div>
-        <div class="set-row"><span class="k">自动记住上下文</span><button class="tog${autoMem?' on':''}" id="s-automem" onclick="toggleAutoMem()"></button></div>
+        <div class="set-row"><span class="k">自动记住上下文<span class="set-hint">对新消息生效</span></span><button class="tog${autoMem&&_hasMemory?' on':''}${_hasMemory?'':' disabled'}" id="s-automem" onclick="${_hasMemory?'toggleAutoMem()':''}"></button></div>
       </div>
       <div class="set-sec">工具权限</div>
       <div class="set-group">
@@ -851,7 +854,9 @@ function saveIdentity(){ const nick=$('s-nick').value.trim(), asst=$('s-asst').v
   ASST=asst||'Claude'; ['home-asst','chat-asst'].forEach(id=>$(id).textContent=ASST);
   $('hero-name').textContent=nick?`${nick},你好`:'你好'; }
 function toggleEnter(){ enterToSend=!enterToSend; if(enterToSend) localStorage.removeItem('enterToSend'); else localStorage.setItem('enterToSend','0'); $('s-enter').classList.toggle('on',enterToSend); }
-function toggleAutoMem(){ const on=localStorage.getItem('autoMemory')!=='0'; if(on) localStorage.setItem('autoMemory','0'); else localStorage.removeItem('autoMemory'); $('s-automem').classList.toggle('on',!on); }
+function toggleAutoMem(){ const on=localStorage.getItem('autoMemory')!=='0'; if(on) localStorage.setItem('autoMemory','0'); else localStorage.removeItem('autoMemory'); $('s-automem').classList.toggle('on',!on); _syncArchivePref(); }
+// 把当前 autoMemory 偏好下发给服务端（连接建立 / 用户切换时调用）
+function _syncArchivePref(){ if(ws&&ws.readyState===1) ws.send(JSON.stringify({archive:localStorage.getItem('autoMemory')!=='0'})); }
 function toggleLocalFile(){ const on=localStorage.getItem('permLocalFile')!=='0'; if(on) localStorage.setItem('permLocalFile','0'); else localStorage.removeItem('permLocalFile'); $('s-local').classList.toggle('on',!on); }
 function toggleThemeMenu(e){ e.stopPropagation(); const m=$('theme-menu'); m.style.display=m.style.display==='none'?'block':'none'; }
 function pickTheme(t){ if(t) localStorage.setItem('theme',t); else localStorage.removeItem('theme'); $('theme-menu').style.display='none'; $('s-theme').textContent=t==='_smoke'?'简洁·烟':'简洁'; _pandoEmit('theme_change',{theme:t||''}); toast('主题已切换(需刷新生效)'); }
@@ -1090,7 +1095,7 @@ function connect(){
   ws.onmessage=ev=>{
     let m; try{ m=JSON.parse(ev.data); }catch{ return; }
     switch(m.type){
-      case 'hello': break;
+      case 'hello': _hasMemory=!!m.has_memory; _syncArchivePref(); break;
       case 'session': setSessionId(m.session_id); break;
       case 'memory_recall': _pandoEmit('memory_recall',m); break;   // 召回显示交给插件(chip);注入在服务端已完成
       case 'thinking': break;
