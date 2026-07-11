@@ -899,6 +899,7 @@ def create_app(config) -> FastAPI:
         new_session_id = session_id
         full_text = ""
         thinking_text = ""
+        tools_used = []          # 本轮工具调用累积,存入 result_meta 供历史重画工具 chip
         result_meta = {}
         # 上下文占用用「最后一个 assistant 事件的 message.usage」快照(不是 result 的账单聚合)——
         # result.usage 把本轮所有工具往返的 token 累加,当"上下文占用"看会虚高且不随压缩回落;
@@ -956,10 +957,14 @@ def create_app(config) -> FastAPI:
                                         "text": text,
                                     }, ensure_ascii=False))
                             elif btype == "tool_use" and not silent:
-                                await ws.send_text(json.dumps({
-                                    "type": "tool_use",
+                                tool_frame = {
                                     "tool": block.get("name", ""),
                                     "input_preview": str(block.get("input", ""))[:200],
+                                }
+                                tools_used.append(tool_frame)
+                                await ws.send_text(json.dumps({
+                                    "type": "tool_use",
+                                    **tool_frame,
                                 }, ensure_ascii=False))
 
                     elif etype == "result":
@@ -1014,6 +1019,8 @@ def create_app(config) -> FastAPI:
                         }
                         if context_meta:
                             result_meta["context"] = context_meta
+                        if tools_used:
+                            result_meta["tools"] = tools_used
 
                         if not silent:
                             # 用量落库:只记用户可见的对话轮次(silent=True 的自动存档轮不计),

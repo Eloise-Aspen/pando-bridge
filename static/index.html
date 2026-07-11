@@ -836,7 +836,7 @@ function loadSettings(){
       <div class="set-sec">模型与记忆</div>
       <div class="set-group">
         <div class="set-row tap" onclick="cycleDefaultModel()"><span class="k">默认模型</span><span class="v" id="s-model">${modelLabel(currentModel)}</span>${CHEV}</div>
-        <div class="set-row"><span class="k">自动记住上下文<span class="set-hint">对新消息生效</span></span><button class="tog${autoMem&&_hasMemory?' on':''}${_hasMemory?'':' disabled'}" id="s-automem" onclick="${_hasMemory?'toggleAutoMem()':''}"></button></div>
+        <div class="set-row"><span class="k">自动记住上下文<span class="set-hint">对新消息生效</span></span><button class="tog${autoMem?' on':''}${_hasMemory?'':' disabled'}" id="s-automem" onclick="toggleAutoMem()"></button></div>
       </div>
       <div class="set-sec">工具权限</div>
       <div class="set-group">
@@ -854,7 +854,7 @@ function saveIdentity(){ const nick=$('s-nick').value.trim(), asst=$('s-asst').v
   ASST=asst||'Claude'; ['home-asst','chat-asst'].forEach(id=>$(id).textContent=ASST);
   $('hero-name').textContent=nick?`${nick},你好`:'你好'; }
 function toggleEnter(){ enterToSend=!enterToSend; if(enterToSend) localStorage.removeItem('enterToSend'); else localStorage.setItem('enterToSend','0'); $('s-enter').classList.toggle('on',enterToSend); }
-function toggleAutoMem(){ const on=localStorage.getItem('autoMemory')!=='0'; if(on) localStorage.setItem('autoMemory','0'); else localStorage.removeItem('autoMemory'); $('s-automem').classList.toggle('on',!on); _syncArchivePref(); }
+function toggleAutoMem(){ if(!_hasMemory) return; const on=localStorage.getItem('autoMemory')!=='0'; if(on) localStorage.setItem('autoMemory','0'); else localStorage.removeItem('autoMemory'); $('s-automem').classList.toggle('on',!on); _syncArchivePref(); }
 // 把当前 autoMemory 偏好下发给服务端（连接建立 / 用户切换时调用）
 function _syncArchivePref(){ if(ws&&ws.readyState===1) ws.send(JSON.stringify({archive:localStorage.getItem('autoMemory')!=='0'})); }
 function toggleLocalFile(){ const on=localStorage.getItem('permLocalFile')!=='0'; if(on) localStorage.setItem('permLocalFile','0'); else localStorage.removeItem('permLocalFile'); $('s-local').classList.toggle('on',!on); }
@@ -913,8 +913,12 @@ async function loadHistory(sid){
     msgs.forEach(x=>{
       let row=null;
       if(x.role==='user') row=addUser(x.content, (x.metadata&&x.metadata.attachments)||[]);
-      else if(x.role==='assistant'){ row=addAssistant(x.content); if(x.metadata&&x.metadata.thinking) addThinking(row, x.metadata.thinking, null, x.metadata.duration_ms); addToolbar(row,x.content,x.metadata);
-        if(x.metadata&&x.metadata.context) updateCtx(x.metadata.context); }
+      else if(x.role==='assistant'){ row=addAssistant(x.content);
+        const md=x.metadata||{};
+        // 思考或工具任一有,就重画 chip(工具-only 轮此前漏画);tools 随 metadata 落库
+        if(md.thinking || (md.tools&&md.tools.length)) addThinking(row, md.thinking, md.tools||null, md.duration_ms);
+        addToolbar(row,x.content,x.metadata);
+        if(md.context) updateCtx(md.context); }
       // 每条历史消息广播给插件(带 row/metadata),插件可就地改造(如语音消息重建成语音条)
       _pandoEmit('history_message',{row, role:x.role, content:x.content, metadata:x.metadata||{}});
     });
@@ -1095,7 +1099,7 @@ function connect(){
   ws.onmessage=ev=>{
     let m; try{ m=JSON.parse(ev.data); }catch{ return; }
     switch(m.type){
-      case 'hello': _hasMemory=!!m.has_memory; _syncArchivePref(); break;
+      case 'hello': _hasMemory=!!m.has_memory; _syncArchivePref(); if($('s-automem')) $('s-automem').classList.toggle('disabled',!_hasMemory); break;
       case 'session': setSessionId(m.session_id); break;
       case 'memory_recall': _pandoEmit('memory_recall',m); break;   // 召回显示交给插件(chip);注入在服务端已完成
       case 'thinking': break;
