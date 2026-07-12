@@ -461,9 +461,9 @@
         <div class="perm-params" id="perm-params"></div>
         <div class="perm-note"><span id="perm-queue"></span>仅本次会话有效。你可以在 设置 › 工具权限 中随时收回。 <span id="perm-countdown"></span></div>
         <div class="perm-btns">
-          <button class="btn-primary" onclick="respondPermission(true)">始终允许</button>
+          <button class="btn-primary" onclick="respondPermission(true,true)">始终允许</button>
           <div class="perm-row2">
-            <button class="btn-ghost" onclick="respondPermission(true)">只允许一次</button>
+            <button class="btn-ghost" onclick="respondPermission(true,false)">只允许一次</button>
             <button class="btn-deny" onclick="respondPermission(false)">拒绝</button>
           </div>
         </div>
@@ -1142,7 +1142,7 @@ function showNextPerm(){ clearPermTimers(); const req=permQueue[0]; if(!req){ hi
   $('perm-ov').classList.add('open');
 }
 function updatePermBadge(){ const n=permQueue.length; $('perm-queue').textContent=n>1?`还有 ${n-1} 个待确认 · `:''; }
-function respondPermission(allow){ const req=permQueue.shift(); if(req&&ws&&ws.readyState===1) ws.send(JSON.stringify({type:'permission_response',request_id:req.request_id,allow:!!allow})); clearPermTimers(); if(permQueue.length) showNextPerm(); else hidePerm(); }
+function respondPermission(allow,always){ const req=permQueue.shift(); if(req&&ws&&ws.readyState===1){ const msg={type:'permission_response',request_id:req.request_id,allow:!!allow}; if(always) msg.always=true; ws.send(JSON.stringify(msg)); } clearPermTimers(); if(permQueue.length) showNextPerm(); else hidePerm(); }
 function clearPendingPermissions(){ permQueue.length=0; clearPermTimers(); hidePerm(); }
 function clearPermTimers(){ if(permTimer) clearTimeout(permTimer); if(permCd) clearInterval(permCd); permTimer=permCd=null; }
 function hidePerm(){ $('perm-ov').classList.remove('open'); }

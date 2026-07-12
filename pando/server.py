@@ -915,6 +915,9 @@ def create_app(config) -> FastAPI:
     # 权限透传挂起队列 + token 路由。开关关闭时也实例化（空表无副作用），run_claude 靠
     # token_for(ws) 是否有值决定要不要追加 CLI 参数——连接注册只在开关打开时发生。
     permission_broker = PermissionBroker(timeout=permission_timeout)
+    # 「始终允许」需要知道 request_id 对应的工具名，以反查所属组写策略。
+    # internal_permission._push 时记录，_reader 处理 always 时消费，resolve 后自动清理。
+    _pending_tool_names: dict[str, str] = {}  # request_id -> tool_name
 
     @app.post("/internal/permission")
     async def internal_permission(req: Request):
@@ -927,7 +930,12 @@ def create_app(config) -> FastAPI:
         except Exception:
             return {"decision": "deny", "message": "bad request"}
 
+        _rid_holder: list[str] = []  # 捕获 request_id 供请求结束后清理
+
         async def _push(request_id: str):
+            # 记录 request_id → tool_name，供「始终允许」反查组写策略
+            _pending_tool_names[request_id] = body.get("tool_name", "")
+            _rid_holder.append(request_id)
             ws = permission_broker.ws_for_token(body.get("token"))
             await ws.send_text(json.dumps({
                 "type": "permission_request",
@@ -937,7 +945,11 @@ def create_app(config) -> FastAPI:
                 "tool_use_id": body.get("tool_use_id", ""),
             }, ensure_ascii=False))
 
-        return await permission_broker.request(body.get("token"), _push)
+        result = await permission_broker.request(body.get("token"), _push)
+        # 请求已解决（allow/deny/timeout），清理工具名映射（_reader 可能已 pop 过，无害）
+        if _rid_holder:
+            _pending_tool_names.pop(_rid_holder[0], None)
+        return result
 
     async def _stop_inflight(ws: WebSocket):
         """终止某连接的在途子进程:terminate 优先,POSIX 兜底 2s 未退则 kill。
@@ -1375,11 +1387,16 @@ def create_app(config) -> FastAPI:
                     # 授权决策回帧:主循环此刻正阻塞在 run_claude 的 await(CC 等着这个决策),
                     # 收不到帧,必须在 reader 里就地解掉对应 Future(与 stop 同理)。
                     if isinstance(peek, dict) and peek.get("type") == "permission_response":
-                        permission_broker.resolve(
-                            peek.get("request_id"),
-                            peek.get("allow") is True,
-                            peek.get("message") or "",
-                        )
+                        rid = peek.get("request_id")
+                        allow = peek.get("allow") is True
+                        # 「始终允许」（feat-tool-policy Task 3）：前端 always=true 时，
+                        # 除了本次放行，还把该工具所属组写为 allow（后续免弹窗）。
+                        if allow and peek.get("always"):
+                            tool_name = _pending_tool_names.get(rid, "")
+                            group = tool_policy.group_for_tool(tool_name)
+                            if group:
+                                asyncio.create_task(tool_policy.set({group: "allow"}))
+                        permission_broker.resolve(rid, allow, peek.get("message") or "")
                         continue
                     await msg_queue.put(raw)
             except WebSocketDisconnect:
