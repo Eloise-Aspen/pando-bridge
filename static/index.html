@@ -1182,11 +1182,10 @@ function connect(){
     setStatus(true);
     if(currentSessionId){
       ws.send(JSON.stringify({switch_session:currentSessionId}));
-      // 重连对账:如果断连前正在流式,问服务端有无在途轮次(feat-reconnect-resume)
-      if(_wasBusyOnDisconnect){
-        ws.send(JSON.stringify({type:'check_inflight',session_id:currentSessionId}));
-        _wasBusyOnDisconnect=false;
-      }
+      // 重连对账:无条件问服务端有无在途轮次——PWA 后台杀页后重载会丢内存状态,
+      // 不能只靠 _wasBusyOnDisconnect;无在途时服务端回 no_inflight,开销可忽略
+      ws.send(JSON.stringify({type:'check_inflight',session_id:currentSessionId}));
+      _wasBusyOnDisconnect=false;
     }
   };
   ws.onclose=()=>{
@@ -1224,6 +1223,8 @@ function connect(){
         _pandoEmit('message_result',m);
         currentAssistantRow=null; assistantText=''; roundTools=[]; setBusy(false); break;
       case 'error': removeTyping(); addSystem('⚠ '+(m.message||'error')+(m.detail?'\n'+m.detail:'')); setBusy(false); break;
+      // 重连对账:有在途轮次,进入忙碌态准备接收回放帧(feat-reconnect-resume)
+      case 'inflight': setBusy(true); showTyping(); break;
       // 重连对账回执:无在途轮次,前端复位(feat-reconnect-resume)
       case 'no_inflight': removeTyping(); currentAssistantRow=null; assistantText=''; roundTools=[]; setBusy(false); break;
       case 'permission_request': enqueuePermission(m); break;

@@ -1492,6 +1492,14 @@ def create_app(config) -> FastAPI:
                             _ws_to_turn[ws] = turn
                             log.info("reconnect claimed turn (session=%s, buffered=%d)",
                                      sid, len(turn.buffer))
+                            # 先发 inflight 帧让前端进入忙碌态（PWA 重载后 busy=false）
+                            try:
+                                await ws.send_text(json.dumps({
+                                    "type": "inflight",
+                                    "session_id": sid,
+                                }, ensure_ascii=False))
+                            except Exception:
+                                pass
                             # 回放缓冲帧(全部,按序)
                             for frame in turn.buffer:
                                 try:
