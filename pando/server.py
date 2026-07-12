@@ -903,13 +903,71 @@ def create_app(config) -> FastAPI:
         return f"\n\n[用户上传了附件，请用 Read 工具查看以下文件]\n{lines}"
 
     # -----------------------------------------------------------------------
-    # Claude Code subprocess wrapper
+    # Claude Code subprocess wrapper — 轮次对象化（feat-reconnect-resume）
     # -----------------------------------------------------------------------
 
-    # 每个 WS 连接「当前用户可见轮次」的在途子进程登记表:stop 消息据此找到要杀的 proc,
-    # 断连回收也用它。只登记 silent=False 的轮次(自动存档轮不给用户「停止」入口)。
-    inflight_procs: dict[WebSocket, asyncio.subprocess.Process] = {}
-    # 已请求停止的连接:被杀轮次的 result 事件不会到达,run_claude 据此改发 stopped 结束帧而非 error。
+    # 宽限期常量（config 注入,禁硬编码）:断连后 proc 存活的秒数,期满回收防孤儿
+    RECONNECT_GRACE_SECONDS = float(_cfg(config, "RECONNECT_GRACE_SECONDS", 120))
+    # 帧缓冲上限:超限时丢头留尾,保证重连回放不会爆内存
+    _TURN_BUFFER_MAX_FRAMES = 500
+    _TURN_BUFFER_MAX_BYTES = 2 * 1024 * 1024  # 2MB
+
+    class Turn:
+        """在途轮次对象:proc + 绑定的 WS（可为 None）+ 帧缓冲 + 宽限期计时器。
+
+        帧发送统一走 send_frame():WS 活着直接发并入缓冲,断了只入缓冲。
+        缓冲有界(500 帧 / 2MB),超限丢头留尾——重连回放时用户看到最近内容。"""
+
+        __slots__ = ("proc", "session_id", "ws", "buffer", "_buf_bytes",
+                     "grace_task", "stopped", "finished")
+
+        def __init__(self, proc, session_id: str, ws: WebSocket):
+            self.proc = proc
+            self.session_id = session_id
+            self.ws: WebSocket | None = ws
+            self.buffer: list[str] = []   # JSON 字符串帧列表
+            self._buf_bytes: int = 0
+            self.grace_task: asyncio.Task | None = None
+            self.stopped: bool = False     # 用户请求了 stop
+            self.finished: bool = False    # run_claude 已结束(正常/停止/错误)
+
+        def _trim_buffer(self):
+            """丢头留尾:帧数或字节超限时弹出最旧帧,保证缓冲在边界内。"""
+            while (len(self.buffer) > _TURN_BUFFER_MAX_FRAMES
+                   or self._buf_bytes > _TURN_BUFFER_MAX_BYTES) and self.buffer:
+                dropped = self.buffer.pop(0)
+                self._buf_bytes -= len(dropped.encode("utf-8"))
+
+        async def send_frame(self, frame_json: str):
+            """统一帧发送:WS 活着直接发并入缓冲,WS 为 None 只入缓冲。"""
+            # 入缓冲(无论 WS 状态,重连回放需要)
+            self.buffer.append(frame_json)
+            self._buf_bytes += len(frame_json.encode("utf-8"))
+            self._trim_buffer()
+            # 尝试发送
+            if self.ws is not None:
+                try:
+                    await self.ws.send_text(frame_json)
+                except Exception:
+                    # 发送失败(连接可能已断但还没触发 disconnect),标记 ws 无效
+                    self.ws = None
+
+        def detach_ws(self):
+            """断连:解绑 WS,后续帧只入缓冲。"""
+            self.ws = None
+
+        def attach_ws(self, new_ws: WebSocket):
+            """重连:绑定新 WS,取消宽限期计时器。"""
+            self.ws = new_ws
+            if self.grace_task is not None:
+                self.grace_task.cancel()
+                self.grace_task = None
+
+    # 轮次注册表:键为 session_id(一个会话同时只有一个在途用户可见轮次)
+    inflight_turns: dict[str, Turn] = {}
+    # 向后兼容:stop/断连仍需按 WS 查找轮次(一个 WS 同时只绑一个轮次)
+    _ws_to_turn: dict[WebSocket, Turn] = {}
+    # 已请求停止的连接:被杀轮次的 result 事件不会到达,run_claude 据此改发 stopped 结束帧而非 error
     stopped_conns: set[WebSocket] = set()
 
     # 权限透传挂起队列 + token 路由。开关关闭时也实例化（空表无副作用），run_claude 靠
@@ -953,19 +1011,29 @@ def create_app(config) -> FastAPI:
 
     async def _stop_inflight(ws: WebSocket):
         """终止某连接的在途子进程:terminate 优先,POSIX 兜底 2s 未退则 kill。
-        找不到在途 proc(流已结束/快速连点)直接忽略,不产生副作用。"""
-        proc = inflight_procs.get(ws)
-        if proc is None:
+
+        无在途轮次(流已结束/快速连点/幽灵态)时发 stopped 确认帧(幂等),
+        前端收到即复位——解决幽灵流式态问题(spec 完成标准 3)。"""
+        turn = _ws_to_turn.get(ws)
+        if turn is None:
+            # 幂等:无在途 proc → 回一帧 stopped 确认,前端收到即复位
+            try:
+                await ws.send_text(json.dumps({
+                    "type": "result", "stopped": True, "text": "",
+                }, ensure_ascii=False))
+            except Exception:
+                pass
             return
+        turn.stopped = True
         stopped_conns.add(ws)
         try:
-            proc.terminate()
+            turn.proc.terminate()
         except ProcessLookupError:
             return  # 已退出
         try:
-            await asyncio.wait_for(proc.wait(), timeout=2.0)
+            await asyncio.wait_for(turn.proc.wait(), timeout=2.0)
         except asyncio.TimeoutError:
-            proc.kill()
+            turn.proc.kill()
 
     async def run_claude(
         message: str,
@@ -1049,8 +1117,13 @@ def create_app(config) -> FastAPI:
         )
 
         # 只登记用户可见轮次:静默存档轮不给「停止」入口,避免和可见轮的 proc 互相覆盖
+        turn: Turn | None = None
         if not silent:
-            inflight_procs[ws] = proc
+            # session_id 可能为 None(新会话),init 事件到来后补注册
+            turn = Turn(proc, session_id or "", ws)
+            if session_id:
+                inflight_turns[session_id] = turn
+            _ws_to_turn[ws] = turn
 
         new_session_id = session_id
         full_text = ""
@@ -1084,7 +1157,11 @@ def create_app(config) -> FastAPI:
                         init_model = event.get("model") or init_model
                         if not silent:
                             save_session(new_session_id, model or "")
-                            await ws.send_text(json.dumps({
+                            # 补注册:新会话首帧才拿到 session_id
+                            if turn is not None and not turn.session_id:
+                                turn.session_id = new_session_id
+                                inflight_turns[new_session_id] = turn
+                            await turn.send_frame(json.dumps({
                                 "type": "session",
                                 "session_id": new_session_id,
                                 "model": event.get("model", ""),
@@ -1100,7 +1177,7 @@ def create_app(config) -> FastAPI:
                             if btype == "thinking":
                                 thinking_text += block.get("thinking", "")
                                 if not silent:
-                                    await ws.send_text(json.dumps({
+                                    await turn.send_frame(json.dumps({
                                         "type": "thinking",
                                         "text": block.get("thinking", ""),
                                     }, ensure_ascii=False))
@@ -1108,7 +1185,7 @@ def create_app(config) -> FastAPI:
                                 text = block["text"]
                                 full_text += text
                                 if not silent:
-                                    await ws.send_text(json.dumps({
+                                    await turn.send_frame(json.dumps({
                                         "type": "text",
                                         "text": text,
                                     }, ensure_ascii=False))
@@ -1118,7 +1195,7 @@ def create_app(config) -> FastAPI:
                                     "input_preview": str(block.get("input", ""))[:200],
                                 }
                                 tools_used.append(tool_frame)
-                                await ws.send_text(json.dumps({
+                                await turn.send_frame(json.dumps({
                                     "type": "tool_use",
                                     **tool_frame,
                                 }, ensure_ascii=False))
@@ -1182,7 +1259,7 @@ def create_app(config) -> FastAPI:
                             # 用量落库:只记用户可见的对话轮次(silent=True 的自动存档轮不计),
                             # 保证「发一条消息 → 统计数字增长」的可验证链路清晰可归因。
                             record_usage(new_session_id, init_model, result_meta["usage"])
-                            await ws.send_text(json.dumps({
+                            await turn.send_frame(json.dumps({
                                 "type": "result",
                                 "text": full_text,
                                 "session_id": new_session_id,
@@ -1190,7 +1267,15 @@ def create_app(config) -> FastAPI:
                             }, ensure_ascii=False))
 
             except WebSocketDisconnect:
-                proc.kill()
+                if silent:
+                    # 静默存档轮无人盯着,断连直接杀
+                    proc.kill()
+                    raise
+                # 用户可见轮次:不杀 proc,解绑 WS,启动宽限期计时(feat-reconnect-resume)
+                if turn is not None:
+                    turn.detach_ws()
+                    log.info("ws disconnected, turn alive (grace=%ds, session=%s)",
+                             int(RECONNECT_GRACE_SECONDS), new_session_id or session_id)
                 raise
 
             await proc.wait()
@@ -1198,16 +1283,16 @@ def create_app(config) -> FastAPI:
             # 用户主动停止:proc 被 terminate/kill,stdout 提前 EOF,result 事件从未到达
             # (result_meta 仍为空)。不当作进程崩溃上报,改发一帧带 stopped 的 result 结束帧,
             # 保留已生成的 full_text;用量无从补录——result 没到就没有可靠数据(见 spec「不做什么」)。
-            if (not silent) and (ws in stopped_conns):
+            if (not silent) and (turn is not None and turn.stopped):
                 if not result_meta:
                     try:
-                        await ws.send_text(json.dumps({
+                        await turn.send_frame(json.dumps({
                             "type": "result",
                             "text": full_text,
                             "session_id": new_session_id,
                             "stopped": True,
                         }, ensure_ascii=False))
-                    except WebSocketDisconnect:
+                    except Exception:
                         pass
                 # result_meta 非空 = 停止请求到达时该轮已正常收尾,正常 result 帧已发,无需再动作
                 return new_session_id, full_text, result_meta
@@ -1220,8 +1305,11 @@ def create_app(config) -> FastAPI:
                     log.warning("session %s expired, retrying as new session", session_id)
                     if not silent:
                         try:
-                            await ws.send_text('{"type":"session_expired"}')
-                        except WebSocketDisconnect:
+                            if turn is not None:
+                                await turn.send_frame('{"type":"session_expired"}')
+                            else:
+                                await ws.send_text('{"type":"session_expired"}')
+                        except Exception:
                             pass
                     loop = asyncio.get_event_loop()
                     history_msgs = await loop.run_in_executor(None, get_recent_messages, session_id, 30)
@@ -1245,19 +1333,26 @@ def create_app(config) -> FastAPI:
 
                 log.error("claude exited %d: %s", proc.returncode, err[:300])
                 try:
-                    await ws.send_text(json.dumps({
+                    err_frame = json.dumps({
                         "type": "error",
                         "message": f"claude exited with code {proc.returncode}",
                         "detail": err[:500],
-                    }, ensure_ascii=False))
-                except WebSocketDisconnect:
+                    }, ensure_ascii=False)
+                    if turn is not None:
+                        await turn.send_frame(err_frame)
+                    else:
+                        await ws.send_text(err_frame)
+                except Exception:
                     pass
 
             return new_session_id, full_text, result_meta
         finally:
             # 用户可见轮次结束(正常/停止/异常)一律注销登记,避免残留导致下一轮误判停止或误杀
-            if not silent:
-                inflight_procs.pop(ws, None)
+            if not silent and turn is not None:
+                turn.finished = True
+                if turn.session_id:
+                    inflight_turns.pop(turn.session_id, None)
+                _ws_to_turn.pop(ws, None)
                 stopped_conns.discard(ws)
 
     # -----------------------------------------------------------------------
@@ -1385,7 +1480,33 @@ def create_app(config) -> FastAPI:
                         await msg_queue.put(raw)
                         continue
                     if isinstance(peek, dict) and peek.get("type") == "stop":
-                        await _stop_inflight(ws)  # 停止当前用户可见轮次;无在途轮则忽略
+                        await _stop_inflight(ws)  # 停止当前用户可见轮次;无在途则回 stopped 帧
+                        continue
+                    # 重连对账:前端带 session_id 问「有在途轮次吗」(feat-reconnect-resume)
+                    if isinstance(peek, dict) and peek.get("type") == "check_inflight":
+                        sid = peek.get("session_id")
+                        turn = inflight_turns.get(sid) if sid else None
+                        if turn is not None and not turn.finished:
+                            # 命中:认领轮次,回放缓冲帧,绑定新 WS 继续直播
+                            turn.attach_ws(ws)
+                            _ws_to_turn[ws] = turn
+                            log.info("reconnect claimed turn (session=%s, buffered=%d)",
+                                     sid, len(turn.buffer))
+                            # 回放缓冲帧(全部,按序)
+                            for frame in turn.buffer:
+                                try:
+                                    await ws.send_text(frame)
+                                except Exception:
+                                    break
+                        else:
+                            # 未命中:明确回「无在途」,前端复位
+                            try:
+                                await ws.send_text(json.dumps({
+                                    "type": "no_inflight",
+                                    "session_id": sid,
+                                }, ensure_ascii=False))
+                            except Exception:
+                                pass
                         continue
                     # 授权决策回帧:主循环此刻正阻塞在 run_claude 的 await(CC 等着这个决策),
                     # 收不到帧,必须在 reader 里就地解掉对应 Future(与 stop 同理)。
@@ -1568,10 +1689,33 @@ def create_app(config) -> FastAPI:
             log.error("ws connection error (session=%s): %s", session_id, e)
         finally:
             reader_task.cancel()
-            # 连接断开时回收可能仍在跑的可见轮子进程(run_claude 的 send 未触发 disconnect 的窗口)
-            proc = inflight_procs.pop(ws, None)
-            if proc is not None and proc.returncode is None:
-                proc.kill()
+            # 断连时处理在途轮次:不立刻杀 proc,改启宽限期(feat-reconnect-resume)
+            turn = _ws_to_turn.pop(ws, None)
+            if turn is not None and not turn.finished and turn.proc.returncode is None:
+                turn.detach_ws()
+                # 启动宽限期:期满无人认领才 terminate 回收(防孤儿)
+                async def _grace_expire(t=turn):
+                    try:
+                        await asyncio.sleep(RECONNECT_GRACE_SECONDS)
+                    except asyncio.CancelledError:
+                        return  # 被重连认领,取消计时
+                    # 期满回收
+                    if t.proc.returncode is None:
+                        log.info("grace expired, terminating turn (session=%s)", t.session_id)
+                        try:
+                            t.proc.terminate()
+                        except ProcessLookupError:
+                            pass
+                        try:
+                            await asyncio.wait_for(t.proc.wait(), timeout=2.0)
+                        except asyncio.TimeoutError:
+                            t.proc.kill()
+                    t.finished = True
+                    inflight_turns.pop(t.session_id, None)
+                turn.grace_task = asyncio.create_task(_grace_expire())
+            elif turn is not None and turn.finished:
+                # 轮次已结束,无需宽限
+                pass
             stopped_conns.discard(ws)
             # 权限透传:挂起的授权请求全部默拒并清表,注销 token(完成标准 2:断连清队默拒)
             permission_broker.deny_all(ws)

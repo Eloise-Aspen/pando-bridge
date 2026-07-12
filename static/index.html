@@ -1131,7 +1131,7 @@ function removeTyping(){ if(typingEl){ typingEl.remove(); typingEl=null; } }
 
 /* ===== send ===== */
 function onSendBtn(){ if(busy) stopStreaming(); else send(); }
-function stopStreaming(){ if(ws&&ws.readyState===1) ws.send(JSON.stringify({type:'stop'})); }
+function stopStreaming(){ if(ws&&ws.readyState===1){ ws.send(JSON.stringify({type:'stop'})); _startStopFallback(); } }
 function send(){
   const inp=$input;
   const text=(inp&&inp.value.trim())||'';
@@ -1159,15 +1159,43 @@ function retryMsg(text, atts){
   setBusy(true); showTyping();
 }
 
-/* ===== WebSocket ===== */
+/* ===== WebSocket + 断连重连续传(feat-reconnect-resume) ===== */
 function setStatus(on){ _lastOnline=!!on; ['home','chat'].forEach(v=>{ const b=$(v+'-badge'), s=$(v+'-stat'); if(b) b.className='status-badge '+(on?'on':'off'); if(s) s.textContent=on?'在线':'离线'; }); applyTopbarBadges(); _pandoEmit('ws_status',{online:!!on}); }
 // 注:setStatus 重建 className 时自然摘掉首帧的 pending,徽标此后跟随真实连接状态
 function setBusy(b){ busy=b; document.querySelectorAll('#send-btn').forEach(btn=>{ btn.className='send'+(b?' stop':''); btn.innerHTML=b?IC.stop:IC.send; }); updateSendState(); }
+// 停止兜底计时器:点停止 3 秒无 result/stopped 回执,前端本地复位(幽灵态兜底)
+let _stopFallbackTimer=null;
+function _startStopFallback(){
+  _clearStopFallback();
+  _stopFallbackTimer=setTimeout(()=>{
+    // 3 秒无回执:本地复位,不再等服务端
+    removeTyping(); currentAssistantRow=null; assistantText=''; roundTools=[]; setBusy(false);
+  }, 3000);
+}
+function _clearStopFallback(){ if(_stopFallbackTimer){ clearTimeout(_stopFallbackTimer); _stopFallbackTimer=null; } }
+// 断连前是否忙碌:重连后据此决定是否发 check_inflight 对账
+let _wasBusyOnDisconnect=false;
 function connect(){
   const proto=location.protocol==='https:'?'wss':'ws';
   ws=new WebSocket(`${proto}://${location.host}/ws`);
-  ws.onopen=()=>{ setStatus(true); if(currentSessionId) ws.send(JSON.stringify({switch_session:currentSessionId})); };
-  ws.onclose=()=>{ setStatus(false); setBusy(false); clearPendingPermissions(); setTimeout(connect,2000); };
+  ws.onopen=()=>{
+    setStatus(true);
+    if(currentSessionId){
+      ws.send(JSON.stringify({switch_session:currentSessionId}));
+      // 重连对账:如果断连前正在流式,问服务端有无在途轮次(feat-reconnect-resume)
+      if(_wasBusyOnDisconnect){
+        ws.send(JSON.stringify({type:'check_inflight',session_id:currentSessionId}));
+        _wasBusyOnDisconnect=false;
+      }
+    }
+  };
+  ws.onclose=()=>{
+    _wasBusyOnDisconnect=busy;  // 记住断连时是否忙碌
+    setStatus(false);
+    // 断连时不复位 busy——保持流式态,等重连后对账决定
+    if(!busy) clearPendingPermissions();
+    setTimeout(connect,2000);
+  };
   ws.onerror=()=>setStatus(false);
   ws.onmessage=ev=>{
     let m; try{ m=JSON.parse(ev.data); }catch{ return; }
@@ -1184,6 +1212,7 @@ function connect(){
         if(!currentAssistantRow) currentAssistantRow=addAssistant('');
         updateAssistant(currentAssistantRow, assistantText); break;
       case 'result':
+        _clearStopFallback();
         removeTyping();
         if(m.text && !assistantText){ currentAssistantRow=addAssistant(m.text); assistantText=m.text; }
         if(currentAssistantRow && _pendingRecall){ assistantChipRow(currentAssistantRow).insertBefore(makeRecallChip(_pendingRecall), assistantChipRow(currentAssistantRow).firstChild); _pendingRecall=null; }
@@ -1195,6 +1224,8 @@ function connect(){
         _pandoEmit('message_result',m);
         currentAssistantRow=null; assistantText=''; roundTools=[]; setBusy(false); break;
       case 'error': removeTyping(); addSystem('⚠ '+(m.message||'error')+(m.detail?'\n'+m.detail:'')); setBusy(false); break;
+      // 重连对账回执:无在途轮次,前端复位(feat-reconnect-resume)
+      case 'no_inflight': removeTyping(); currentAssistantRow=null; assistantText=''; roundTools=[]; setBusy(false); break;
       case 'permission_request': enqueuePermission(m); break;
       default:
         // 未知消息类型交给插件注册的渲染器(registerMessageRenderer);没人认领则忽略
