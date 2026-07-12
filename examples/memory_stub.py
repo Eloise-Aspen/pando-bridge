@@ -120,7 +120,9 @@ def archive(inp: ArchiveIn) -> dict:
 
 @app.get("/memory/stats")
 def memory_stats() -> dict:
-    """统计头。total = 记忆条数（不含 klass='log' 的时间轴日志）;log_total = 日志条数。"""
+    """统计头。total = 记忆条数（不含 klass='log' 的时间轴日志）;log_total = 日志条数。
+    注:本响应是**可加字段**契约——新增键(如 log_total)只增不减,消费方/测试须按需取键,
+    勿用全字典相等断言。"""
     return {"count": len(_MEMORIES), "total_chars": sum(len(m["content"]) for m in _MEMORIES),
             "log_total": 0}
 

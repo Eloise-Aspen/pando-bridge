@@ -19,8 +19,11 @@ def _seed(client, *contents):
 
 
 def test_stats_reflects_count_and_chars():
+    # 包含式断言:stats 契约允许附加字段(如 log_total),只校验本测试关心的键,
+    # 不用全字典相等——否则契约每加一个字段就误伤此测试(fix-launch-smoke 的教训)。
     client = _client()
-    assert client.get("/memory/stats").json() == {"count": 0, "total_chars": 0}
+    empty = client.get("/memory/stats").json()
+    assert empty["count"] == 0 and empty["total_chars"] == 0
     _seed(client, "我很喜欢猫", "喜欢下雨天写代码")
     stats = client.get("/memory/stats").json()
     assert stats["count"] == 2
