@@ -90,6 +90,14 @@ def _enc(obj):
     return json.dumps(obj, ensure_ascii=False).encode()
 
 
+def _delta(delta):
+    """按生产线真实格式构造增量事件:content_block_delta **嵌套在 stream_event.event 里**
+    (CC CLI --include-partial-messages 的输出形状,server 63db6b8 起按此解包)。
+    裸的顶层 content_block_delta 会被服务端静默忽略——别再用旧格式(fix-launch-smoke 教训)。"""
+    return _enc({"type": "stream_event",
+                 "event": {"type": "content_block_delta", "delta": delta}})
+
+
 # ------------------------------------------------------------------
 # 测试 1: delta 逐段下发 + assistant 不重发 + result.text 校对
 # ------------------------------------------------------------------
@@ -103,14 +111,10 @@ def test_delta_streaming_no_duplicate(tmp_path, monkeypatch):
         _enc({"type": "system", "subtype": "init",
               "session_id": "sess-stream-1", "model": "claude-test"}),
         # 多个 text_delta 模拟逐 token 流式
-        _enc({"type": "content_block_delta",
-              "delta": {"type": "text_delta", "text": "Hello "}}),
-        _enc({"type": "content_block_delta",
-              "delta": {"type": "text_delta", "text": "world"}}),
-        _enc({"type": "content_block_delta",
-              "delta": {"type": "text_delta", "text": "! How "}}),
-        _enc({"type": "content_block_delta",
-              "delta": {"type": "text_delta", "text": "are you?"}}),
+        _delta({"type": "text_delta", "text": "Hello "}),
+        _delta({"type": "text_delta", "text": "world"}),
+        _delta({"type": "text_delta", "text": "! How "}),
+        _delta({"type": "text_delta", "text": "are you?"}),
         # assistant 事件:完整文本（权威），不应产生新 text 帧
         _enc({"type": "assistant", "message": {
             "content": [{"type": "text", "text": "Hello world! How are you?"}],
@@ -167,12 +171,9 @@ def test_thinking_delta_no_duplicate(tmp_path, monkeypatch):
     lines = [
         _enc({"type": "system", "subtype": "init",
               "session_id": "sess-think-1", "model": "claude-test"}),
-        _enc({"type": "content_block_delta",
-              "delta": {"type": "thinking_delta", "thinking": "Let me "}}),
-        _enc({"type": "content_block_delta",
-              "delta": {"type": "thinking_delta", "thinking": "think about this."}}),
-        _enc({"type": "content_block_delta",
-              "delta": {"type": "text_delta", "text": "Here is my answer."}}),
+        _delta({"type": "thinking_delta", "thinking": "Let me "}),
+        _delta({"type": "thinking_delta", "thinking": "think about this."}),
+        _delta({"type": "text_delta", "text": "Here is my answer."}),
         _enc({"type": "assistant", "message": {
             "content": [
                 {"type": "thinking", "thinking": "Let me think about this."},
@@ -227,8 +228,7 @@ def test_tool_use_from_assistant(tmp_path, monkeypatch):
     lines = [
         _enc({"type": "system", "subtype": "init",
               "session_id": "sess-tool-1", "model": "claude-test"}),
-        _enc({"type": "content_block_delta",
-              "delta": {"type": "text_delta", "text": "Reading file..."}}),
+        _delta({"type": "text_delta", "text": "Reading file..."}),
         _enc({"type": "assistant", "message": {
             "content": [
                 {"type": "text", "text": "Reading file..."},
@@ -236,8 +236,7 @@ def test_tool_use_from_assistant(tmp_path, monkeypatch):
             ],
             "usage": {"input_tokens": 10, "output_tokens": 5}}}),
         # 工具结果后继续生成
-        _enc({"type": "content_block_delta",
-              "delta": {"type": "text_delta", "text": " Done."}}),
+        _delta({"type": "text_delta", "text": " Done."}),
         _enc({"type": "assistant", "message": {
             "content": [{"type": "text", "text": " Done."}],
             "usage": {"input_tokens": 15, "output_tokens": 8}}}),
@@ -284,10 +283,8 @@ def test_stop_preserves_delta_text(tmp_path, monkeypatch):
     lines = [
         _enc({"type": "system", "subtype": "init",
               "session_id": "sess-stop-1", "model": "claude-test"}),
-        _enc({"type": "content_block_delta",
-              "delta": {"type": "text_delta", "text": "Partial "}}),
-        _enc({"type": "content_block_delta",
-              "delta": {"type": "text_delta", "text": "output"}}),
+        _delta({"type": "text_delta", "text": "Partial "}),
+        _delta({"type": "text_delta", "text": "output"}),
         # 此后阻塞——模拟长回答挂起,用户按停止
     ]
 
@@ -344,8 +341,7 @@ def test_usage_metadata_unchanged(tmp_path, monkeypatch):
     lines = [
         _enc({"type": "system", "subtype": "init",
               "session_id": "sess-usage-1", "model": "claude-test"}),
-        _enc({"type": "content_block_delta",
-              "delta": {"type": "text_delta", "text": "test output"}}),
+        _delta({"type": "text_delta", "text": "test output"}),
         _enc({"type": "assistant", "message": {
             "content": [{"type": "text", "text": "test output"}],
             "usage": {"input_tokens": 100, "output_tokens": 50,
