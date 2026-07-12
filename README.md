@@ -208,6 +208,30 @@ Tunnel 必须前置访问策略。
 
 ---
 
+## 工具策略（可选，须开启权限透传）
+
+三类工具各有三态策略：`allow`（已授权，免弹窗）/ `ask`（每次询问，走权限透传弹窗）/
+`deny`（已关闭，CC 收到拒绝后文字继续）。策略持久化在 `DATA_DIR/tool_policy.json`，
+spawn 时翻译为 `--allowedTools` / `--disallowedTools` CLI 参数。
+
+| 工具组 | 映射的 CC 工具 | 出厂缺省 |
+|---|---|---|
+| 本地文件 | Read, Write, Edit | ask |
+| 终端 Shell | Bash | ask |
+| 网络访问 | WebFetch, WebSearch | deny |
+
+- **信任模型**：权限弹窗本就开在同一无鉴权前端上；持久化授权不扩大信任面——能发
+  `permission_response` 的人本来就能逐次放行。
+- **「始终允许」按钮**：弹窗第三键。点击 = 该工具所在组写为 allow，后续同组工具免弹窗。
+- **「清除全部授权」**：设置页入口，重置所有组为出厂缺省。
+- 策略通过 `GET/PUT /tool-policy` 与 `POST /tool-policy/reset` 端点读写（与弹窗共享同
+  一份 JSON）；状态页和设置页实时反映。
+
+> ⚠️ **安全提示**：工具策略只是一层*便利*封装，而非鉴权屏障——底层安全依赖仍是
+> tailnet/可信网络隔离 + CC 自身的文件/网络门控。切勿将端口直接暴露到公网。
+
+---
+
 ## 记忆契约
 
 内核从不实现记忆——它只跟一个满足 `MemoryProvider` 协议（`pando/memory_provider.py`）的
@@ -545,6 +569,35 @@ Enable it via `create_app(config)` (or read from env in your `run.py`):
 > Windows process — so `PERMISSION_MCP_PYTHON` / `PERMISSION_MCP_SCRIPT` must point at a
 > **Windows-side** interpreter and script path, with the callback reaching the WSL bridge
 > over `localhost` forwarding.
+
+---
+
+## Tool Policy (optional, requires permission passthrough)
+
+Three tool groups, each with a tri-state policy: `allow` (authorized, no prompt) /
+`ask` (prompt every time via permission passthrough) / `deny` (blocked, CC gets a
+denial and continues in text). The policy is persisted at `DATA_DIR/tool_policy.json`
+and translated into `--allowedTools` / `--disallowedTools` CLI flags at spawn time.
+
+| Group | Mapped CC tools | Factory default |
+|---|---|---|
+| Local files | Read, Write, Edit | ask |
+| Terminal Shell | Bash | ask |
+| Network access | WebFetch, WebSearch | deny |
+
+- **Trust model**: the permission modal is already on the same unauthenticated frontend;
+  persisting a grant doesn't widen the trust surface — anyone who can send a
+  `permission_response` could already approve each request individually.
+- **"Always Allow" button**: the third button in the modal. Tap = write the tool's group
+  as `allow`; subsequent requests for the same group skip the prompt.
+- **"Clear all grants"**: Settings entry, resets all groups to factory defaults.
+- The policy is read/written through `GET/PUT /tool-policy` and
+  `POST /tool-policy/reset` (shared with the modal); both the status page and settings
+  page reflect it live.
+
+> :warning: **Security note**: tool policy is a *convenience* layer, not an auth
+> barrier — underlying security still relies on tailnet/trusted-network isolation plus
+> CC's own file/network gating. Never expose the port directly to the public internet.
 
 ---
 

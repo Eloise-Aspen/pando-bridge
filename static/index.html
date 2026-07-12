@@ -307,6 +307,12 @@
   .tool-row:last-child{border-bottom:none}
   .tool-row .nm{flex:1;font:400 14px var(--ui);color:var(--ink)}
   .pill-tag{font:500 11px var(--ui);border-radius:6px;padding:2px 8px}
+  /* 设置页工具策略三态选择器(feat-tool-policy) */
+  .tp-row{flex-wrap:wrap;gap:8px}
+  .tp-seg{display:flex;gap:0;border-radius:8px;overflow:hidden;border:1px solid var(--line-strong)}
+  .tp-btn{border:none;background:var(--surface);padding:5px 10px;font:500 11px var(--ui);color:var(--dim);cursor:pointer;transition:background .15s,color .15s}
+  .tp-btn+.tp-btn{border-left:1px solid var(--line-soft)}
+  .tp-btn.sel{background:var(--accent-bg);color:var(--accent);font-weight:600}
   /* 状态页指标卡(主/次指标行,原型 STATUS 屏紧凑卡规格)+ 插件插槽(metric/action)复用同款 */
   .st-mrow{display:flex;gap:11px;margin-bottom:11px}
   .st-mcard{flex:1;min-width:0;background:var(--card);border:1px solid var(--e0-border);border-radius:14px;padding:13px 15px}
@@ -463,9 +469,9 @@
         <div class="perm-params" id="perm-params"></div>
         <div class="perm-note"><span id="perm-queue"></span>仅本次会话有效。你可以在 设置 › 工具权限 中随时收回。 <span id="perm-countdown"></span></div>
         <div class="perm-btns">
-          <button class="btn-primary" onclick="respondPermission(true)">始终允许</button>
+          <button class="btn-primary" onclick="respondPermission(true,true)">始终允许</button>
           <div class="perm-row2">
-            <button class="btn-ghost" onclick="respondPermission(true)">只允许一次</button>
+            <button class="btn-ghost" onclick="respondPermission(true,false)">只允许一次</button>
             <button class="btn-deny" onclick="respondPermission(false)">拒绝</button>
           </div>
         </div>
@@ -800,11 +806,7 @@ async function loadStatus(){
       <div id="st-action-wrap"></div>
       ${usageHtml}
       <div class="st-sec">已连接工具</div>
-      <div class="st-box rows">
-        <div class="tool-row"><span class="nm">本地文件</span><span class="pill-tag" style="color:var(--online);background:rgba(91,154,91,.12)">已授权</span></div>
-        <div class="tool-row"><span class="nm">终端 / Shell</span><span class="pill-tag" style="color:var(--danger-text);background:rgba(217,119,87,.12)">每次询问</span></div>
-        <div class="tool-row"><span class="nm">网络访问</span><span class="pill-tag" style="color:var(--faint);background:var(--track)">已关闭</span></div>
-      </div>
+      <div class="st-box rows" id="st-tools"></div>
       <div style="height:20px"></div>
     </div>`;
   // 插件插槽:自有卡渲染完后按注册序补 metric(次指标行)与 action(可操作列表);
@@ -825,13 +827,36 @@ async function loadStatus(){
     });
     $('st-action-wrap').appendChild(box);
   }
+  // 已连接工具面板：从 API 拉取策略并渲染三行（feat-tool-policy Task 4）
+  _renderToolPolicy($('st-tools'));
+}
+
+/* ===== 工具策略面板渲染（feat-tool-policy）===== */
+// 组名 → 中文标签
+const _TOOL_GROUP_LABELS={file:'本地文件',shell:'终端 / Shell',network:'网络访问'};
+// 状态 → 显示文案 + 样式
+const _TOOL_STATE_DISPLAY={
+  allow:{label:'已授权',color:'var(--online)',bg:'rgba(91,154,91,.12)'},
+  ask:{label:'每次询问',color:'var(--danger-text)',bg:'rgba(217,119,87,.12)'},
+  deny:{label:'已关闭',color:'var(--faint)',bg:'var(--track)'}
+};
+async function _fetchToolPolicy(){ try{ const r=await fetch('/tool-policy'); return r.ok?await r.json():null; }catch{ return null; } }
+function _renderToolPolicy(container){
+  if(!container) return;
+  _fetchToolPolicy().then(policy=>{
+    if(!policy){ container.innerHTML='<div class="sub-empty" style="padding:8px">无法加载</div>'; return; }
+    container.innerHTML=['file','shell','network'].map(g=>{
+      const st=_TOOL_STATE_DISPLAY[policy[g]]||_TOOL_STATE_DISPLAY.ask;
+      return `<div class="tool-row"><span class="nm">${_TOOL_GROUP_LABELS[g]}</span><span class="pill-tag" style="color:${st.color};background:${st.bg}">${st.label}</span></div>`;
+    }).join('');
+  });
 }
 
 /* ===== SETTINGS ===== */
 function loadSettings(){
   const v=$('v-settings');
   const nick=localStorage.getItem('userNickname')||''; const asst=localStorage.getItem('assistantName')||'';
-  const autoMem=localStorage.getItem('autoMemory')!=='0'; const localFile=localStorage.getItem('permLocalFile')!=='0';
+  const autoMem=localStorage.getItem('autoMemory')!=='0';
   const themeLabel=localStorage.getItem('theme')==='_smoke'?'简洁·烟':'简洁';
   v.innerHTML=`<div class="sub-top"><div class="r"><button class="icon-btn lead" onclick="openSidebar()" aria-label="菜单">${MENU}</button><span class="sub-h">设置</span></div></div>
     <div class="sub-body pd-scroll set-body">
@@ -853,13 +878,11 @@ function loadSettings(){
         <div class="set-row"><span class="k">自动记住上下文<span class="set-hint">对新消息生效</span></span><button class="tog${autoMem?' on':''}${_hasMemory?'':' disabled'}" id="s-automem" onclick="toggleAutoMem()"></button></div>
       </div>
       <div class="set-sec">工具权限</div>
-      <div class="set-group">
-        <div class="set-row"><span class="k">本地文件访问</span><button class="tog${localFile?' on':''}" id="s-local" onclick="toggleLocalFile()"></button></div>
-        <div class="set-row tap" onclick="clearPerms()"><span class="k danger">清除全部授权</span>${CHEV}</div>
-      </div>
+      <div class="set-group" id="s-tool-policy"></div>
       <div class="set-ver" id="s-ver">Pando</div>
     </div>`;
   renderPluginSettings(v.querySelector('.set-body'));
+  _renderSettingsToolPolicy();
   fetch('/health').then(r=>r.ok?r.json():null).then(h=>{ if(h&&h.version&&$('s-ver')) $('s-ver').textContent='Pando v'+h.version+' · 基于 Claude Code'; }).catch(()=>{});
 }
 function saveIdentity(){ const nick=$('s-nick').value.trim(), asst=$('s-asst').value.trim();
@@ -871,11 +894,30 @@ function toggleEnter(){ enterToSend=!enterToSend; if(enterToSend) localStorage.r
 function toggleAutoMem(){ if(!_hasMemory) return; const on=localStorage.getItem('autoMemory')!=='0'; if(on) localStorage.setItem('autoMemory','0'); else localStorage.removeItem('autoMemory'); $('s-automem').classList.toggle('on',!on); _syncArchivePref(); }
 // 把当前 autoMemory 偏好下发给服务端（连接建立 / 用户切换时调用）
 function _syncArchivePref(){ if(ws&&ws.readyState===1) ws.send(JSON.stringify({archive:localStorage.getItem('autoMemory')!=='0'})); }
-function toggleLocalFile(){ const on=localStorage.getItem('permLocalFile')!=='0'; if(on) localStorage.setItem('permLocalFile','0'); else localStorage.removeItem('permLocalFile'); $('s-local').classList.toggle('on',!on); }
+// 设置页「工具权限」三态控件渲染（feat-tool-policy Task 4）
+// 每组一行：标签 + 三态选择器（allow/ask/deny），点击即时 PUT 写服务端
+async function _renderSettingsToolPolicy(){
+  const el=$('s-tool-policy'); if(!el) return;
+  const policy=await _fetchToolPolicy();
+  if(!policy){ el.innerHTML='<div class="set-row"><span class="k dim">无法加载工具策略</span></div>'; return; }
+  const groups=['file','shell','network'];
+  const stateLabels={allow:'已授权',ask:'每次询问',deny:'已关闭'};
+  el.innerHTML=groups.map(g=>{
+    const cur=policy[g]||'ask';
+    // 三态选择器：三个小按钮并排，当前态高亮
+    const btns=['allow','ask','deny'].map(s=>`<button class="tp-btn${s===cur?' sel':''}" data-g="${g}" data-s="${s}" onclick="_setToolPolicy('${g}','${s}')">${stateLabels[s]}</button>`).join('');
+    return `<div class="set-row tp-row"><span class="k">${_TOOL_GROUP_LABELS[g]}</span><div class="tp-seg">${btns}</div></div>`;
+  }).join('')+`<div class="set-row tap" onclick="_clearToolPolicy()"><span class="k danger">清除全部授权</span>${CHEV}</div>`;
+}
+async function _setToolPolicy(group,state){
+  try{ const r=await fetch('/tool-policy',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({[group]:state})}); if(r.ok) _renderSettingsToolPolicy(); }catch{}
+}
+async function _clearToolPolicy(){
+  try{ const r=await fetch('/tool-policy/reset',{method:'POST'}); if(r.ok){ _renderSettingsToolPolicy(); toast('已重置工具权限为默认'); } }catch{}
+}
 function toggleThemeMenu(e){ e.stopPropagation(); const m=$('theme-menu'); m.style.display=m.style.display==='none'?'block':'none'; }
 function pickTheme(t){ if(t) localStorage.setItem('theme',t); else localStorage.removeItem('theme'); $('theme-menu').style.display='none'; $('s-theme').textContent=t==='_smoke'?'简洁·烟':'简洁'; _pandoEmit('theme_change',{theme:t||''}); toast('主题已切换(需刷新生效)'); }
 function cycleDefaultModel(){ const ids=MODELS.map(m=>m[0]); const i=ids.indexOf(currentModel); const next=ids[(i+1)%ids.length]; applyModel(next); $('s-model').textContent=modelLabel(next); }
-function clearPerms(){ localStorage.removeItem('permLocalFile'); toast('已清除本地授权记录'); }
 function openSidebar(){ loadSessions(); $('overlay').classList.add('open'); $('drawer').classList.add('open'); }
 function closeSidebar(){ $('overlay').classList.remove('open'); $('drawer').classList.remove('open'); }
 
@@ -1175,7 +1217,7 @@ function showNextPerm(){ clearPermTimers(); const req=permQueue[0]; if(!req){ hi
   $('perm-ov').classList.add('open');
 }
 function updatePermBadge(){ const n=permQueue.length; $('perm-queue').textContent=n>1?`还有 ${n-1} 个待确认 · `:''; }
-function respondPermission(allow){ const req=permQueue.shift(); if(req&&ws&&ws.readyState===1) ws.send(JSON.stringify({type:'permission_response',request_id:req.request_id,allow:!!allow})); clearPermTimers(); if(permQueue.length) showNextPerm(); else hidePerm(); }
+function respondPermission(allow,always){ const req=permQueue.shift(); if(req&&ws&&ws.readyState===1){ const msg={type:'permission_response',request_id:req.request_id,allow:!!allow}; if(always) msg.always=true; ws.send(JSON.stringify(msg)); } clearPermTimers(); if(permQueue.length) showNextPerm(); else hidePerm(); }
 function clearPendingPermissions(){ permQueue.length=0; clearPermTimers(); hidePerm(); }
 function clearPermTimers(){ if(permTimer) clearTimeout(permTimer); if(permCd) clearInterval(permCd); permTimer=permCd=null; }
 function hidePerm(){ $('perm-ov').classList.remove('open'); }
