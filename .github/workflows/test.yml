@@ -21,4 +21,6 @@ jobs:
       - name: Install
         run: pip install -e ".[dev]"
       - name: Test
-        run: pytest -q
+        # --timeout=60:任何单测挂 60s 即被杀,全量跑保证在合理时间退出
+        # (一个阻塞的 receive_json 曾让全量 pytest 永久挂死而 CI 徽章仍显示陈旧的绿)
+        run: pytest -q --timeout=60

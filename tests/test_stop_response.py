@@ -86,10 +86,12 @@ def test_stop_terminates_proc_and_sends_stopped_frame(tmp_path, monkeypatch):
     lines = [
         json.dumps({"type": "system", "subtype": "init",
                     "session_id": "sess-1", "model": "claude-x"}).encode(),
-        json.dumps({"type": "content_block_delta",
-                    "delta": {"type": "text_delta", "text": chunk_a}}).encode(),
-        json.dumps({"type": "content_block_delta",
-                    "delta": {"type": "text_delta", "text": chunk_b}}).encode(),
+        json.dumps({"type": "stream_event", "event": {
+            "type": "content_block_delta",
+            "delta": {"type": "text_delta", "text": chunk_a}}}).encode(),
+        json.dumps({"type": "stream_event", "event": {
+            "type": "content_block_delta",
+            "delta": {"type": "text_delta", "text": chunk_b}}}).encode(),
     ]
     created = {}
 

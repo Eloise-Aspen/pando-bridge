@@ -312,7 +312,7 @@ python examples/memory_stub.py                        # 127.0.0.1:8780
 
 ```bash
 pip install -e ".[dev]"
-pytest
+pytest --timeout=60
 ```
 
 ## 许可
@@ -690,7 +690,7 @@ The built-in [`MemoryPlugin`](pando/plugins/memory.py) is a worked example: its
 
 ```bash
 pip install -e ".[dev]"
-pytest
+pytest --timeout=60
 ```
 
 ## License
