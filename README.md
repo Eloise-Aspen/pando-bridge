@@ -319,6 +319,8 @@ pytest --timeout=60
 
 代码 [MIT](LICENSE)。
 
+> 如果 Pando 对你的产品有帮助，欢迎注明出处——没有法律义务，纯君子之约。
+
 界面「简洁模式」浅色主题的设计参考 **Anthropic MCP Apps UI kit**(CC BY 4.0)。
 打包的字体 JetBrains Mono(SIL OFL 1.1)与 Tabler Icons 子集(MIT)各遵其许可。
 完整第三方声明见 [NOTICE](NOTICE)。
@@ -696,6 +698,9 @@ pytest --timeout=60
 ## License
 
 Code is [MIT](LICENSE).
+
+> If Pando helps power your product, a mention would be appreciated — not a legal
+> obligation, just a gentlemen's agreement.
 
 The "simple mode" light theme's interface design is adapted from the
 **Anthropic MCP Apps UI kit** (CC BY 4.0). Bundled fonts — JetBrains Mono
