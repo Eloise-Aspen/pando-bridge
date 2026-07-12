@@ -216,6 +216,109 @@ def _clean_quota(raw: dict) -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# 工具策略（feat-tool-policy）：每类工具三态 allow/ask/deny，持久化到 DATA_DIR/tool_policy.json，
+# spawn 时翻译成 --allowedTools / --disallowedTools CLI 参数。
+# ---------------------------------------------------------------------------
+
+# 工具分组定义：组名 → CC 工具名列表（spec 裁决：本地文件/终端 Shell/网络访问三组）
+TOOL_GROUPS: dict[str, list[str]] = {
+    "file": ["Read", "Write", "Edit"],
+    "shell": ["Bash"],
+    "network": ["WebFetch", "WebSearch"],
+}
+
+# 出厂缺省：文件 ask、Shell ask、网络 deny（spec 裁决：保守缺省）
+TOOL_POLICY_DEFAULTS: dict[str, str] = {
+    "file": "ask",
+    "shell": "ask",
+    "network": "deny",
+}
+
+_VALID_STATES = {"allow", "ask", "deny"}
+
+
+class ToolPolicy:
+    """工具策略持久层：读写 DATA_DIR/tool_policy.json，校验三态，翻译 CLI 参数。
+
+    文件缺失或解析失败时静默回退到缺省——首次启动 / 手动删文件后自愈，不阻断服务。
+    写入时原子替换（先写 .tmp 再 rename），防崩溃写半截。"""
+
+    def __init__(self, data_dir: Path):
+        self._path = data_dir / "tool_policy.json"
+        self._lock = asyncio.Lock()  # 并发写保护（多 WS 同时 always 场景）
+
+    def get(self) -> dict[str, str]:
+        """读取当前策略（组名 → 状态）。文件缺失/损坏返回缺省副本。"""
+        if not self._path.exists():
+            return dict(TOOL_POLICY_DEFAULTS)
+        try:
+            raw = json.loads(self._path.read_text(encoding="utf-8"))
+            if not isinstance(raw, dict):
+                return dict(TOOL_POLICY_DEFAULTS)
+            # 只保留已知组 + 合法状态，未知组/非法值回退缺省
+            result = {}
+            for group in TOOL_GROUPS:
+                val = raw.get(group, TOOL_POLICY_DEFAULTS[group])
+                result[group] = val if val in _VALID_STATES else TOOL_POLICY_DEFAULTS[group]
+            return result
+        except (json.JSONDecodeError, OSError):
+            return dict(TOOL_POLICY_DEFAULTS)
+
+    def _write(self, policy: dict[str, str]):
+        """写入策略到磁盘（原子替换）。"""
+        tmp = self._path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(policy, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(self._path)
+
+    async def set(self, updates: dict[str, str]) -> dict[str, str]:
+        """更新一个或多个组的状态。只接受已知组名 + 合法状态值，忽略非法项。
+        返回更新后的完整策略。"""
+        async with self._lock:
+            current = self.get()
+            for group, state in updates.items():
+                if group in TOOL_GROUPS and state in _VALID_STATES:
+                    current[group] = state
+            self._write(current)
+            return current
+
+    async def reset(self) -> dict[str, str]:
+        """重置为出厂缺省（「清除全部授权」）。"""
+        async with self._lock:
+            defaults = dict(TOOL_POLICY_DEFAULTS)
+            self._write(defaults)
+            return defaults
+
+    def to_cli_args(self) -> list[str]:
+        """把当前策略翻译成 CLI 参数列表。
+        allow → --allowedTools 对应工具名（逗号分隔）
+        deny → --disallowedTools 对应工具名（逗号分隔）
+        ask → 不进任何列表（走 permission-passthrough 弹窗）"""
+        policy = self.get()
+        allowed: list[str] = []
+        disallowed: list[str] = []
+        for group, state in policy.items():
+            tools = TOOL_GROUPS.get(group, [])
+            if state == "allow":
+                allowed.extend(tools)
+            elif state == "deny":
+                disallowed.extend(tools)
+            # ask: 不加入任何列表
+        args: list[str] = []
+        if allowed:
+            args += ["--allowedTools", ",".join(allowed)]
+        if disallowed:
+            args += ["--disallowedTools", ",".join(disallowed)]
+        return args
+
+    def group_for_tool(self, tool_name: str) -> str | None:
+        """根据 CC 工具名查找所属组名。找不到返回 None。"""
+        for group, tools in TOOL_GROUPS.items():
+            if tool_name in tools:
+                return group
+        return None
+
+
 def create_app(config) -> FastAPI:
     """组装并返回一个可运行的 FastAPI app。
 
@@ -281,6 +384,9 @@ def create_app(config) -> FastAPI:
 
     data_dir.mkdir(parents=True, exist_ok=True)
     chat_db = data_dir / "chat.db"
+
+    # 工具策略实例（feat-tool-policy）：持久化到 DATA_DIR/tool_policy.json
+    tool_policy = ToolPolicy(data_dir)
 
     # 附件落盘目录。默认放 CLAUDE_CWD/.pando-uploads（Task 1 结论：必须在 cwd 内 CC 才
     # 能免批 Read）；允许 config 用 UPLOAD_DIR 显式覆盖。claude_cwd 缺失时降级到包内
@@ -849,6 +955,13 @@ def create_app(config) -> FastAPI:
             cmd += ["--model", model]
         if effort:
             cmd += ["--effort", effort]
+
+        # 工具策略翻译（feat-tool-policy）：按当前策略追加 --allowedTools / --disallowedTools。
+        # allow 组工具免弹窗直接执行；deny 组工具 CC 侧被禁用（收到拒绝后文字继续）；
+        # ask 组不进两个列表，由 permission-passthrough 弹窗接管。
+        policy_args = tool_policy.to_cli_args()
+        if policy_args:
+            cmd += policy_args
 
         # 权限透传：仅用户可见轮次开启（silent 存档轮无人盯着，开了只会 120s 后默拒白等）。
         # 用内联 JSON 字符串传 --mcp-config（CC 支持 file 或 string），免临时文件与清理。
