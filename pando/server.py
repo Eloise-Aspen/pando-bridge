@@ -785,6 +785,34 @@ def create_app(config) -> FastAPI:
         return cleaned
 
     # -----------------------------------------------------------------------
+    # 工具策略 API（feat-tool-policy Task 2）
+    # -----------------------------------------------------------------------
+
+    @app.get("/tool-policy")
+    async def api_get_tool_policy():
+        """返回当前工具策略（组名 → allow/ask/deny）。"""
+        return tool_policy.get()
+
+    @app.put("/tool-policy")
+    async def api_put_tool_policy(req: Request):
+        """更新工具策略。请求体为 JSON 对象 {组名: 状态}，只更新传入的组。
+        非法组名/状态静默忽略。返回更新后的完整策略。"""
+        try:
+            body = await req.json()
+        except Exception:
+            raise HTTPException(status_code=400, detail="invalid JSON body")
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="body must be a JSON object")
+        result = await tool_policy.set(body)
+        return result
+
+    @app.post("/tool-policy/reset")
+    async def api_reset_tool_policy():
+        """重置工具策略为出厂缺省（「清除全部授权」）。"""
+        result = await tool_policy.reset()
+        return result
+
+    # -----------------------------------------------------------------------
     # 附件上传（feat-attachment-upload）
     # -----------------------------------------------------------------------
 
