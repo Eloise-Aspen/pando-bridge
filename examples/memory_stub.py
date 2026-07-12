@@ -120,8 +120,9 @@ def archive(inp: ArchiveIn) -> dict:
 
 @app.get("/memory/stats")
 def memory_stats() -> dict:
-    """统计头:条数 + 总字数。"""
-    return {"count": len(_MEMORIES), "total_chars": sum(len(m["content"]) for m in _MEMORIES)}
+    """统计头。total = 记忆条数（不含 klass='log' 的时间轴日志）;log_total = 日志条数。"""
+    return {"count": len(_MEMORIES), "total_chars": sum(len(m["content"]) for m in _MEMORIES),
+            "log_total": 0}
 
 
 @app.get("/memory/list")
