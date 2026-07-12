@@ -127,8 +127,9 @@ def test_stop_terminates_proc_and_sends_stopped_frame(tmp_path, monkeypatch):
             assert created["proc"].killed is False
 
 
-def test_stop_without_inflight_is_ignored(tmp_path, monkeypatch):
-    """没有在途轮次时发 stop(快速连点/流已结束)应被静默忽略,不崩、后续消息仍可正常发。"""
+def test_stop_without_inflight_sends_idempotent_stopped(tmp_path, monkeypatch):
+    """无在途轮次时发 stop:回一帧 stopped 确认(幂等),前端收到即复位;
+    后续消息仍可正常发——不崩、不阻塞(feat-reconnect-resume Task 3)。"""
     lines = [
         json.dumps({"type": "system", "subtype": "init",
                     "session_id": "sess-2", "model": "claude-x"}).encode(),
@@ -146,19 +147,31 @@ def test_stop_without_inflight_is_ignored(tmp_path, monkeypatch):
     app = create_app(_config(tmp_path))
     with TestClient(app) as client:
         with client.websocket_connect("/ws") as wsc:
-            # 无在途轮次先发一个 stop:必须被忽略,不影响随后的正常轮次
+            # 无在途轮次先发一个 stop:应回一帧幂等 stopped 确认
             wsc.send_json({"type": "stop"})
+
+            # 先收到幂等 stopped 帧
+            idempotent = None
+            for _ in range(10):
+                m = wsc.receive_json()
+                if m.get("type") == "result" and m.get("stopped"):
+                    idempotent = m
+                    break
+            assert idempotent is not None, "无在途时 stop 应回 stopped 确认帧"
+            assert idempotent.get("stopped") is True
+            assert idempotent.get("text") == ""
+
+            # 随后正常消息仍可发
             wsc.send_json({"text": "你好"})
 
             result = None
             for _ in range(50):
                 m = wsc.receive_json()
-                if m.get("type") == "result":
+                if m.get("type") == "result" and not m.get("stopped"):
                     result = m
                     break
                 elif m.get("type") == "error":
                     raise AssertionError(f"unexpected error frame: {m}")
 
             assert result is not None
-            assert result.get("stopped") is None, "正常完成的轮次不该被标 stopped"
             assert result.get("text") == "hi"
