@@ -1169,6 +1169,15 @@ def create_app(config) -> FastAPI:
 
                     etype = event.get("type")
 
+                    # stream_event 是包装层：真正的 delta/start/stop 嵌套在 event["event"] 里。
+                    # 解包后按 inner type 分发，与顶层 system/assistant/result 共用同一循环。
+                    inner_event = None
+                    if etype == "stream_event":
+                        inner_event = event.get("event", {})
+                        inner_type = inner_event.get("type", "")
+                    else:
+                        inner_type = None
+
                     if etype == "system" and event.get("subtype") == "init":
                         new_session_id = event.get("session_id", new_session_id)
                         init_model = event.get("model") or init_model
@@ -1184,10 +1193,10 @@ def create_app(config) -> FastAPI:
                                 "model": event.get("model", ""),
                             }, ensure_ascii=False))
 
-                    # 流式增量:content_block_delta 携带 text_delta / thinking_delta,
-                    # 按节流参数聚合后逐段下发,是用户看到流式输出的唯一来源。
-                    elif etype == "content_block_delta":
-                        delta = event.get("delta", {})
+                    # 流式增量:content_block_delta 嵌套在 stream_event.event 里,
+                    # 携带 text_delta / thinking_delta,按节流参数聚合后逐段下发。
+                    elif inner_type == "content_block_delta":
+                        delta = inner_event.get("delta", {})
                         dtype = delta.get("type")
                         if dtype == "text_delta":
                             chunk = delta.get("text", "")
