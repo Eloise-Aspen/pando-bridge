@@ -1031,6 +1031,9 @@ def create_app(config) -> FastAPI:
                     "--permission-prompt-tool", "mcp__pando_permission__approve",
                 ]
 
+        # --disallowedTools 等 flag 是贪婪消费的，如果它是最后一个 flag，
+        # 后面的 message 位置参数会被吞进工具名列表。用 -- 显式终止 flag 解析。
+        cmd.append("--")
         cmd.append(message)
 
         log.info("spawn: %s (session=%s, model=%s)", message[:80], session_id or "new", model or "default")
