@@ -41,6 +41,11 @@ _ATTACH_RETENTION_DAYS = 7  # 启动时清理超过此天数的旧附件
 # 上限抬高到能容纳最大附件 base64 + JSON 包裹的量级。
 _STREAM_LINE_LIMIT = 32 * 1024 * 1024  # 32MB
 
+# 流式增量帧节流参数（feat-stream-output）：delta 可能非常细碎（每次几个字符），
+# 按时间或字符数聚合后下发，防 WS 帧风暴。两个阈值满足其一即 flush。
+_STREAM_THROTTLE_MS = 100    # 毫秒:距上次 flush 超过此间隔即发送
+_STREAM_THROTTLE_CHARS = 40  # 字符:累积超过此长度即发送
+
 
 class PermissionBroker:
     """权限透传的挂起队列 + token 路由（feat-permission-passthrough）。
@@ -1050,6 +1055,9 @@ def create_app(config) -> FastAPI:
             "--print",
             "--output-format", "stream-json",
             "--verbose",
+            # 流式增量:CC 2.1.200+ 支持,开启后 stdout 会额外输出 content_block_delta
+            # 事件（text_delta / thinking_delta），服务端据此逐段下发，实现 token 级流式
+            "--include-partial-messages",
             # settings.json 的 showThinkingSummaries 只在交互式终端生效（isInteractive 门控），
             # 子进程管道模式必须用这个 CLI flag 才能拿到非空的 thinking 文本
             "--thinking-display", "summarized",
@@ -1138,6 +1146,15 @@ def create_app(config) -> FastAPI:
         # CC 回报的 model 才是真实模型),用量落库时按它分组。
         init_model = model or ""
 
+        # 流式增量状态（feat-stream-output）:delta 事件逐段累积,按节流参数聚合后发帧;
+        # assistant 事件的完整文本只做校对/落库,不重发——避免用户看到全文闪现两遍。
+        _delta_text_buf = ""       # 待发送的文本 delta 缓冲
+        _delta_think_buf = ""      # 待发送的 thinking delta 缓冲
+        _last_text_ts = 0.0        # 上次发送文本帧的单调时钟(秒)
+        _last_think_ts = 0.0       # 上次发送 thinking 帧的单调时钟(秒)
+        _auth_full_text = ""       # 权威全文(从 assistant 事件累积,用于校对/落库/归档)
+        _auth_thinking = ""        # 权威 thinking 文本(从 assistant 事件累积)
+
         try:
             try:
                 async for raw_line in proc.stdout:
@@ -1167,29 +1184,69 @@ def create_app(config) -> FastAPI:
                                 "model": event.get("model", ""),
                             }, ensure_ascii=False))
 
+                    # 流式增量:content_block_delta 携带 text_delta / thinking_delta,
+                    # 按节流参数聚合后逐段下发,是用户看到流式输出的唯一来源。
+                    elif etype == "content_block_delta":
+                        delta = event.get("delta", {})
+                        dtype = delta.get("type")
+                        if dtype == "text_delta":
+                            chunk = delta.get("text", "")
+                            full_text += chunk
+                            if not silent and turn is not None:
+                                _delta_text_buf += chunk
+                                now_t = time.monotonic()
+                                if (len(_delta_text_buf) >= _STREAM_THROTTLE_CHARS
+                                        or (now_t - _last_text_ts) * 1000 >= _STREAM_THROTTLE_MS):
+                                    await turn.send_frame(json.dumps({
+                                        "type": "text",
+                                        "text": _delta_text_buf,
+                                    }, ensure_ascii=False))
+                                    _delta_text_buf = ""
+                                    _last_text_ts = now_t
+                        elif dtype == "thinking_delta":
+                            chunk = delta.get("thinking", "")
+                            thinking_text += chunk
+                            if not silent and turn is not None:
+                                _delta_think_buf += chunk
+                                now_t = time.monotonic()
+                                if (len(_delta_think_buf) >= _STREAM_THROTTLE_CHARS
+                                        or (now_t - _last_think_ts) * 1000 >= _STREAM_THROTTLE_MS):
+                                    await turn.send_frame(json.dumps({
+                                        "type": "thinking",
+                                        "text": _delta_think_buf,
+                                    }, ensure_ascii=False))
+                                    _delta_think_buf = ""
+                                    _last_think_ts = now_t
+
                     elif etype == "assistant":
                         msg = event.get("message", {})
                         # 每个 assistant 事件都带 message.usage;取最后一条作上下文占用快照
                         if msg.get("usage"):
                             last_assistant_usage = msg["usage"]
+                        # assistant 事件到达 = 该轮 delta 序列结束,flush 残留缓冲
+                        if not silent and turn is not None:
+                            if _delta_text_buf:
+                                await turn.send_frame(json.dumps({
+                                    "type": "text",
+                                    "text": _delta_text_buf,
+                                }, ensure_ascii=False))
+                                _delta_text_buf = ""
+                            if _delta_think_buf:
+                                await turn.send_frame(json.dumps({
+                                    "type": "thinking",
+                                    "text": _delta_think_buf,
+                                }, ensure_ascii=False))
+                                _delta_think_buf = ""
                         for block in msg.get("content", []):
                             btype = block.get("type")
                             if btype == "thinking":
-                                thinking_text += block.get("thinking", "")
-                                if not silent:
-                                    await turn.send_frame(json.dumps({
-                                        "type": "thinking",
-                                        "text": block.get("thinking", ""),
-                                    }, ensure_ascii=False))
+                                # 权威 thinking 累积(校对用),不重发帧——delta 已逐段下发
+                                _auth_thinking += block.get("thinking", "")
                             elif btype == "text":
-                                text = block["text"]
-                                full_text += text
-                                if not silent:
-                                    await turn.send_frame(json.dumps({
-                                        "type": "text",
-                                        "text": text,
-                                    }, ensure_ascii=False))
+                                # 权威全文累积(校对/落库/归档用),不重发帧——delta 已逐段下发
+                                _auth_full_text += block.get("text", "")
                             elif btype == "tool_use" and not silent:
+                                # tool_use 仍从 assistant 事件提取并发帧(无 delta 通道)
                                 tool_frame = {
                                     "tool": block.get("name", ""),
                                     "input_preview": str(block.get("input", ""))[:200],
@@ -1201,6 +1258,12 @@ def create_app(config) -> FastAPI:
                                 }, ensure_ascii=False))
 
                     elif etype == "result":
+                        # 权威文本校对(feat-stream-output):delta 累积 vs assistant 完整文本,
+                        # 有权威版本时以权威为准(落库/归档准确性);delta 累积可能因网络/截断差异
+                        if _auth_full_text:
+                            full_text = _auth_full_text
+                        if _auth_thinking:
+                            thinking_text = _auth_thinking
                         # usage(result 聚合)= 本轮账单口径,用于落库 /usage/stats 与消息脚注成本行;
                         # 保持不动——它衡量"这轮花了多少 token",是计费语义,不是上下文占用。
                         usage = event.get("usage", {})

@@ -1213,7 +1213,13 @@ function connect(){
       case 'result':
         _clearStopFallback();
         removeTyping();
-        if(m.text && !assistantText){ currentAssistantRow=addAssistant(m.text); assistantText=m.text; }
+        // 权威文本校对(feat-stream-output):delta 已逐段下发并累积 assistantText,
+        // result.text 为服务端权威全文——以它为准(落差时静默修正,textContent 同值无重绘)
+        if(m.text){
+          if(!currentAssistantRow) currentAssistantRow=addAssistant('');
+          assistantText=m.text;
+          updateAssistant(currentAssistantRow, assistantText);
+        }
         if(currentAssistantRow && _pendingRecall){ assistantChipRow(currentAssistantRow).insertBefore(makeRecallChip(_pendingRecall), assistantChipRow(currentAssistantRow).firstChild); _pendingRecall=null; }
         if(currentAssistantRow) addThinking(currentAssistantRow, m.thinking, roundTools, m.duration_ms);
         if(currentAssistantRow && assistantText) addToolbar(currentAssistantRow, assistantText, m.stopped?null:{cost_usd:m.cost_usd,duration_ms:m.duration_ms,usage:m.usage});

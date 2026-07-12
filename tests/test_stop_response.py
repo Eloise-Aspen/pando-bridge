@@ -79,13 +79,17 @@ class _FakeProc:
 
 
 def test_stop_terminates_proc_and_sends_stopped_frame(tmp_path, monkeypatch):
+    # feat-stream-output: text 帧来自 content_block_delta,不再从 assistant 事件重发。
+    # 每个 chunk ≥ 40 字符(节流阈值),确保每个 delta 都独立 flush 产生一帧 text。
+    chunk_a = "A" * 50  # ≥ _STREAM_THROTTLE_CHARS
+    chunk_b = "B" * 50
     lines = [
         json.dumps({"type": "system", "subtype": "init",
                     "session_id": "sess-1", "model": "claude-x"}).encode(),
-        json.dumps({"type": "assistant", "message": {
-            "content": [{"type": "text", "text": "Hello "}]}}).encode(),
-        json.dumps({"type": "assistant", "message": {
-            "content": [{"type": "text", "text": "world"}]}}).encode(),
+        json.dumps({"type": "content_block_delta",
+                    "delta": {"type": "text_delta", "text": chunk_a}}).encode(),
+        json.dumps({"type": "content_block_delta",
+                    "delta": {"type": "text_delta", "text": chunk_b}}).encode(),
     ]
     created = {}
 
@@ -120,7 +124,7 @@ def test_stop_terminates_proc_and_sends_stopped_frame(tmp_path, monkeypatch):
 
             assert result is not None, "未收到结束帧"
             assert result.get("stopped") is True, "结束帧未标记 stopped"
-            assert result.get("text") == "Hello world", "已生成文本未保留"
+            assert result.get("text") == chunk_a + chunk_b, "已生成文本未保留"
             assert "usage" not in result, "停止轮不应带 usage(result 事件未到达)"
             # 子进程已被回收(terminate 生效,未走到 kill 兜底)
             assert created["proc"].terminated is True
