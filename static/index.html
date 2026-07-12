@@ -143,6 +143,8 @@
   .think-pill{align-self:flex-start;display:inline-flex;align-items:center;gap:5px;background:var(--surface);border:none;border-radius:9999px;padding:4px 10px;cursor:pointer;font:500 11px var(--ui);color:var(--icon)}
   .think-pill.tool-only{color:#B07A5E}
   .think-pill svg{flex-shrink:0}
+  /* 记忆召回 sheet body(弹层结构复用 .sheet-ov > .sheet) */
+  .rc-body{padding:0 20px calc(24px + var(--safe-bottom));overflow:auto;min-height:0;font:400 14px/1.85 var(--ui);color:var(--dim);white-space:pre-wrap;word-break:break-word;-webkit-overflow-scrolling:touch}
   /* 桌面(≥880px)"原文处展开"态:不弹底部弹窗,直接在 chip 下方续写(边线样式沿用早期未启用的稿子) */
   .think-body{align-self:stretch;margin-top:8px;border-left:2px solid rgba(217,119,87,.3);padding:2px 0 2px 14px;font:400 14px/1.8 var(--ui);color:var(--dim);white-space:pre-wrap;word-break:break-word;max-height:320px;overflow:auto}
   .think-body .ti-meta{font:400 11.5px var(--ui);color:var(--fainter);margin-bottom:8px;font-variant-numeric:tabular-nums}
@@ -480,6 +482,18 @@
         <button class="icon-btn" onclick="closeThinkSheet()" aria-label="关闭"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"></path></svg></button>
       </div>
       <div class="think-sheet-body" id="think-sheet-body"></div>
+    </div>
+  </div>
+
+  <!-- ============ RECALL SHEET(记忆召回内容,与思考弹窗同构)============ -->
+  <div class="sheet-ov" id="recall-ov" onclick="if(event.target===this)closeRecallSheet()">
+    <div class="sheet">
+      <div class="sheet-grab"><div class="bar"></div></div>
+      <div class="sheet-hd">
+        <div class="tt-wrap"><span class="tt">本轮召回</span><span class="meta" id="recall-meta"></span></div>
+        <button class="icon-btn" onclick="closeRecallSheet()" aria-label="关闭"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"></path></svg></button>
+      </div>
+      <div class="rc-body" id="recall-body"></div>
     </div>
   </div>
 
@@ -894,8 +908,8 @@ function renderRecent(){
     el.onclick=()=>switchSession(s.id); box.appendChild(el);
   });
 }
-async function switchSession(sid){ go('chat'); $('msgs').innerHTML=''; setSessionId(sid); _pandoEmit('session_switch',{session_id:sid}); await loadHistory(sid); if(ws&&ws.readyState===1) ws.send(JSON.stringify({switch_session:sid})); }
-function newChat(){ setSessionId(null); _pandoEmit('session_switch',{session_id:null}); currentAssistantRow=null; assistantText=''; roundTools=[]; $('msgs').innerHTML=''; hideCtx(); go('home'); loadSessions(); if(ws&&ws.readyState===1) ws.send(JSON.stringify({switch_session:null})); }
+async function switchSession(sid){ go('chat'); $('msgs').innerHTML=''; setSessionId(sid); _pendingRecall=null; _pandoEmit('session_switch',{session_id:sid}); await loadHistory(sid); if(ws&&ws.readyState===1) ws.send(JSON.stringify({switch_session:sid})); }
+function newChat(){ setSessionId(null); _pendingRecall=null; _pandoEmit('session_switch',{session_id:null}); currentAssistantRow=null; assistantText=''; roundTools=[]; $('msgs').innerHTML=''; hideCtx(); go('home'); loadSessions(); if(ws&&ws.readyState===1) ws.send(JSON.stringify({switch_session:null})); }
 function setSessionId(id){ currentSessionId=id; if(id) localStorage.setItem('currentSessionId',id); else localStorage.removeItem('currentSessionId'); }
 
 function showEmpty(){ const m=$('msgs'); if(m.children.length) return; const e=document.createElement('div'); e.className='empty';
@@ -915,6 +929,7 @@ async function loadHistory(sid){
       if(x.role==='user') row=addUser(x.content, (x.metadata&&x.metadata.attachments)||[]);
       else if(x.role==='assistant'){ row=addAssistant(x.content);
         const md=x.metadata||{};
+        if(md.recall && !md.recall.startsWith('【context injected】')) assistantChipRow(row).insertBefore(makeRecallChip(md.recall), assistantChipRow(row).firstChild);
         // 思考或工具任一有,就重画 chip(工具-only 轮此前漏画);tools 随 metadata 落库
         if(md.thinking || (md.tools&&md.tools.length)) addThinking(row, md.thinking, md.tools||null, md.duration_ms);
         addToolbar(row,x.content,x.metadata);
@@ -959,6 +974,8 @@ function updateAssistant(row,text){ const t=row.querySelector('.a-text[data-role
 function fmtDur(ms){ return ms ? Math.round(ms/1000)+'s' : ''; }
 function fmtThinkCount(n){ return n>=1000 ? (n/1000).toFixed(1)+'k' : String(n); }
 const IC_WRENCH='<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 7l-1.5-1.5a3 3 0 0 0-4 0l-.5.5 5.5 5.5.5-.5a3 3 0 0 0 0-4zM4 20l4-1 8-8-3-3-8 8-1 4z"></path></svg>';
+const IC_RECALL='<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#D97757" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 3a6 6 0 0 0-3 11v3h6v-3a6 6 0 0 0-3-11z" transform="translate(3 1)"></path></svg>';
+let _pendingRecall=null;
 // thinking 收起态 pill(Pando Kit chip 规格:象牙底不描边 + 图标 + 「思考 · 1.2k ▸」纯文本——
 // 原型 CHAT 屏这处没跟 Kit 同步,按用户裁决以 Kit 为准,忽略原型)
 // → 移动端点开底部弹窗(不打断正文阅读、不跳滚动);桌面端(≥880px)在原文处就地展开,不弹层
@@ -1010,6 +1027,19 @@ function openThinkSheet(thinking, tools, durationMs){
   $('think-ov').classList.add('open');
 }
 function closeThinkSheet(){ $('think-ov').classList.remove('open'); }
+// 记忆召回 chip(灯泡图标 + 「记忆」标签,点开底部 sheet 看完整召回上下文)
+function makeRecallChip(ctx){
+  const chip=document.createElement('button'); chip.className='think-pill';
+  chip.innerHTML=`${IC_RECALL}<span>记忆</span>`;
+  chip.onclick=()=>openRecallSheet(ctx);
+  return chip;
+}
+function openRecallSheet(ctx){
+  $('recall-body').textContent=ctx;
+  $('recall-meta').textContent=(ctx.length/1000).toFixed(1)+'k';
+  $('recall-ov').classList.add('open');
+}
+function closeRecallSheet(){ $('recall-ov').classList.remove('open'); }
 function addUsage(row,meta){
   const parts=[]; if(meta.duration_ms) parts.push((meta.duration_ms/1000).toFixed(1)+'s');
   if(meta.cost_usd) parts.push('$'+Number(meta.cost_usd).toFixed(4));
@@ -1102,7 +1132,9 @@ function connect(){
     switch(m.type){
       case 'hello': _hasMemory=!!m.has_memory; _syncArchivePref(); if($('s-automem')) $('s-automem').classList.toggle('disabled',!_hasMemory); break;
       case 'session': setSessionId(m.session_id); break;
-      case 'memory_recall': _pandoEmit('memory_recall',m); break;   // 召回显示交给插件(chip);注入在服务端已完成
+      case 'memory_recall':
+        if(m.context && !m.context.startsWith('【context injected】')) _pendingRecall=m.context;
+        _pandoEmit('memory_recall',m); break;
       case 'thinking': break;
       case 'tool_use': roundTools.push({tool:m.tool,preview:m.input_preview}); showTyping(); break;
       case 'text':
@@ -1112,6 +1144,7 @@ function connect(){
       case 'result':
         removeTyping();
         if(m.text && !assistantText){ currentAssistantRow=addAssistant(m.text); assistantText=m.text; }
+        if(currentAssistantRow && _pendingRecall){ assistantChipRow(currentAssistantRow).insertBefore(makeRecallChip(_pendingRecall), assistantChipRow(currentAssistantRow).firstChild); _pendingRecall=null; }
         if(currentAssistantRow) addThinking(currentAssistantRow, m.thinking, roundTools, m.duration_ms);
         if(currentAssistantRow && assistantText) addToolbar(currentAssistantRow, assistantText, m.stopped?null:{cost_usd:m.cost_usd,duration_ms:m.duration_ms,usage:m.usage});
         if(currentAssistantRow && m.stopped) addStopped(currentAssistantRow);

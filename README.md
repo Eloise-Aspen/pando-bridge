@@ -247,6 +247,19 @@ python examples/memory_stub.py                        # 127.0.0.1:8780
 # 然后用 MEMORY_SERVICE_URL=http://127.0.0.1:8780 把 bridge 指过去
 ```
 
+### 召回透出（Recall Transparency）
+
+当记忆服务的 `/recall` 返回非空 context 时，内核会：
+
+1. 向前端广播 `memory_recall` WebSocket 帧（`{type:"memory_recall", context:"..."}"`）；
+2. 将本轮回复的 `metadata.recall` 字段写入数据库（与 thinking/tools 同结构）。
+
+前端收到 `memory_recall` 帧后，在助手回复气泡的 chip 行渲染一枚「记忆」胶囊（灯泡图标），
+点击打开底部弹层查看完整召回上下文。历史加载时从 `metadata.recall` 恢复该 chip。
+
+若未配置记忆服务（`NullMemoryProvider`），`/recall` 不被调用、不发 `memory_recall` 帧、
+不写 `metadata.recall`——前端零 chip、零报错，完全向后兼容。
+
 ---
 
 ## 插件钩子 API
@@ -577,6 +590,21 @@ end-to-end:
 python examples/memory_stub.py                        # 127.0.0.1:8780
 # then point the bridge at it via MEMORY_SERVICE_URL=http://127.0.0.1:8780
 ```
+
+### Recall Transparency
+
+When the memory service's `/recall` returns a non-empty context, the core:
+
+1. Broadcasts a `memory_recall` WebSocket frame (`{type:"memory_recall", context:"..."}`);
+2. Persists `metadata.recall` alongside the assistant reply in the database.
+
+The frontend renders a "memory" chip (lightbulb icon) in the assistant's chip row on
+receiving `memory_recall`; clicking it opens a bottom sheet with the full recall context.
+When loading history, the chip is restored from `metadata.recall`.
+
+With no memory service configured (`NullMemoryProvider`), `/recall` is never called,
+no `memory_recall` frame is sent, no `metadata.recall` is written — the frontend shows
+zero chips with zero errors (fully backward-compatible).
 
 ---
 
