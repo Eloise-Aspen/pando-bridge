@@ -45,6 +45,14 @@
   .pd-scroll{-webkit-overflow-scrolling:touch;scrollbar-width:none}
   .blink{animation:bk 1.05s steps(1) infinite}@keyframes bk{50%{opacity:0}}
   .spin{animation:sp .7s linear infinite}@keyframes sp{to{transform:rotate(360deg)}}
+  /* 启动屏(Pando Kit「Splash Screen」):纸白底+琥珀柔光 logo+品牌名,加载完淡出。
+     背景走 --bg 变量,未来深色/主题包自动跟随;淡出后节点移除不留命中面 */
+  #splash{position:fixed;inset:0;z-index:9999;background:var(--bg,#FAF9F5);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;transition:opacity .45s ease}
+  #splash.hide{opacity:0;pointer-events:none}
+  .splash-glow{width:96px;height:96px;border-radius:50%;background:radial-gradient(circle,rgba(226,170,88,.30),rgba(226,170,88,0) 72%);display:flex;align-items:center;justify-content:center;animation:splash-aura 2.4s ease-in-out infinite}
+  .splash-mark{width:74px;height:74px;border-radius:50%;background:#fff;opacity:.92;box-shadow:0 0 26px rgba(226,170,88,.35);display:flex;align-items:center;justify-content:center}
+  .splash-name{font:600 28px var(--ui);color:var(--text,#141413);letter-spacing:.03em}
+  @keyframes splash-aura{0%,100%{transform:scale(1);opacity:.75}50%{transform:scale(1.06);opacity:1}}
   @media (prefers-reduced-motion:reduce){.blink,.spin{animation:none}}
   svg{display:block}
 
@@ -388,6 +396,24 @@
 </style>
 </head>
 <body>
+<!-- 启动屏:静态内联(先于主脚本绘制);load 后保底展示 600ms 再淡出并移除 -->
+<div id="splash">
+  <div class="splash-glow"><div class="splash-mark"><svg width="44" height="44" viewBox="0 0 92 91" fill="none"><line x1="75.89" y1="45.4" x2="15.89" y2="45.39" stroke="#D97757" stroke-width="8"></line><line y1="-3.5" x2="24" y2="-3.5" transform="matrix(-4.37114e-08 -1 -1 4.37114e-08 42 78)" stroke="#D97757" stroke-width="7"></line><path d="M44.9746 90.7773C42.9926 86.3882 41.8887 81.5175 41.8887 76.3887C41.8887 74.0134 42.1272 71.6937 42.5781 69.4512C49.3588 58.2688 58.7688 48.8588 69.9512 42.0781C72.1937 41.6272 74.5134 41.3887 76.8887 41.3887C82.0175 41.3887 86.8882 42.4926 91.2773 44.4746C69.1937 51.269 51.769 68.6937 44.9746 90.7773Z" fill="#D97757"></path><line y1="-3.5" x2="24" y2="-3.5" transform="matrix(4.37114e-08 1 1 -4.37114e-08 49.2773 12.7773)" stroke="#D97757" stroke-width="7"></line><path d="M46.3027 0C48.2847 4.38913 49.3887 9.25989 49.3887 14.3887C49.3887 16.764 49.1502 19.0837 48.6992 21.3262C41.9186 32.5086 32.5086 41.9186 21.3262 48.6992C19.0837 49.1502 16.764 49.3887 14.3887 49.3887C9.25989 49.3887 4.38913 48.2847 0 46.3027C22.0837 39.5084 39.5084 22.0837 46.3027 0Z" fill="#D97757"></path></svg></div></div>
+  <span class="splash-name">Pando</span>
+</div>
+<script>
+(function(){ // 独立于主脚本:主脚本异常也不能把用户锁在启动屏上
+  var t0=Date.now();
+  function dismiss(){
+    var s=document.getElementById('splash'); if(!s) return;
+    var wait=Math.max(0,600-(Date.now()-t0));
+    setTimeout(function(){ s.classList.add('hide'); setTimeout(function(){ s.remove(); },500); },wait);
+  }
+  if(document.readyState==='complete') dismiss();
+  else window.addEventListener('load',dismiss);
+  setTimeout(dismiss,4000); // 兜底:load 事件异常缺席也强制放行
+})();
+</script>
 <div class="app" id="app">
 
   <!-- ============ HOME ============ -->
