@@ -1448,7 +1448,12 @@ async function boot(){
   fetch('/memory-admin/memory/stats').then(r=>r.ok?r.json():null).catch(()=>null).then(s=>{
     const parts=[new Date().toLocaleDateString('zh-CN',{year:'numeric',month:'2-digit',day:'2-digit'})];
     if(s&&s.count!=null) parts.push(`${s.count} 条记忆`);
-    if(s&&s.earliest_date){ const days=Math.floor((Date.now()-new Date(s.earliest_date))/864e5)+1; if(days>0) parts.push(`在线 ${days} 天`); }
+    // 「在线 N 天」锚到关系起点写死常量 2026-05-04（须与 bridge/config.py 的
+    // RELATIONSHIP_ANCHOR_DATE 一致），不再用被脏数据带偏的 earliest_date。用本地日历日
+    // 相减（非 UTC），与后端 days_together 同口径，保证同一天欢迎屏与注入不出现两个数。
+    { const A=new Date(2026,4,4), N=new Date();
+      const days=Math.round((new Date(N.getFullYear(),N.getMonth(),N.getDate())-A)/864e5)+1;
+      if(days>0) parts.push(`在线 ${days} 天`); }
     $('hero-sub').textContent=parts.join(' · ');
   });
   ['home-asst','chat-asst'].forEach(id=>$(id).textContent=ASST);
