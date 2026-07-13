@@ -110,6 +110,12 @@ PowerShell 写 `$env:BRIDGE_PORT = "8899"; python run.py`——或改上面 `run
 
 见 [`.env.example`](.env.example) 了解每一个配置开关。
 
+> **WS 消息可选字段**——发往 `/ws` 的消息体除 `text` 外可带两个可选字段：`model`
+> （模型别名或全名，透传 CLI `--model`）与 `effort`（推理强度，取值
+> `low`/`medium`/`high`/`xhigh`/`max`，透传 CLI `--effort`）。两者都向后兼容：省略或
+> 传空即回落 CLI 默认；`effort` 传非白名单值时服务端忽略并告警，不影响会话（旧版服务端
+> 直接忽略该字段）。
+
 ---
 
 ## 用量额度显示
@@ -500,6 +506,13 @@ phone — which is the whole point — see
 [📱 Reach it from your phone](#-reach-it-from-your-phone).
 
 See [`.env.example`](.env.example) for every configuration knob.
+
+> **Optional WS message fields** — besides `text`, a message sent to `/ws` may carry two
+> optional fields: `model` (an alias or full name, passed through to the CLI `--model`) and
+> `effort` (reasoning effort, one of `low`/`medium`/`high`/`xhigh`/`max`, passed to the CLI
+> `--effort`). Both are backward-compatible: omit or send empty to fall back to the CLI
+> default; an out-of-whitelist `effort` is ignored server-side with a warning and does not
+> affect the session (older servers simply ignore the field).
 
 ---
 
