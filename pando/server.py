@@ -342,10 +342,21 @@ def create_app(config) -> FastAPI:
 
     claude_exe = _cfg(config, "CLAUDE_EXE")
     claude_cwd = _cfg(config, "CLAUDE_CWD")
-    data_dir: Path = Path(_cfg(config, "DATA_DIR"))
+    # DATA_DIR 默认 ./data（feat-memory-onboarding 关键裁决④）：首跑不配也能起，
+    # chat.db 落在当前工作目录的 ./data 下；启动横幅会打印其绝对路径，避免"数据存哪了"的困惑。
+    data_dir: Path = Path(_cfg(config, "DATA_DIR", "./data"))
     memory_service_url = _cfg(config, "MEMORY_SERVICE_URL", "") or ""
     memory_service_timeout = _cfg(config, "MEMORY_SERVICE_TIMEOUT", 10.0)
-    plugin_paths = _cfg(config, "PLUGINS", []) or []
+    # list() 拷一份，避免下面 append 记忆插件时改到调用方传入的原列表。
+    plugin_paths = list(_cfg(config, "PLUGINS", []) or [])
+
+    # 自动启用记忆插件（feat-memory-onboarding 关键裁决①，修行为不只修文档）：
+    # 设了 MEMORY_SERVICE_URL（非空）即把 MemoryPlugin 追加进插件列表——否则只配 URL、
+    # 记忆注入钩子根本没挂载，聊天里静默无记忆且零报错（陌生人迁入的放弃点）。
+    # 已在 PLUGINS 显式声明则不重复追加；未设 URL 不启用（纯终端保持零变化，向后兼容）。
+    _MEMORY_PLUGIN_PATH = "pando.plugins.memory.MemoryPlugin"
+    if memory_service_url and _MEMORY_PLUGIN_PATH not in plugin_paths:
+        plugin_paths.append(_MEMORY_PLUGIN_PATH)
     archive_interval = _cfg(config, "ARCHIVE_INTERVAL", 10 * 60)
     static_dir = Path(_cfg(config, "STATIC_DIR", _PACKAGE_STATIC_DIR))
     # 前端插件目录（feat-frontend-plugin-arch）：调用方指向自己的插件包目录后，
@@ -711,6 +722,12 @@ def create_app(config) -> FastAPI:
             lan_ip = _detect_lan_ip()
             if lan_ip:
                 print(f"  LAN access:   http://{lan_ip}:{banner_port}", flush=True)
+            # 数据目录绝对路径（feat-memory-onboarding④）：让首跑用户一眼看到 chat.db 落在哪。
+            print(f"  data dir:     {data_dir.resolve()}", flush=True)
+            # 记忆插件启用提示（feat-memory-onboarding①）：配了 URL 就打一行，静默降级从此可见；
+            # 未配则不打，纯终端零噪音。
+            if _has_memory:
+                print(f"  memory plugin enabled → {memory_service_url}", flush=True)
             print("  📱 want it on your phone? see README → Reach it from your phone\n", flush=True)
         except Exception:
             pass
