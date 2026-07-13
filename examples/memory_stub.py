@@ -1,16 +1,26 @@
-"""极简参考记忆服务 —— 演示 HttpMemoryProvider 的 4 端点契约。
+"""极简参考记忆服务 —— 演示 HttpMemoryProvider 的 4 端点契约 + 可选管理端点。
 
-纯内存 dict 存储，无向量、无 LLM，仅供理解契约 + 端到端冒烟测试。
-真实部署请换成你自己的记忆引擎（实现同样 4 个端点即可，任意语言/技术栈）。
+**定位**：契约参考实现，不是产品级记忆引擎。存储是一个 JSON 文件 + 朴素子串召回，
+无向量、无语义检索、无 LLM。真实部署请换成你自己的记忆引擎（实现同样端点即可，
+任意语言/技术栈）。
+
+**持久化**（feat-memory-onboarding 关键裁决②）：记忆落一个 JSON 文件到 `--data`
+指定的目录（默认 `./stub_data`），零新依赖。**重启不丢**——这是发布帖「基础记忆库」
+承诺成立的底线；召回仍是关键词/朴素匹配，如实注明，别指望它替代真正的向量检索。
 
 启动：
-    python example/memory_stub.py            # 默认 127.0.0.1:8780
-然后让 bridge 指向它：
-    MEMORY_SERVICE_URL=http://127.0.0.1:8780  python server.py
+    python examples/memory_stub.py                    # 默认 127.0.0.1:8780，数据落 ./stub_data
+    python examples/memory_stub.py --data ./mydata    # 自定义数据目录
+    python examples/memory_stub.py --port 8790         # 自定义端口
+然后让 bridge 指向它（配了 URL 就会自动启用记忆，见 README）：
+    MEMORY_SERVICE_URL=http://127.0.0.1:8780  python run.py
 """
 
+import argparse
+import json
 import os
 from datetime import datetime, timezone
+from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI, HTTPException
@@ -18,19 +28,64 @@ from pydantic import BaseModel
 
 app = FastAPI(title="memory-stub")
 
-# 进程内存储：每条记忆一个 dict {"id", "content", "created_at"}。重启即清空。
+# 进程内存储：每条记忆一个 dict {"id", "content", "created_at", (可选)"klass"}。
 # 用 dict 而非裸字符串，是为了给管理面(list/delete)提供稳定的 id——按下标删会因
 # 删除后下标平移而错删，稳定 id 才能让前端删对条目。
+# 这份列表是「热副本」，每次变更后 _save() 落盘；进程启动时 _load() 从盘读回。
 _MEMORIES: list[dict] = []
 _NEXT_ID = 1
 
+# 落盘路径。None = 未配置持久化（如 pytest 直接 import app 时），此时 _save()/_load()
+# 均为 no-op，测试保持内存态、互不干扰。_configure() 在 __main__ 里按 --data 设定它。
+_STORE_PATH: Path | None = None
 
-def _add_memory(content: str) -> dict:
-    """追加一条记忆并分配稳定自增 id。"""
+
+def _configure(data_dir: str | os.PathLike) -> None:
+    """设定数据目录并从盘加载已有记忆（进程启动时调用一次）。"""
+    global _STORE_PATH
+    d = Path(data_dir)
+    d.mkdir(parents=True, exist_ok=True)
+    _STORE_PATH = d / "memories.json"
+    _load()
+
+
+def _load() -> None:
+    """从 JSON 文件读回记忆与自增游标；文件不存在则保持空态。"""
+    global _MEMORIES, _NEXT_ID
+    if not _STORE_PATH or not _STORE_PATH.exists():
+        return
+    data = json.loads(_STORE_PATH.read_text(encoding="utf-8"))
+    _MEMORIES = data.get("memories", [])
+    # 游标取「已存最大 id + 1」，即便文件里 next_id 缺失也不会分配到重复 id。
+    _NEXT_ID = max((m["id"] for m in _MEMORIES), default=0) + 1
+
+
+def _save() -> None:
+    """原子落盘（先写 .tmp 再 replace），避免写一半崩了留下半个坏文件。"""
+    if not _STORE_PATH:
+        return
+    payload = json.dumps({"memories": _MEMORIES, "next_id": _NEXT_ID}, ensure_ascii=False, indent=2)
+    tmp = _STORE_PATH.with_suffix(".tmp")
+    tmp.write_text(payload, encoding="utf-8")
+    tmp.replace(_STORE_PATH)
+
+
+def _add_memory(content: str, klass: str | None = None, origin_date: str | None = None) -> dict:
+    """追加一条记忆并分配稳定自增 id，随后落盘。
+
+    origin_date 若给出则作为 created_at（迁入历史记忆时保留原始时间）；klass 若给出则附带。
+    """
     global _NEXT_ID
-    mem = {"id": _NEXT_ID, "content": content, "created_at": datetime.now(timezone.utc).isoformat()}
+    mem = {
+        "id": _NEXT_ID,
+        "content": content,
+        "created_at": origin_date or datetime.now(timezone.utc).isoformat(),
+    }
+    if klass:
+        mem["klass"] = klass
     _NEXT_ID += 1
     _MEMORIES.append(mem)
+    _save()
     return mem
 
 
@@ -45,6 +100,13 @@ class MessagesIn(BaseModel):
 
 class ArchiveIn(BaseModel):
     raw: str
+
+
+class ImportItem(BaseModel):
+    """迁入一条记忆。content 必填；klass/origin_date 可选（真实引擎可据此分层/排序）。"""
+    content: str
+    klass: str | None = None
+    origin_date: str | None = None
 
 
 @app.post("/session_context")
@@ -92,12 +154,10 @@ def archive_prompt(inp: MessagesIn) -> dict:
 def archive(inp: ArchiveIn) -> dict:
     """v2：接收模型针对 archive_prompt 写出的原始 JSON 文本，自行解析 worthy/content 后落库
     （真实实现请做更健壮的 JSON 提取，这里只演示契约，不做容错兜底）。"""
-    import json as _json
-
     text = inp.raw.strip()
     try:
-        data = _json.loads(text)
-    except _json.JSONDecodeError:
+        data = json.loads(text)
+    except json.JSONDecodeError:
         return {"stored": 0}
     if not data.get("worthy"):
         return {"stored": 0}
@@ -116,6 +176,28 @@ def archive(inp: ArchiveIn) -> dict:
 # /memory-admin/memory/stats → 代理去掉前缀 → 命中本服务 /memory/stats）。
 # 路径按生产 memory_service 的 /memory/* 形状对齐;真实实现换成自己的存储即可。
 # ---------------------------------------------------------------------------
+
+
+@app.post("/memory/import")
+def memory_import(items: list[ImportItem]) -> dict:
+    """批量迁入历史记忆（feat-memory-onboarding 关键裁决③）。
+
+    请求体 = `[{content, klass?, origin_date?}, ...]`；逐条写入，content 太短(<4)跳过。
+    返回 `{"stored": 本次成功条数, "skipped": 跳过条数, "total": 库内总条数}`。
+
+    **契约定位**：可选管理端点，provider 可不实现、前端不依赖——它只服务「命令行把
+    已有记忆搬进来」这一次性迁入场景（README「把已有记忆搬进来」小节给了可照抄的 curl）。
+    """
+    stored = 0
+    skipped = 0
+    for it in items:
+        content = (it.content or "").strip()
+        if len(content) < 4:
+            skipped += 1
+            continue
+        _add_memory(content, klass=it.klass, origin_date=it.origin_date)
+        stored += 1
+    return {"stored": stored, "skipped": skipped, "total": len(_MEMORIES)}
 
 
 @app.get("/memory/stats")
@@ -147,10 +229,11 @@ def memory_search(q: str = "") -> dict:
 
 @app.delete("/memory/{mem_id}")
 def memory_delete(mem_id: int) -> dict:
-    """按稳定 id 删除单条;不存在返回 404。"""
+    """按稳定 id 删除单条;不存在返回 404。删除后落盘。"""
     for i, m in enumerate(_MEMORIES):
         if m["id"] == mem_id:
             _MEMORIES.pop(i)
+            _save()
             return {"deleted": 1, "id": mem_id}
     raise HTTPException(status_code=404, detail="memory not found")
 
@@ -161,5 +244,15 @@ def health() -> dict:
 
 
 if __name__ == "__main__":
-    port = int(os.environ.get("MEMORY_STUB_PORT", "8780"))
-    uvicorn.run(app, host="127.0.0.1", port=port)
+    parser = argparse.ArgumentParser(description="Pando 参考记忆服务（文件持久化 stub）")
+    parser.add_argument("--data", default="./stub_data",
+                        help="记忆 JSON 文件所在目录（默认 ./stub_data，重启保留）")
+    parser.add_argument("--port", type=int,
+                        default=int(os.environ.get("MEMORY_STUB_PORT", "8780")),
+                        help="监听端口（默认 8780，或环境变量 MEMORY_STUB_PORT）")
+    args = parser.parse_args()
+
+    _configure(args.data)
+    print(f"  memory-stub data → {Path(args.data).resolve() / 'memories.json'} "
+          f"({len(_MEMORIES)} memories loaded)", flush=True)
+    uvicorn.run(app, host="127.0.0.1", port=args.port)
