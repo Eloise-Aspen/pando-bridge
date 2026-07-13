@@ -63,9 +63,10 @@ cd pando-bridge
 pip install -e .
 ```
 
-写一个 `run.py`（`CLAUDE_CWD` 必须是一个已经存在的目录，建议指向你想让 Claude 工作的
-项目目录；不配 `MEMORY_SERVICE_URL` 就是纯终端模式，默认 `NullMemoryProvider` 什么记忆
-都不做）：
+仓库带了一份 [`run.example.py`](run.example.py)，复制成 `run.py` 改一行 `CLAUDE_CWD`
+就能跑（`cp run.example.py run.py`，Windows 用 `copy`）。它长这样（`CLAUDE_CWD` 必须是
+一个已经存在的目录，建议指向你想让 Claude 工作的项目目录；不配 `MEMORY_SERVICE_URL`
+就是纯终端模式，默认 `NullMemoryProvider` 什么记忆都不做）：
 
 ```python
 import os
@@ -169,6 +170,11 @@ Pando 是个*移动*网关——这一节带你从"能在 `127.0.0.1` 上跑"走
 **聊天没问题**，但浏览器把 PWA 安装、通知、麦克风这类能力限制在 HTTPS 安全上下文里，
 纯 HTTP 用不了。临时测试够用，正经用走 Tailscale serve。
 
+> **打不开 / 报 `ERR_SSL_PROTOCOL_ERROR`？** 手机浏览器（尤其配了 HTTPS-Only 模式的）常把
+> 裸地址**自动升级成 `https://`**，而 Pando 只跑明文 HTTP，握手失败就是这个错。在地址栏**显式
+> 输入 `http://`**（`http://192.168.x.x:8765`），别让浏览器补全。反复被升级就把该站点从
+> HTTPS-Only 里排除，或直接改用 Tailscale serve 走真 HTTPS。
+
 ### ⚠️ 安全
 
 Pando **没有任何认证**——能连上端口的人就能驱动你机器上 `CLAUDE_CWD` 里的 `claude`
@@ -242,6 +248,12 @@ spawn 时翻译为 `--allowedTools` / `--disallowedTools` CLI 参数。
   HTTP 调用。任何网络/解析错误**静默降级**（返回 `""` / `None` / `{"stored": 0}`），
   绝不阻塞聊天。
 
+**只要在 config 里设了非空 `MEMORY_SERVICE_URL`，记忆就自动生效**——除了 HTTP 调用，
+内核还会自动挂载内置的 `MemoryPlugin`（做上下文/召回注入的钩子），你**不必**再手动往
+`PLUGINS` 里声明它。启动时横幅会打一行 `memory plugin enabled → <url>`，一眼确认记忆已接上。
+（想手动控制加载顺序、或与自定义插件混用，仍可在 `PLUGINS` 里显式声明 `MemoryPlugin`，
+不会重复挂载——这属于高级用法，见「插件钩子 API」。）
+
 你的记忆服务可以用任何语言/技术栈写，只需回应这四个端点（v2 契约）：
 
 ```
@@ -267,8 +279,50 @@ POST {url}/archive          {"raw": str}                          -> {"stored": 
 [`examples/memory_stub.py`](examples/memory_stub.py)——通读它就能端到端理解契约：
 
 ```bash
-python examples/memory_stub.py                        # 127.0.0.1:8780
+python examples/memory_stub.py                        # 127.0.0.1:8780，数据落 ./stub_data
 # 然后用 MEMORY_SERVICE_URL=http://127.0.0.1:8780 把 bridge 指过去
+```
+
+参考 stub 把记忆落到 `--data` 目录的一个 JSON 文件（默认 `./stub_data`），**重启不丢**；
+召回是朴素子串匹配，够跑通契约、够做「基础记忆库」，但不是向量检索——真实产品请换成你自己的引擎。
+
+### 把已有记忆搬进来
+
+想让 AI「接着上次」——把手头的 `CLAUDE.md`、笔记、旧记录里的事实迁进记忆库。仓库带了
+一个零依赖的导入脚本 [`examples/import_md.py`](examples/import_md.py)，把一整个文件夹的
+Markdown 一次导入：
+
+```bash
+python examples/memory_stub.py                 # 先起记忆服务（另开一个终端）
+python examples/import_md.py ./my-notes         # 把 my-notes 里的 *.md 全导进去
+# -> 导入完成：写入 N 条，跳过 0 条。重启记忆服务后数据仍在。
+```
+
+脚本遍历文件夹里所有 `*.md`，解析可选的 frontmatter（认 `title` / `date` / `klass` /
+`importance` 几个键，缺了就用默认），批量写入。常用开关：
+
+| 开关 | 作用 |
+|---|---|
+| `--url http://127.0.0.1:8780` | 指向你的记忆服务（默认这个地址） |
+| `--klass daily` | 无 frontmatter `klass` 时的默认分类 |
+| `--split-sections` | 长文按 `##` 标题切成多条（默认整篇一条） |
+| `--dry-run` | 只解析打印、不写入，先看看会导入什么 |
+
+**拆分建议：一事一条。** 别把一大篇塞成一条——按「一条独立事实/偏好/决定」拆开，召回才准
+（一条命中不会把无关内容一起拖出来）。长文用 `--split-sections` 按 `##` 自动切，或自己拆成
+一段一句的小文件。**Claude Code 的 auto-memory 文件**天生就是「带 frontmatter 的 Markdown」，
+把那个 memory 文件夹直接指给脚本即可，无需额外处理。
+
+> 脚本只认「通用 Markdown + 简单 frontmatter」，**不替你解析任意平台的导出格式**（如 claude.ai
+> 的对话导出，格式多变）——那类内容先整理成上面的形状再导。
+
+底层就是一个**可选管理端点** `POST /memory/import`（provider 可不实现、前端不依赖）。想手动/在
+别的语言里调用，请求体是个数组，每条 `{content 必填, klass? 可选, origin_date? 可选}`：
+
+```bash
+curl -X POST http://127.0.0.1:8780/memory/import -H "Content-Type: application/json" \
+  -d '[{"content": "偏好简洁直接的回答，不要寒暄。", "klass": "preference"}]'
+# -> {"stored": 1, "skipped": 0, "total": 1}
 ```
 
 ### 召回透出（Recall Transparency）
@@ -397,7 +451,9 @@ cd pando-bridge
 pip install -e .
 ```
 
-Create `run.py`:
+The repo ships a [`run.example.py`](run.example.py) — copy it to `run.py` and change the
+one `CLAUDE_CWD` line to run (`cp run.example.py run.py`, or `copy` on Windows). It looks
+like this:
 
 ```python
 import os
@@ -408,7 +464,7 @@ from pando import create_app
 app = create_app({
     "CLAUDE_EXE": "claude",                  # or an absolute path to the CLI
     "CLAUDE_CWD": "/path/to/your/project",   # must already exist — the directory you want Claude to work in
-    "DATA_DIR": "./data",                    # chat.db lives here
+    "DATA_DIR": "./data",                    # chat.db lives here (default is ./data too)
     # MEMORY_SERVICE_URL omitted -> NullMemoryProvider = pure terminal
 })
 
@@ -529,6 +585,13 @@ With the quickstart `run.py` binding `0.0.0.0`, devices on the same LAN can open
 install, no notifications, no microphone**. Good enough for a quick test from the
 couch; use Tailscale serve for the real thing.
 
+> **Won't load / `ERR_SSL_PROTOCOL_ERROR`?** Phone browsers (especially with HTTPS-Only
+> mode on) often **auto-upgrade** a bare address to `https://`, but Pando speaks plain HTTP,
+> so the handshake fails with exactly this error. Type the **explicit `http://`** in the
+> address bar (`http://192.168.x.x:8765`) and don't let the browser autocomplete it. If it
+> keeps upgrading, exclude the site from HTTPS-Only, or just switch to Tailscale serve for
+> real HTTPS.
+
 ### ⚠️ Security
 
 Pando ships **no authentication** — anyone who can reach the port can drive the
@@ -613,6 +676,14 @@ The core never implements memory — it talks to a provider that satisfies the
   calls to your external memory service. Any network/parse error **degrades silently**
   (returns `""` / `None` / `{"stored": 0}`) and never blocks the chat.
 
+**Setting a non-empty `MEMORY_SERVICE_URL` is all it takes to turn memory on** — besides
+the HTTP calls, the core also auto-mounts the built-in `MemoryPlugin` (the hook that does
+context/recall injection), so you **don't** have to declare it in `PLUGINS` by hand. The
+startup banner prints `memory plugin enabled → <url>` so you can confirm memory is wired
+at a glance. (You may still declare `MemoryPlugin` explicitly in `PLUGINS` to control load
+order or mix it with custom plugins — it won't be mounted twice — but that's advanced usage;
+see "Plugin Hook API".)
+
 Your memory service can be written in any language/stack; it only has to answer these
 four endpoints (v2 contract):
 
@@ -642,8 +713,55 @@ A minimal reference service (in-memory, no vectors, no LLM) lives in
 end-to-end:
 
 ```bash
-python examples/memory_stub.py                        # 127.0.0.1:8780
+python examples/memory_stub.py                        # 127.0.0.1:8780, data in ./stub_data
 # then point the bridge at it via MEMORY_SERVICE_URL=http://127.0.0.1:8780
+```
+
+The reference stub persists memories to a JSON file under its `--data` directory (default
+`./stub_data`), so **restarts don't lose data** — enough to be a "basic memory store." Recall
+is naive substring matching, not vector search; swap in your own engine for a real product.
+
+### Bring your existing memories in
+
+Want the AI to "pick up where you left off"? Migrate the facts in your `CLAUDE.md`, notes,
+or old records into the store. The repo ships a zero-dependency importer,
+[`examples/import_md.py`](examples/import_md.py), that ingests a whole folder of Markdown at
+once:
+
+```bash
+python examples/memory_stub.py                 # start the memory service (separate terminal)
+python examples/import_md.py ./my-notes         # import every *.md under my-notes
+# -> Done: stored N, skipped 0. Data survives a restart of the memory service.
+```
+
+It walks all `*.md` in the folder, parses optional frontmatter (recognizes `title` / `date` /
+`klass` / `importance`; defaults otherwise), and writes in batches. Common flags:
+
+| Flag | Effect |
+|---|---|
+| `--url http://127.0.0.1:8780` | Point at your memory service (this is the default) |
+| `--klass daily` | Default class when frontmatter has no `klass` |
+| `--split-sections` | Split long docs into one entry per `##` heading (default: whole file) |
+| `--dry-run` | Parse and print only, no writes — preview what would be imported |
+
+**Splitting tip: one fact per entry.** Don't cram a whole doc into a single entry — break it
+into discrete facts/preferences/decisions so recall stays precise (one hit won't drag in
+unrelated text). Use `--split-sections` to auto-split by `##`, or hand-split into small files.
+**Claude Code's auto-memory files** are already "Markdown with frontmatter," so just point the
+script at that memory folder — no extra prep.
+
+> The script only understands "generic Markdown + simple frontmatter"; it **won't parse
+> arbitrary export formats** (e.g. claude.ai conversation exports, whose format varies) — shape
+> that content into the form above first.
+
+Under the hood it's an optional admin endpoint, `POST /memory/import` (a provider may skip it;
+the frontend doesn't depend on it). To call it by hand or from another language, the body is an
+array of `{content (required), klass? , origin_date?}`:
+
+```bash
+curl -X POST http://127.0.0.1:8780/memory/import -H "Content-Type: application/json" \
+  -d '[{"content": "Prefers concise, direct answers with no preamble.", "klass": "preference"}]'
+# -> {"stored": 1, "skipped": 0, "total": 1}
 ```
 
 ### Recall Transparency
