@@ -20,6 +20,12 @@
 插件通过[文档化的钩子](#插件钩子-api)扩展行为。开箱即用、不配记忆服务时，Pando 就是一个
 干净的 Claude Code 远程终端。
 
+<p align="center">
+  <img src="docs/screenshots/welcome.png" alt="欢迎屏——在线天数与记忆条数 / Welcome screen with day counter and memory count" width="320">
+  &nbsp;&nbsp;
+  <img src="docs/screenshots/status.png" alt="状态页——记忆、用量限额与工具策略 / Status page with memory, usage quota and tool policy" width="320">
+</p>
+
 ---
 
 ## 为什么用 Pando？（vs. 官方远程访问）
