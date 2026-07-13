@@ -137,6 +137,23 @@ def _cfg(config, key: str, default=None):
     return getattr(config, key, default)
 
 
+# effort 白名单：对齐 CLI `--effort <low/medium/high/xhigh/max>` 档位。前端可随每条 WS
+# payload 下发可选 effort 字段；未选/空/非白名单值一律回落 CLI 默认（不追加 flag，零回归）。
+VALID_EFFORTS = ("low", "medium", "high", "xhigh", "max")
+
+
+def normalize_effort(effort):
+    """校验 effort 白名单。合法值原样返回；空/未选返回 None（不追加 flag）；
+    非法非空值返回 None 并 log 警告（含手工 WS 注入的任意类型，均不抛异常）。
+    纯函数，供 run_claude 复用与单测。"""
+    if not effort:
+        return None
+    if effort in VALID_EFFORTS:
+        return effort
+    log.warning("忽略非法 effort 值 %r（白名单：%s）", effort, "/".join(VALID_EFFORTS))
+    return None
+
+
 def _detect_lan_ip() -> str | None:
     """UDP connect 探测本机 LAN IP：不真正发包，只借内核路由表选出口地址。
     断网/无路由等任何失败返回 None，由调用方静默降级为只提示 localhost。"""
@@ -1086,6 +1103,9 @@ def create_app(config) -> FastAPI:
 
         if model:
             cmd += ["--model", model]
+        # effort 白名单校验（单一 choke point，所有调用方经 run_claude 汇入）：
+        # 非法/空值回落 CLI 默认（不追加 flag），非法值已在 normalize_effort 里 log 警告
+        effort = normalize_effort(effort)
         if effort:
             cmd += ["--effort", effort]
 

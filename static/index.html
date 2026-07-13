@@ -115,6 +115,14 @@
   .model-opt{padding:9px 12px;border-radius:7px;font:400 13.5px var(--ui);color:var(--dim);cursor:pointer}
   .model-opt.sel{background:var(--accent-bg);color:var(--accent-press);font-weight:500}
   .model-opt.custom{border-top:1px solid var(--line-soft);margin-top:2px;color:var(--faint)}
+  /* 自定义模型:点「自定义…」后本行原地展开内联输入(替代 window.prompt,根治 PWA 静默吞返回) */
+  .model-opt.custom.editing{display:flex;align-items:center;gap:6px;padding:6px 6px;cursor:default}
+  .custom-inp{flex:1;min-width:0;border:1px solid var(--line-strong);border-radius:6px;padding:6px 8px;font:400 13px var(--ui);color:var(--ink);background:var(--card);outline:none}
+  .custom-ok{flex-shrink:0;border:none;background:var(--accent);color:#fff;border-radius:6px;width:28px;height:28px;display:flex;align-items:center;justify-content:center;cursor:pointer}
+  /* effort 档位行:弹层底部五档 pill(+默认),当前档高亮 */
+  .eff-row{display:flex;flex-wrap:wrap;gap:4px;border-top:1px solid var(--line-soft);margin-top:4px;padding:8px 6px 4px}
+  .eff-pill{border:1px solid var(--line-strong);background:none;border-radius:9999px;padding:4px 9px;font:500 11.5px var(--ui);color:var(--dim);cursor:pointer;white-space:nowrap}
+  .eff-pill.sel{background:var(--accent-bg);color:var(--accent-press);border-color:transparent;font-weight:600}
   .send{width:38px;height:38px;flex-shrink:0;border-radius:50%;border:none;background:var(--accent);color:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:opacity .2s}
   /* 插件 composer 动作按钮:发送键左侧,同尺寸浅灰圆底 */
   .comp-act{width:38px;height:38px;flex-shrink:0;border-radius:50%;border:none;background:var(--track);color:var(--dim);cursor:pointer;display:flex;align-items:center;justify-content:center}
@@ -550,6 +558,14 @@ let allSessions = [], typingEl=null, lastMsgTime=null, view='home';
 let ASST='Claude';
 const MODELS = [['claude-fable-5','Fable 5'],['claude-opus-4-6','Opus 4.6'],['claude-sonnet-4-6','Sonnet 4.6'],['claude-haiku-4-5-20251001','Haiku 4.5']];
 const modelLabel = id => (MODELS.find(m=>m[0]===id)||['',id])[1] || id;
+// effort 档位（对齐 CLI --effort）：'' = 默认(不传 flag，回落 CLI 默认档，与现状零回归)。
+// 空态时输入区按钮只显模型；选了档才追加「· <档>」。持久化到 localStorage.defaultEffort。
+const EFFORTS = [['','默认'],['low','Low'],['medium','Medium'],['high','High'],['xhigh','XHigh'],['max','Max']];
+let currentEffort = localStorage.getItem('defaultEffort') || '';
+if(!EFFORTS.some(e=>e[0]===currentEffort)) currentEffort='';   // 容错:陈旧/非法持久化值回落默认
+const effortLabel = id => (EFFORTS.find(e=>e[0]===id)||['',''])[1];
+// 输入区按钮文案:「<模型>」或「<模型> · <档>」(默认档只显模型)
+const modelBtnLabel = () => modelLabel(currentModel) + (currentEffort ? ' · '+effortLabel(currentEffort) : '');
 
 /* ===== attachments ===== */
 const ATT_ALLOWED_EXT=['png','jpg','jpeg','gif','webp','pdf','txt','md','csv','json','log','py','js','ts','html','css','sh'];
@@ -591,7 +607,7 @@ function composerHTML(){
   return `<textarea id="input" rows="1" placeholder="写点什么…" onkeydown="onInputKey(event)" oninput="autoGrow(this)"></textarea>`+
     `<div class="comp-ctrl">`+
     `<button class="icon-btn lead" onclick="$('file-input').click()" aria-label="附件">${IC.attach}</button>`+
-    `<span class="model-slot"><button class="model-btn" id="model-btn" onclick="toggleModel(event)">${escHtml(modelLabel(currentModel))} ▾</button>`+
+    `<span class="model-slot"><button class="model-btn" id="model-btn" onclick="toggleModel(event)">${escHtml(modelBtnLabel())} ▾</button>`+
     `<div class="model-pop" id="model-pop" style="display:none"></div></span>`+
     // 插件动作按钮排在发送键左侧(设计稿:浅灰圆底,与发送键同尺寸)
     _pandoComposerActions.map(a=>`<button class="comp-act" onclick="_pandoComposerClick('${a.id}')" aria-label="${escHtml(a.title||a.id)}" title="${escHtml(a.title||a.id)}">${a.icon||''}</button>`).join('')+
@@ -615,16 +631,43 @@ function syncComposerRefs(){
 function renderModelPop(){
   const host = activeComposer(); const pop = host.querySelector('#model-pop'); if(!pop) return;
   pop.innerHTML = MODELS.map(([id,nm])=>`<div class="model-opt${id===currentModel?' sel':''}" onclick="selectModel('${id}')">${nm}</div>`).join('')
-    + `<div class="model-opt custom" onclick="selectCustomModel()">自定义…</div>`;
+    + `<div class="model-opt custom" id="custom-opt" onclick="selectCustomModel()">自定义…</div>`
+    // effort 档位行:选档保持弹层打开(仅更新高亮与按钮),便于连改;点模型/点外部才收起
+    + `<div class="eff-row">`+ EFFORTS.map(([id,nm])=>`<button class="eff-pill${id===currentEffort?' sel':''}" onclick="selectEffort('${id}',event)">${nm}</button>`).join('') +`</div>`;
 }
 function toggleModel(e){ e.stopPropagation(); const host=activeComposer(); const p=host.querySelector('#model-pop'); p.style.display = p.style.display==='none'?'block':'none'; }
 function selectModel(id){ applyModel(id); const host=activeComposer(); host.querySelector('#model-pop').style.display='none'; }
-function selectCustomModel(){ const host=activeComposer(); host.querySelector('#model-pop').style.display='none'; const id=(prompt('输入模型 id(经 CLI --model 透传):',currentModel)||'').trim(); if(id) applyModel(id); }
+// PWA 兼容:Android standalone 下 window.prompt() 静默返回 null。改为本行原地展开内联输入,
+// 回车/点✓提交,Esc/失焦收起——不依赖任何 prompt/alert 系 API。值原样透传 --model(信任 CLI 校验)。
+function selectCustomModel(){
+  const host=activeComposer(); const pop=host.querySelector('#model-pop'); if(!pop) return;
+  const opt=pop.querySelector('#custom-opt'); if(!opt) return;
+  opt.classList.add('editing'); opt.onclick=null;   // 展开后本行不再当按钮响应点击
+  opt.innerHTML = `<input class="custom-inp" id="custom-inp" placeholder="模型 id,回车确认" autocomplete="off" spellcheck="false">`
+    + `<button class="custom-ok" id="custom-ok" aria-label="确认">${IC.send}</button>`;
+  const inp=pop.querySelector('#custom-inp'), ok=pop.querySelector('#custom-ok');
+  inp.value = currentModel;
+  const commit=()=>{ const v=(inp.value||'').trim(); if(v) applyModel(v); pop.style.display='none'; };
+  inp.onkeydown=(e)=>{ e.stopPropagation(); if(e.key==='Enter'){ e.preventDefault(); commit(); } else if(e.key==='Escape'){ e.preventDefault(); renderModelPop(); } };
+  inp.onclick=(e)=>e.stopPropagation();
+  // 失焦收起(还原「自定义…」);延时让 ✓ 的 click 先落地,activeElement 判据避免误收
+  inp.onblur=()=>setTimeout(()=>{ if(document.activeElement!==inp && pop.querySelector('#custom-inp')) renderModelPop(); },150);
+  ok.onmousedown=(e)=>e.preventDefault();   // 阻止先 blur 收起,保证 click 能提交
+  ok.onclick=(e)=>{ e.stopPropagation(); commit(); };
+  inp.focus(); inp.select();
+}
+function selectEffort(id,e){ if(e) e.stopPropagation(); applyEffort(id); }
+function applyEffort(id){
+  currentEffort = EFFORTS.some(x=>x[0]===id) ? id : '';   // 只接受白名单档,异常回落默认
+  localStorage.setItem('defaultEffort', currentEffort);
+  document.querySelectorAll('#model-btn').forEach(b=>b.textContent=modelBtnLabel()+' ▾');
+  renderModelPop();   // 仅刷新高亮/按钮,不触碰 pop.display → 弹层保持打开
+}
 function applyModel(id){
-  if(!id) return;  // 无「默认」空态可选,忽略空值(自定义弹窗已在源头挡了空输入)
+  if(!id) return;  // 无「默认」空态可选,忽略空值(自定义输入已在源头挡了空输入)
   currentModel=id;
   localStorage.setItem('defaultModel', currentModel);
-  document.querySelectorAll('#model-btn').forEach(b=>b.textContent=modelLabel(currentModel)+' ▾');
+  document.querySelectorAll('#model-btn').forEach(b=>b.textContent=modelBtnLabel()+' ▾');
   renderModelPop();
 }
 document.addEventListener('click',e=>{ if(!e.target.closest('.model-slot')) document.querySelectorAll('.model-pop').forEach(p=>p.style.display='none');
@@ -1146,7 +1189,8 @@ function send(){
   maybeTimeDivider();
   addUser(text, ready.map(a=>a.name));
   currentAssistantRow=null; assistantText=''; roundTools=[];
-  const payload={text, model:currentModel||undefined};
+  // effort 始终随消息下发(含空串):空串让服务端把上一轮的档位复位回默认,不留粘性
+  const payload={text, model:currentModel||undefined, effort:currentEffort};
   if(ready.length) payload.attachments=ready.map(a=>a.path);
   _pandoEmit('send_payload',payload);   // 插件可就地改 payload(如语音模式加 voice_mode 标记)
   ws.send(JSON.stringify(payload));
@@ -1156,7 +1200,7 @@ function send(){
 function retryMsg(text, atts){
   if(busy||!ws||ws.readyState!==1||!text) return;
   currentAssistantRow=null; assistantText=''; roundTools=[];
-  const payload={text, model:currentModel||undefined};
+  const payload={text, model:currentModel||undefined, effort:currentEffort};
   _pandoEmit('send_payload',payload);
   ws.send(JSON.stringify(payload));
   setBusy(true); showTyping();
