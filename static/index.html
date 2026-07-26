@@ -296,6 +296,17 @@
   .conv-card .pv{font:400 13px var(--ui);color:var(--faint);margin-top:4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
   .conv-card .mt{font:400 11px var(--ui);color:var(--fainter);margin-top:7px}
 
+  /* ---- 会话操作 sheet(长按对话条目 → 改名/删除)---- */
+  /* 宿主条目关掉 iOS 长按的系统文本选择/预览气泡,否则系统手势与自定义长按抢触摸 */
+  .sitem,.conv-card{-webkit-touch-callout:none;-webkit-user-select:none;user-select:none}
+  .sess-act{padding:8px 12px calc(14px + var(--safe-bottom))}
+  .sess-act-btn{width:100%;display:flex;align-items:center;gap:12px;border:none;background:none;text-align:left;padding:14px 12px;border-radius:11px;color:var(--text);font:400 15px var(--ui);cursor:pointer}
+  .sess-act-btn:active{background:var(--surface)}
+  .sess-act-btn svg{flex-shrink:0;color:var(--icon);opacity:.8}
+  .sess-act-btn.danger,.sess-act-btn.danger svg{color:var(--danger-text);opacity:1}
+  .sess-rename{padding:16px 20px calc(18px + var(--safe-bottom))}
+  .sess-rename .hint{font:400 12px/1.55 var(--ui);color:var(--fainter);margin:9px 2px 16px}
+
   /* ---- toast ---- */
   /* 白底 toast(原型实况:非黑底) */
   .toast{position:absolute;left:50%;bottom:calc(96px + var(--safe-bottom));transform:translateX(-50%);background:var(--card);color:var(--text2);border:1px solid var(--e0-border);box-shadow:0 6px 18px rgba(31,30,29,.1);font:400 13px var(--ui);padding:10px 16px;border-radius:9999px;z-index:200;max-width:80%;white-space:nowrap;text-align:center;opacity:0;pointer-events:none;transition:opacity .2s}
@@ -571,6 +582,41 @@
     </div>
   </div>
 
+  <!-- ============ 会话操作 SHEET(长按对话条目,与思考弹窗同构)============ -->
+  <div class="sheet-ov" id="sess-ov" onclick="if(event.target===this)closeSessSheet()">
+    <div class="sheet">
+      <div class="sheet-grab"><div class="bar"></div></div>
+      <div class="sheet-hd think-sheet-hd">
+        <div class="tt-wrap"><span class="tt" id="sess-sheet-tt">对话</span></div>
+        <button class="icon-btn" onclick="closeSessSheet()" aria-label="关闭"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"></path></svg></button>
+      </div>
+      <div class="sess-act" id="sess-act-menu">
+        <button class="sess-act-btn" onclick="startRenameSession()"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 20h4l10-10a2.5 2.5 0 0 0-3.5-3.5L4.5 16.5z"></path><path d="M13.5 6.5l4 4"></path></svg>改名</button>
+        <button class="sess-act-btn danger" onclick="askDeleteSession()"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13"></path></svg>删除</button>
+      </div>
+      <div class="sess-rename" id="sess-rename" style="display:none">
+        <input class="set-input" id="sess-rename-input" placeholder="对话标题" maxlength="200" autocomplete="off" onkeydown="if(event.key==='Enter')saveRenameSession()">
+        <div class="hint">留空保存 = 恢复自动标题(取首条消息)</div>
+        <div class="confirm-btns">
+          <button class="btn-ghost" onclick="closeSessSheet()">取消</button>
+          <button class="btn-primary" onclick="saveRenameSession()">保存</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ 删除对话二次确认(与删除记忆同构)============ -->
+  <div class="confirm-ov" id="sess-del-ov" onclick="if(event.target===this)closeSessDelete()">
+    <div class="confirm-card">
+      <div class="confirm-tt">删除这个对话?</div>
+      <div class="confirm-sub">连同其中的全部消息一起删除,无法恢复。</div>
+      <div class="confirm-btns">
+        <button class="btn-ghost" onclick="closeSessDelete()">取消</button>
+        <button class="btn-danger-fill" onclick="confirmDeleteSession()">删除</button>
+      </div>
+    </div>
+  </div>
+
   <!-- ============ 删除记忆二次确认(居中弹窗,Pando Kit 备注要求)============ -->
   <div class="confirm-ov" id="confirm-ov" onclick="if(event.target===this)closeConfirm()">
     <div class="confirm-card">
@@ -813,6 +859,8 @@ function renderConversations(){
     const meta=`${wsl?escHtml(wsl)+' · ':''}${s.msg_count||0} 条 · ${fmtWhen(s.updated_at)}`;
     return `<div class="conv-card" onclick="switchSession('${s.id}')"><div class="body"><div class="tt">${title}</div>${pv?`<div class="pv">${pv}</div>`:''}<div class="mt">${meta}</div></div><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#C4C1B8" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0"><path d="M9 6l6 6-6 6"></path></svg></div>`;
   }).join('');
+  // 长按同侧栏:innerHTML 建完再逐张挂,索引与过滤后的 items 一一对应
+  [...list.children].forEach((el,i)=>attachLongPress(el,()=>openSessMenu(items[i].id)));
 }
 /* ===== context indicator ===== */
 const CTX_CAP_FALLBACK=200000;
@@ -1080,9 +1128,71 @@ function renderSessions(){
       // 会话所属工作目录(空/单席时不显示,保持既有观感)
       const wsl=WORKSPACES.length>1?wsLabel(s.cwd_key||''):'';
       el.innerHTML=`<div class="t">${escHtml(s.title||'新对话')}</div><div class="m">${wsl?escHtml(wsl)+' · ':''}${s.msg_count||0} 条 · ${fmtWhen(s.updated_at)}</div>`;
-      el.onclick=()=>switchSession(s.id); list.appendChild(el);
+      el.onclick=()=>switchSession(s.id); attachLongPress(el,()=>openSessMenu(s.id)); list.appendChild(el);
     });
   });
+}
+
+/* ===== 会话操作:长按 → 改名 / 删除 ===== */
+const LONGPRESS_MS=500;
+let _sessMenuId=null, _sessPendingDelete=null;
+// 长按识别用 pointer 事件计时:手指移出 10px 或提前抬手即作废(当成滑动/普通点击);
+// 触发后在捕获阶段吞掉紧随的 click,否则长按完还会顺手切进那个对话。
+// 桌面右键走同一入口,方便在电脑上验。
+function attachLongPress(el, fn){
+  let timer=null, sx=0, sy=0, fired=false;
+  const clear=()=>{ if(timer){ clearTimeout(timer); timer=null; } };
+  el.addEventListener('pointerdown', e=>{
+    if(e.pointerType==='mouse'&&e.button!==0) return;
+    clear(); fired=false; sx=e.clientX; sy=e.clientY;
+    timer=setTimeout(()=>{ timer=null; fired=true; try{ navigator.vibrate&&navigator.vibrate(12); }catch(_){} fn(); }, LONGPRESS_MS);
+  });
+  el.addEventListener('pointermove', e=>{ if(timer&&(Math.abs(e.clientX-sx)>10||Math.abs(e.clientY-sy)>10)) clear(); });
+  ['pointerup','pointercancel','pointerleave'].forEach(ev=>el.addEventListener(ev, clear));
+  el.addEventListener('click', e=>{ if(fired){ e.preventDefault(); e.stopPropagation(); fired=false; } }, true);
+  el.addEventListener('contextmenu', e=>{ e.preventDefault(); clear(); fn(); });
+}
+function openSessMenu(sid){
+  const s=allSessions.find(x=>x.id===sid); if(!s) return;
+  _sessMenuId=sid;
+  $('sess-sheet-tt').textContent=s.title||'新对话';
+  $('sess-act-menu').style.display=''; $('sess-rename').style.display='none';
+  $('sess-ov').classList.add('open');
+}
+function closeSessSheet(){ $('sess-ov').classList.remove('open'); _sessMenuId=null; }
+function startRenameSession(){
+  const s=allSessions.find(x=>x.id===_sessMenuId); if(!s) return;
+  $('sess-act-menu').style.display='none'; $('sess-rename').style.display='';
+  const inp=$('sess-rename-input'); inp.value=s.title||''; inp.focus(); inp.select();
+}
+// 保存改名:留空 = 后端清空手动标题、回退首条消息,返回体里的 title 就是该显示的生效标题
+async function saveRenameSession(){
+  const sid=_sessMenuId; if(!sid) return;
+  const title=$('sess-rename-input').value;
+  closeSessSheet();
+  try{
+    const r=await fetch(`/sessions/${sid}`,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({title})});
+    if(!r.ok) throw new Error(r.status);
+    const data=await r.json();
+    const s=allSessions.find(x=>x.id===sid); if(s) s.title=data.title;
+    renderSessions(); renderRecent(); renderConversations();
+    toast(data.manual?'已改名':'已恢复自动标题');
+  }catch(e){ console.error('renameSession',e); toast('改名失败'); }
+}
+function askDeleteSession(){ if(!_sessMenuId) return; _sessPendingDelete=_sessMenuId; $('sess-ov').classList.remove('open'); $('sess-del-ov').classList.add('open'); }
+function closeSessDelete(){ _sessPendingDelete=null; $('sess-del-ov').classList.remove('open'); }
+async function confirmDeleteSession(){
+  const sid=_sessPendingDelete; if(!sid) return;
+  closeSessDelete(); _sessMenuId=null;
+  try{
+    const r=await fetch(`/sessions/${sid}`,{method:'DELETE'});
+    if(!r.ok) throw new Error(r.status);
+    allSessions=allSessions.filter(x=>x.id!==sid);
+    renderSessions(); renderRecent(); renderConversations();
+    // 删的正是当前打开的对话:退回新建态,别停在一个已经不存在的会话上
+    if(sid===currentSessionId) newChat();
+    toast('已删除对话');
+  }catch(e){ console.error('deleteSession',e); toast('删除失败'); }
 }
 function renderRecent(){
   const box=$('recent-list'); box.innerHTML='';
