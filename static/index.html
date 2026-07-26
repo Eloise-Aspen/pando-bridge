@@ -306,6 +306,8 @@
   .sess-act-btn.danger,.sess-act-btn.danger svg{color:var(--danger-text);opacity:1}
   .sess-rename{padding:16px 20px calc(18px + var(--safe-bottom))}
   .sess-rename .hint{font:400 12px/1.55 var(--ui);color:var(--fainter);margin:9px 2px 16px}
+  /* 滑底加载哨兵:进视口即拉下一批,兼作「加载中」提示行 */
+  .sess-sentinel{padding:14px 12px 18px;text-align:center;font:400 12px var(--ui);color:var(--fainter);flex-shrink:0}
 
   /* ---- toast ---- */
   /* 白底 toast(原型实况:非黑底) */
@@ -861,6 +863,8 @@ function renderConversations(){
   }).join('');
   // 长按同侧栏:innerHTML 建完再逐张挂,索引与过滤后的 items 一一对应
   [...list.children].forEach((el,i)=>attachLongPress(el,()=>openSessMenu(items[i].id)));
+  // 搜索态也放哨兵:滑到底继续往后捞,搜索才不至于只在首屏 30 个里找
+  mountSessSentinel(list);
 }
 /* ===== context indicator ===== */
 const CTX_CAP_FALLBACK=200000;
@@ -1110,7 +1114,47 @@ function openSidebar(){ loadSessions(); $('overlay').classList.add('open'); $('d
 function closeSidebar(){ $('overlay').classList.remove('open'); $('drawer').classList.remove('open'); }
 
 /* ===== sessions ===== */
-async function loadSessions(){ try{ allSessions=await (await fetch('/sessions?limit=30')).json(); renderSessions(); }catch(e){ console.error('loadSessions',e); } renderRecent(); }
+/* 分页:首屏 30 个,滑到底再要下一批(裁决 4——不截断,老对话一路能翻到)。
+   _sessOffset 单调前进(不用 allSessions.length),这样即使某一批全被去重掉,
+   窗口也照样往前挪,不会原地打转。 */
+const SESS_PAGE=30;
+let _sessOffset=0, _sessAllLoaded=false, _sessLoadingMore=false;
+const _sessIO={};   // 列表容器 id → IntersectionObserver(每次渲染重挂)
+async function loadSessions(){
+  try{
+    allSessions=await (await fetch(`/sessions?limit=${SESS_PAGE}`)).json();
+    _sessOffset=allSessions.length; _sessAllLoaded=allSessions.length<SESS_PAGE;
+    renderSessions();
+  }catch(e){ console.error('loadSessions',e); }
+  renderRecent();
+}
+async function loadMoreSessions(){
+  if(_sessLoadingMore||_sessAllLoaded) return;
+  _sessLoadingMore=true;
+  try{
+    const more=await (await fetch(`/sessions?limit=${SESS_PAGE}&offset=${_sessOffset}`)).json();
+    if(!Array.isArray(more)||!more.length){ _sessAllLoaded=true; }
+    else{
+      _sessOffset+=more.length;
+      // 按 id 去重:删除会让整个窗口左移,同一条可能被两批都捞到
+      const seen=new Set(allSessions.map(s=>s.id));
+      allSessions=allSessions.concat(more.filter(s=>!seen.has(s.id)));
+      if(more.length<SESS_PAGE) _sessAllLoaded=true;
+    }
+    renderSessions(); renderConversations();
+  }catch(e){ console.error('loadMoreSessions',e); }
+  finally{ _sessLoadingMore=false; }
+}
+// 哨兵进视口即要下一批。列表每次重渲染都换了节点,故先断旧 observer 再挂新的;
+// 全部加载完就不再放哨兵(也就没有观察者常驻)
+function mountSessSentinel(list){
+  if(_sessIO[list.id]){ _sessIO[list.id].disconnect(); delete _sessIO[list.id]; }
+  if(_sessAllLoaded||!allSessions.length) return;
+  const sn=document.createElement('div'); sn.className='sess-sentinel'; sn.textContent='加载更早的对话…';
+  list.appendChild(sn);
+  const io=new IntersectionObserver(es=>{ if(es.some(e=>e.isIntersecting)) loadMoreSessions(); },{root:list,rootMargin:'160px'});
+  io.observe(sn); _sessIO[list.id]=io;
+}
 function sessBucket(ts){ if(!ts) return '更早'; const now=new Date(); const t0=new Date(ts).getTime();
   const start=new Date(now.getFullYear(),now.getMonth(),now.getDate()).getTime(); const day=864e5;
   if(t0>=start) return '今天'; if(t0>=start-day) return '昨天'; if(t0>=start-6*day) return '本周内'; return '更早'; }
@@ -1131,6 +1175,7 @@ function renderSessions(){
       el.onclick=()=>switchSession(s.id); attachLongPress(el,()=>openSessMenu(s.id)); list.appendChild(el);
     });
   });
+  mountSessSentinel(list);
 }
 
 /* ===== 会话操作:长按 → 改名 / 删除 ===== */
@@ -1188,6 +1233,7 @@ async function confirmDeleteSession(){
     const r=await fetch(`/sessions/${sid}`,{method:'DELETE'});
     if(!r.ok) throw new Error(r.status);
     allSessions=allSessions.filter(x=>x.id!==sid);
+    if(_sessOffset>0) _sessOffset--;   // 删掉一行,后面那批整体左移一位,下一页起点跟着退
     renderSessions(); renderRecent(); renderConversations();
     // 删的正是当前打开的对话:退回新建态,别停在一个已经不存在的会话上
     if(sid===currentSessionId) newChat();
