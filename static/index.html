@@ -133,6 +133,11 @@
   .eff-row{display:flex;flex-wrap:wrap;gap:4px;border-top:1px solid var(--line-soft);margin-top:4px;padding:8px 6px 4px}
   .eff-pill{border:1px solid var(--line-strong);background:none;border-radius:9999px;padding:4px 9px;font:500 11.5px var(--ui);color:var(--dim);cursor:pointer;white-space:nowrap}
   .eff-pill.sel{background:var(--accent-bg);color:var(--accent-press);border-color:transparent;font-weight:600}
+  /* 工作目录选择器(feat-bridge-workstation):只在「新建对话」态出现,选项来自 /health 白名单。
+     刻意复用 model-btn / model-pop 规格,不新造一套控件;自身不含任何自由输入口 */
+  .ws-slot{position:relative;flex-shrink:0}
+  .ws-slot .model-btn{color:var(--dim)}
+  .ws-slot .model-pop{left:auto;right:0}
   .send{width:38px;height:38px;flex-shrink:0;border-radius:50%;border:none;background:var(--accent);color:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:opacity .2s}
   /* 插件 composer 动作按钮:发送键左侧,同尺寸浅灰圆底 */
   .comp-act{width:38px;height:38px;flex-shrink:0;border-radius:50%;border:none;background:var(--track);color:var(--dim);cursor:pointer;display:flex;align-items:center;justify-content:center}
@@ -236,6 +241,18 @@
   .think-sheet-body{padding:16px 20px calc(28px + var(--safe-bottom));max-height:50vh;overflow:auto;font:400 14.5px/1.85 var(--ui);color:var(--dim);white-space:pre-wrap;word-break:break-word;-webkit-overflow-scrolling:touch}
   .think-sheet-body .tool-ln{font:400 12.5px/1.7 var(--ui);color:var(--dim);padding:8px 0 0;border-top:1px solid var(--line-soft);margin-top:10px}
   .think-sheet-body .tool-ln b{color:var(--accent-press);font-weight:600}
+  /* ---- diff sheet(feat-bridge-workstation:diff chip 点开的底部弹层,与思考弹窗同构)----
+     着色只按行首字符判定(+ 绿 / - 红 / @@ 灰),不引任何 diff 库;
+     颜色一律走既有 CSS 变量,主题包覆盖变量即可跟随深浅色 */
+  /* 增删两色单列成变量:深色皮肤(另案 spec)只需在 theme.css 覆盖这四个值,不必重写选择器。
+     不改任何既有全局 token(CONSTRAINTS),只新增 diff 专用项 */
+  :root{--diff-add:#3F7A42;--diff-add-bg:rgba(91,154,91,.13);--diff-del:var(--danger);--diff-del-bg:rgba(181,51,51,.10)}
+  .diff-body{padding:12px 0 calc(28px + var(--safe-bottom));max-height:56vh;overflow:auto;font:400 12.5px/1.65 var(--code);white-space:pre;-webkit-overflow-scrolling:touch}
+  .diff-body .l{padding:0 20px;min-height:1.65em}
+  .diff-body .diff-add{color:var(--diff-add);background:var(--diff-add-bg)}
+  .diff-body .diff-del{color:var(--diff-del);background:var(--diff-del-bg)}
+  .diff-body .diff-hunk{color:var(--dim);background:var(--track)}
+  .diff-body .diff-meta{color:var(--faint)}
   /* ---- 删除记忆二次确认(居中弹窗,非底部弹层——一次性判断,不需要抓手/拖拽语义) ---- */
   .confirm-ov{position:absolute;inset:0;background:rgba(20,20,19,.4);z-index:140;display:flex;align-items:center;justify-content:center;opacity:0;pointer-events:none;transition:opacity .2s}
   .confirm-ov.open{opacity:1;pointer-events:auto}
@@ -542,6 +559,18 @@
     </div>
   </div>
 
+  <!-- ============ DIFF SHEET(feat-bridge-workstation,与思考弹窗同构)============ -->
+  <div class="sheet-ov" id="diff-ov" onclick="if(event.target===this)closeDiffSheet()">
+    <div class="sheet">
+      <div class="sheet-grab"><div class="bar"></div></div>
+      <div class="sheet-hd think-sheet-hd">
+        <div class="tt-wrap"><span class="tt">变更</span><span class="meta" id="diff-meta"></span></div>
+        <button class="icon-btn" onclick="closeDiffSheet()" aria-label="关闭"><svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"></path></svg></button>
+      </div>
+      <div class="diff-body pd-scroll" id="diff-body"></div>
+    </div>
+  </div>
+
   <!-- ============ 删除记忆二次确认(居中弹窗,Pando Kit 备注要求)============ -->
   <div class="confirm-ov" id="confirm-ov" onclick="if(event.target===this)closeConfirm()">
     <div class="confirm-card">
@@ -595,6 +624,37 @@ const effortLabel = id => (EFFORTS.find(e=>e[0]===id)||['',''])[1];
 // 输入区按钮文案:「<模型>」或「<模型> · <档>」(默认档只显模型)
 const modelBtnLabel = () => modelLabel(currentModel) + (currentEffort ? ' · '+effortLabel(currentEffort) : '');
 
+/* ===== 工作目录(feat-bridge-workstation)=====
+   白名单由 /health 下发(只有 key+label,没有绝对路径——路径只在服务端解析)。
+   只在「新建对话」态可选,首条消息随 payload 上报 cwd_key;会话一旦落库绑定就不可换
+   (换项目=新开对话)。白名单 ≤1 席时(公开仓/未配置)整个选择器不出现,行为与改动前一致。 */
+let WORKSPACES=[], currentCwdKey='';
+const wsLabel = k => (WORKSPACES.find(w=>w.key===k)||{}).label||'';
+function _wsPickable(){ return WORKSPACES.length>1 && !currentSessionId; }
+// 白名单首席即默认(生产为「客厅」);新建对话时复位到它
+function resetCwdKey(){ currentCwdKey = WORKSPACES.length?WORKSPACES[0].key:''; renderWorkspacePicker(); }
+function renderWorkspacePicker(){
+  document.querySelectorAll('.ws-slot').forEach(slot=>{
+    if(!_wsPickable()){ slot.style.display='none'; return; }
+    slot.style.display='';
+    const btn=slot.querySelector('.ws-btn'); if(btn) btn.textContent=(wsLabel(currentCwdKey)||'目录')+' ▾';
+    const pop=slot.querySelector('.model-pop');
+    if(pop) pop.innerHTML=WORKSPACES.map(w=>`<div class="model-opt${w.key===currentCwdKey?' sel':''}" onclick="selectWorkspace('${w.key}')">${escHtml(w.label)}</div>`).join('');
+  });
+}
+function toggleWs(e){
+  e.stopPropagation();
+  const slot=activeComposer().querySelector('.ws-slot'); if(!slot) return;
+  const pop=slot.querySelector('.model-pop'); const show=pop.style.display==='none';
+  document.querySelectorAll('.model-pop').forEach(p=>p.style.display='none');   // 与模型弹层互斥
+  pop.style.display=show?'block':'none';
+}
+function selectWorkspace(key){
+  if(WORKSPACES.some(w=>w.key===key)) currentCwdKey=key;   // 只接受白名单内的 key
+  document.querySelectorAll('.model-pop').forEach(p=>p.style.display='none');
+  renderWorkspacePicker();
+}
+
 /* ===== attachments ===== */
 const ATT_ALLOWED_EXT=['png','jpg','jpeg','gif','webp','pdf','txt','md','csv','json','log','py','js','ts','html','css','sh'];
 const ATT_MAX_BYTES=10*1024*1024;
@@ -637,6 +697,9 @@ function composerHTML(){
     `<button class="icon-btn lead" onclick="$('file-input').click()" aria-label="附件">${IC.attach}</button>`+
     `<span class="model-slot"><button class="model-btn" id="model-btn" onclick="toggleModel(event)">${escHtml(modelBtnLabel())} ▾</button>`+
     `<div class="model-pop" id="model-pop" style="display:none"></div></span>`+
+    // 工作目录选择器:仅新建对话态显示(renderWorkspacePicker 控制),白名单单席时不出现
+    `<span class="ws-slot" style="display:none"><button class="model-btn ws-btn" onclick="toggleWs(event)">目录 ▾</button>`+
+    `<div class="model-pop" style="display:none"></div></span>`+
     // 插件动作按钮排在发送键左侧(设计稿:浅灰圆底,与发送键同尺寸)
     _pandoComposerActions.map(a=>`<button class="comp-act" onclick="_pandoComposerClick('${a.id}')" aria-label="${escHtml(a.title||a.id)}" title="${escHtml(a.title||a.id)}">${a.icon||''}</button>`).join('')+
     `<button class="send" id="send-btn" onclick="onSendBtn()" aria-label="发送">${IC.send}</button>`+
@@ -655,6 +718,7 @@ function syncComposerRefs(){
   const host = activeComposer();
   $input = host.querySelector('#input');
   renderModelPop();
+  renderWorkspacePicker();
 }
 function renderModelPop(){
   const host = activeComposer(); const pop = host.querySelector('#model-pop'); if(!pop) return;
@@ -698,7 +762,7 @@ function applyModel(id){
   document.querySelectorAll('#model-btn').forEach(b=>b.textContent=modelBtnLabel()+' ▾');
   renderModelPop();
 }
-document.addEventListener('click',e=>{ if(!e.target.closest('.model-slot')) document.querySelectorAll('.model-pop').forEach(p=>p.style.display='none');
+document.addEventListener('click',e=>{ if(!e.target.closest('.model-slot')&&!e.target.closest('.ws-slot')) document.querySelectorAll('.model-pop').forEach(p=>p.style.display='none');
   if(!e.target.closest('.ctx-slot')){ const cp=$('ctx-pop'); if(cp) cp.style.display='none'; } });
 
 let enterToSend = localStorage.getItem('enterToSend')!=='0';
@@ -744,7 +808,9 @@ function renderConversations(){
   if($('conv-count')) $('conv-count').textContent=`${allSessions.length} 个`;
   if(!items.length){ list.innerHTML=`<div class="sub-empty">${q?'没有匹配的对话':'还没有对话'}</div>`; return; }
   list.innerHTML=items.map(s=>{
-    const title=escHtml(s.title||'新对话'); const pv=escHtml(s.preview||s.last_message||''); const meta=`${s.msg_count||0} 条 · ${fmtWhen(s.updated_at)}`;
+    const title=escHtml(s.title||'新对话'); const pv=escHtml(s.preview||s.last_message||'');
+    const wsl=WORKSPACES.length>1?wsLabel(s.cwd_key||''):'';
+    const meta=`${wsl?escHtml(wsl)+' · ':''}${s.msg_count||0} 条 · ${fmtWhen(s.updated_at)}`;
     return `<div class="conv-card" onclick="switchSession('${s.id}')"><div class="body"><div class="tt">${title}</div>${pv?`<div class="pv">${pv}</div>`:''}<div class="mt">${meta}</div></div><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#C4C1B8" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="flex-shrink:0"><path d="M9 6l6 6-6 6"></path></svg></div>`;
   }).join('');
 }
@@ -1011,7 +1077,9 @@ function renderSessions(){
     const h=document.createElement('div'); h.className='sgroup'; h.textContent=b; list.appendChild(h);
     groups[b].forEach(s=>{
       const el=document.createElement('div'); el.className='sitem'+(s.id===currentSessionId?' active':'');
-      el.innerHTML=`<div class="t">${escHtml(s.title||'新对话')}</div><div class="m">${s.msg_count||0} 条 · ${fmtWhen(s.updated_at)}</div>`;
+      // 会话所属工作目录(空/单席时不显示,保持既有观感)
+      const wsl=WORKSPACES.length>1?wsLabel(s.cwd_key||''):'';
+      el.innerHTML=`<div class="t">${escHtml(s.title||'新对话')}</div><div class="m">${wsl?escHtml(wsl)+' · ':''}${s.msg_count||0} 条 · ${fmtWhen(s.updated_at)}</div>`;
       el.onclick=()=>switchSession(s.id); list.appendChild(el);
     });
   });
@@ -1025,8 +1093,9 @@ function renderRecent(){
   });
 }
 async function switchSession(sid){ go('chat'); $('msgs').innerHTML=''; setSessionId(sid); _pendingRecall=null; _pandoEmit('session_switch',{session_id:sid}); await loadHistory(sid); if(ws&&ws.readyState===1) ws.send(JSON.stringify({switch_session:sid})); }
-function newChat(){ setSessionId(null); _pendingRecall=null; _pandoEmit('session_switch',{session_id:null}); currentAssistantRow=null; assistantText=''; roundTools=[]; $('msgs').innerHTML=''; hideCtx(); go('home'); loadSessions(); if(ws&&ws.readyState===1) ws.send(JSON.stringify({switch_session:null})); }
-function setSessionId(id){ currentSessionId=id; if(id) localStorage.setItem('currentSessionId',id); else localStorage.removeItem('currentSessionId'); }
+function newChat(){ setSessionId(null); resetCwdKey(); _pendingRecall=null; _pandoEmit('session_switch',{session_id:null}); currentAssistantRow=null; assistantText=''; roundTools=[]; $('msgs').innerHTML=''; hideCtx(); go('home'); loadSessions(); if(ws&&ws.readyState===1) ws.send(JSON.stringify({switch_session:null})); }
+// 会话 id 一落定,工作目录选择器即隐去(绑定已成、本对话内不可换);回到新建态才重新出现
+function setSessionId(id){ currentSessionId=id; if(id) localStorage.setItem('currentSessionId',id); else localStorage.removeItem('currentSessionId'); renderWorkspacePicker(); }
 
 function showEmpty(){ const m=$('msgs'); if(m.children.length) return; const e=document.createElement('div'); e.className='empty';
   e.innerHTML=`<div style="opacity:.5">${PANDO_LOGO(34)}</div><span style="font:400 14px var(--ui)">新对话 · 说点什么开始</span>`; m.appendChild(e); }
@@ -1048,6 +1117,7 @@ async function loadHistory(sid){
         if(md.recall && !md.recall.startsWith('【context injected】')) assistantChipRow(row).insertBefore(makeRecallChip(md.recall), assistantChipRow(row).firstChild);
         // 思考或工具任一有,就重画 chip(工具-only 轮此前漏画);tools 随 metadata 落库
         if(md.thinking || (md.tools&&md.tools.length)) addThinking(row, md.thinking, md.tools||null, md.duration_ms);
+        foldDiffs(row, x.content);   // 历史重画同样折 diff(与实时路径一致)
         addToolbar(row,x.content,x.metadata);
         if(md.context) updateCtx(md.context); }
       // 每条历史消息广播给插件(带 row/metadata),插件可就地改造(如语音消息重建成语音条)
@@ -1156,6 +1226,54 @@ function openRecallSheet(ctx){
   $('recall-ov').classList.add('open');
 }
 function closeRecallSheet(){ $('recall-ov').classList.remove('open'); }
+/* ===== diff chip(feat-bridge-workstation 裁决 4)=====
+   纯渲染层折叠:把助手全文里的 ```diff / ```patch 代码块切出来折成 chip,点开底部 sheet 看
+   着色全文。零协议改动——手写 diff 与 git diff 原文粘贴一律生效;其它语言的代码块不受影响。
+   着色不引任何 diff 库(零构建约束),本质就是行首字符判定。 */
+const IC_DIFF='<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M4 7h8M8 3v8M4 17h8"></path></svg>';
+// 围栏必须独占整行(前后是行首/行尾),避免把正文里提到的 ``` 误切
+const DIFF_FENCE=/(^|\n)```(?:diff|patch)[^\n]*\n([\s\S]*?)\n?```[ \t]*(?=\n|$)/g;
+function splitDiffBlocks(text){
+  const diffs=[];
+  const body=(text||'').replace(DIFF_FENCE,(m,lead,block)=>{ diffs.push(block); return lead; });
+  return {body, diffs};
+}
+function diffLineClass(ln){
+  if(ln.startsWith('+++')||ln.startsWith('---')) return 'diff-meta';   // 文件头先判,免被 +/- 误着色
+  if(ln.startsWith('@@')) return 'diff-hunk';
+  if(ln.startsWith('+')) return 'diff-add';
+  if(ln.startsWith('-')) return 'diff-del';
+  return '';
+}
+function renderDiffLines(box, lines){
+  box.innerHTML='';
+  lines.forEach(ln=>{ const el=document.createElement('div'); el.className='l '+diffLineClass(ln); el.textContent=ln; box.appendChild(el); });
+}
+function makeDiffChip(diff, idx){
+  const lines=(diff||'').split('\n');
+  const n=lines.filter(l=>/^[+-]/.test(l)&&!/^(\+\+\+|---)/.test(l)).length;   // 只数真正的增删行
+  const chip=document.createElement('button'); chip.className='think-pill';
+  chip.innerHTML=`${IC_DIFF}<span>diff${idx?' '+idx:''} · ${n} 行</span><span class="tp-car"> ▸</span>`;
+  chip.onclick=()=>openDiffSheet(diff);
+  return chip;
+}
+// 折叠一条助手消息里的所有 diff 块:正文去掉块体,chip 追加到同一排 chip-row
+function foldDiffs(row, text){
+  if(!row) return;
+  const {body,diffs}=splitDiffBlocks(text);
+  if(!diffs.length) return;
+  updateAssistant(row, body.replace(/\n{3,}/g,'\n\n').trim());
+  const chips=assistantChipRow(row);
+  diffs.forEach((d,i)=>chips.appendChild(makeDiffChip(d, diffs.length>1?i+1:0)));
+}
+function openDiffSheet(diff){
+  const lines=(diff||'').split('\n');
+  $('diff-meta').textContent=lines.length+' 行';
+  renderDiffLines($('diff-body'), lines);
+  $('diff-ov').classList.add('open');
+}
+function closeDiffSheet(){ $('diff-ov').classList.remove('open'); }
+
 function addUsage(row,meta){
   const parts=[]; if(meta.duration_ms) parts.push((meta.duration_ms/1000).toFixed(1)+'s');
   if(meta.cost_usd) parts.push('$'+Number(meta.cost_usd).toFixed(4));
@@ -1219,6 +1337,8 @@ function send(){
   currentAssistantRow=null; assistantText=''; roundTools=[];
   // effort 始终随消息下发(含空串):空串让服务端把上一轮的档位复位回默认,不留粘性
   const payload={text, model:currentModel||undefined, effort:currentEffort};
+  // 工作目录只在新建对话的首条消息上报;已有会话服务端只认库里绑定的值,报了也不采信
+  if(!currentSessionId && currentCwdKey) payload.cwd_key=currentCwdKey;
   if(ready.length) payload.attachments=ready.map(a=>a.path);
   _pandoEmit('send_payload',payload);   // 插件可就地改 payload(如语音模式加 voice_mode 标记)
   ws.send(JSON.stringify(payload));
@@ -1229,6 +1349,7 @@ function retryMsg(text, atts){
   if(busy||!ws||ws.readyState!==1||!text) return;
   currentAssistantRow=null; assistantText=''; roundTools=[];
   const payload={text, model:currentModel||undefined, effort:currentEffort};
+  if(!currentSessionId && currentCwdKey) payload.cwd_key=currentCwdKey;
   _pandoEmit('send_payload',payload);
   ws.send(JSON.stringify(payload));
   setBusy(true); showTyping();
@@ -1297,6 +1418,8 @@ function connect(){
         }
         if(currentAssistantRow && _pendingRecall){ assistantChipRow(currentAssistantRow).insertBefore(makeRecallChip(_pendingRecall), assistantChipRow(currentAssistantRow).firstChild); _pendingRecall=null; }
         if(currentAssistantRow) addThinking(currentAssistantRow, m.thinking, roundTools, m.duration_ms);
+        // 全文到手后再折 diff(流式中途围栏可能还没闭合);copy/朗读仍拿未折叠的全文
+        if(currentAssistantRow) foldDiffs(currentAssistantRow, assistantText);
         if(currentAssistantRow && assistantText) addToolbar(currentAssistantRow, assistantText, m.stopped?null:{cost_usd:m.cost_usd,duration_ms:m.duration_ms,usage:m.usage});
         if(currentAssistantRow && m.stopped) addStopped(currentAssistantRow);
         if(m.context) updateCtx(m.context);
@@ -1457,7 +1580,12 @@ async function boot(){
     $('hero-sub').textContent=parts.join(' · ');
   });
   ['home-asst','chat-asst'].forEach(id=>$(id).textContent=ASST);
-  try{ const h=await (await fetch('/health')).json(); if(h&&h.version) $('side-ver').textContent='Pando v'+h.version; }catch(e){}
+  try{ const h=await (await fetch('/health')).json();
+    if(h&&h.version) $('side-ver').textContent='Pando v'+h.version;
+    // 工作目录白名单(feat-bridge-workstation):只有 key+label;未下发/单席则选择器不出现
+    WORKSPACES=Array.isArray(h&&h.workspaces)?h.workspaces.filter(w=>w&&typeof w.key==='string'):[];
+    if(!currentSessionId) resetCwdKey(); else renderWorkspacePicker();
+  }catch(e){}
   await loadSessions();
   await loadFrontendPlugins();   // 先装插件再连 WS,保证消息渲染器/事件监听先注册好
   // PWA service worker:注册 + 把 sw 的通用转发消息(push_click)接到插件事件总线
