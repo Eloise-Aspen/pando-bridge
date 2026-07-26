@@ -154,6 +154,46 @@ def normalize_effort(effort):
     return None
 
 
+# ---------------------------------------------------------------------------
+# 工作目录白名单（feat-bridge-workstation）：对话创建时选一席，服务端按 key 解析真实路径。
+# 绝对路径只留在服务端（/health 只下发 key+label），杜绝前端自由路径输入这条事故半径。
+# ---------------------------------------------------------------------------
+
+
+def normalize_workspaces(raw, default_cwd) -> dict[str, dict]:
+    """把 config 的 WORKSPACES 洗成 {key: {"label", "path"}}。
+
+    形状不合（非 dict / 缺 path / key 非字符串）的条目直接丢弃，不让半截配置带崩启动。
+    完全没配置（公开仓、首跑用户）时降级为单席——key 为空串、path 为 CLAUDE_CWD，
+    与「空 cwd_key = 默认工作目录」的存量语义天然一致。"""
+    items: dict[str, dict] = {}
+    if isinstance(raw, dict):
+        for key, item in raw.items():
+            if not isinstance(key, str) or not key or not isinstance(item, dict):
+                continue
+            path = item.get("path")
+            if not path:
+                continue
+            items[key] = {"label": str(item.get("label") or key), "path": str(path)}
+    if items:
+        return items
+    label = Path(default_cwd).name if default_cwd else ""
+    return {"": {"label": label or "default", "path": default_cwd}}
+
+
+def normalize_cwd_key(cwd_key, workspaces: dict) -> str:
+    """会话工作目录 key 的白名单校验（单一 choke point，所有入口经此汇入）。
+
+    空/未选/非字符串 → ''（= 默认 CLAUDE_CWD，存量会话零迁移）；命中白名单 → 原样返回；
+    名单外（含手工伪造的 WS payload）→ 记警告并回退 ''，绝不拿前端上报的值去解析路径。"""
+    if not cwd_key or not isinstance(cwd_key, str):
+        return ""
+    if cwd_key in workspaces:
+        return cwd_key
+    log.warning("忽略名单外的 cwd_key %r（白名单：%s）", cwd_key, "/".join(k for k in workspaces if k) or "-")
+    return ""
+
+
 def _detect_lan_ip() -> str | None:
     """UDP connect 探测本机 LAN IP：不真正发包，只借内核路由表选出口地址。
     断网/无路由等任何失败返回 None，由调用方静默降级为只提示 localhost。"""
@@ -359,6 +399,9 @@ def create_app(config) -> FastAPI:
 
     claude_exe = _cfg(config, "CLAUDE_EXE")
     claude_cwd = _cfg(config, "CLAUDE_CWD")
+    # 工作目录白名单（feat-bridge-workstation 裁决 1）。未配置 WORKSPACES 时降级单席，
+    # 公开仓/首跑零配置照常启动，前端只会看到一个选项（≤1 席时下拉不出现）。
+    workspaces = normalize_workspaces(_cfg(config, "WORKSPACES", None), claude_cwd)
     # DATA_DIR 默认 ./data（feat-memory-onboarding 关键裁决④）：首跑不配也能起，
     # chat.db 落在当前工作目录的 ./data 下；启动横幅会打印其绝对路径，避免"数据存哪了"的困惑。
     data_dir: Path = Path(_cfg(config, "DATA_DIR", "./data"))
@@ -530,7 +573,8 @@ def create_app(config) -> FastAPI:
                 model TEXT DEFAULT '',
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
-                last_archived_id INTEGER DEFAULT 0
+                last_archived_id INTEGER DEFAULT 0,
+                cwd_key TEXT DEFAULT ''
             );
             CREATE TABLE IF NOT EXISTS messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -554,25 +598,45 @@ def create_app(config) -> FastAPI:
             );
             CREATE INDEX IF NOT EXISTS idx_usage_created ON usage(created_at);
         """)
-        # 旧库兼容：last_archived_id 是历史加列;usage 表用 CREATE TABLE IF NOT EXISTS,
-        # 旧库首次启动自动补建,无需额外迁移语句。
-        try:
-            conn.execute("ALTER TABLE sessions ADD COLUMN last_archived_id INTEGER DEFAULT 0")
-        except Exception:
-            pass
+        # 旧库兼容：last_archived_id / cwd_key 都是历史加列(已存在则 ALTER 抛错,吞掉即可);
+        # usage 表用 CREATE TABLE IF NOT EXISTS,旧库首次启动自动补建,无需额外迁移语句。
+        # cwd_key 缺省空串 = 客厅(CLAUDE_CWD),存量会话零迁移(feat-bridge-workstation 裁决 2)。
+        for _ddl in (
+            "ALTER TABLE sessions ADD COLUMN last_archived_id INTEGER DEFAULT 0",
+            "ALTER TABLE sessions ADD COLUMN cwd_key TEXT DEFAULT ''",
+        ):
+            try:
+                conn.execute(_ddl)
+            except Exception:
+                pass
         conn.commit()
         conn.close()
 
-    def save_session(session_id: str, model: str = ""):
+    def save_session(session_id: str, model: str = "", cwd_key: str = ""):
+        """建/更新会话行。cwd_key 只在 INSERT 时写入——ON CONFLICT 分支刻意不碰它，
+        保证工作目录「对话创建时选定、本对话内不可换」（feat-bridge-workstation 裁决 3）。"""
         conn = _chat_conn()
         now = now_iso()
         conn.execute("""
-            INSERT INTO sessions (id, title, model, created_at, updated_at)
-            VALUES (?, '', ?, ?, ?)
+            INSERT INTO sessions (id, title, model, created_at, updated_at, cwd_key)
+            VALUES (?, '', ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET updated_at = ?, model = COALESCE(NULLIF(?, ''), model)
-        """, (session_id, model, now, now, now, model))
+        """, (session_id, model, now, now, cwd_key or "", now, model))
         conn.commit()
         conn.close()
+
+    def get_session_cwd_key(session_id: str) -> str:
+        """读会话落库的工作目录 key。行不存在/旧库空值一律回 ''（= 默认 CLAUDE_CWD）。
+        后续轮次只信这里，不信前端重复上报的值。"""
+        conn = _chat_conn()
+        row = conn.execute("SELECT cwd_key FROM sessions WHERE id = ?", (session_id,)).fetchone()
+        conn.close()
+        return (row[0] or "") if row else ""
+
+    def workspace_cwd(cwd_key: str) -> str | None:
+        """按 key 解析工作目录绝对路径。空 key / 名单外一律回默认 CLAUDE_CWD。"""
+        entry = workspaces.get(cwd_key) if cwd_key else None
+        return (entry or {}).get("path") or claude_cwd
 
     def get_last_archived_id(session_id: str) -> int:
         conn = _chat_conn()
@@ -615,7 +679,8 @@ def create_app(config) -> FastAPI:
             SELECT s.id, s.title, s.model, s.created_at, s.updated_at,
                    (SELECT COUNT(*) FROM messages WHERE session_id = s.id) as msg_count,
                    (SELECT content FROM messages WHERE session_id = s.id AND role = 'user'
-                    ORDER BY id ASC LIMIT 1) as first_msg
+                    ORDER BY id ASC LIMIT 1) as first_msg,
+                   s.cwd_key
             FROM sessions s
             ORDER BY s.updated_at DESC LIMIT ?
         """, (limit,))
@@ -631,6 +696,8 @@ def create_app(config) -> FastAPI:
                 "created_at": row[3],
                 "updated_at": row[4],
                 "msg_count": row[5],
+                # 会话所属工作目录 key（空 = 客厅）。前端据此在列表项上标 label
+                "cwd_key": row[7] or "",
             })
         conn.close()
         return sessions
@@ -770,6 +837,9 @@ def create_app(config) -> FastAPI:
             "server_time": now_iso(),
             "started_at": server_started_at.isoformat(),
             "claude_cli": "found" if claude_ok else "missing",
+            # 工作目录白名单：只给 key + label，绝对路径不出服务端（前端按 key 回传，
+            # 服务端再按白名单解析路径）。前端启动必拉 /health，故复用此口不新开端点。
+            "workspaces": [{"key": k, "label": v["label"]} for k, v in workspaces.items()],
         }
 
     @app.get("/sessions")
@@ -1082,8 +1152,12 @@ def create_app(config) -> FastAPI:
         model: str | None = None,
         effort: str | None = None,
         silent: bool = False,
+        cwd_key: str = "",
         _retry: bool = False,
     ):
+        # 本轮子进程的工作目录（feat-bridge-workstation 裁决 2）：从会话绑定的 key 解析，
+        # 未绑定/名单外一律落回 claude_cwd —— 调用方传进来的 key 已过 normalize_cwd_key。
+        run_cwd = workspace_cwd(cwd_key)
         cmd = [
             claude_exe,
             "--print",
@@ -1149,14 +1223,15 @@ def create_app(config) -> FastAPI:
         cmd.append("--")
         cmd.append(message)
 
-        log.info("spawn: %s (session=%s, model=%s, effort=%s)", message[:80], session_id or "new", model or "default", effort or "default")
+        log.info("spawn: %s (session=%s, model=%s, effort=%s, cwd=%s)", message[:80],
+                 session_id or "new", model or "default", effort or "default", run_cwd)
 
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             stdin=asyncio.subprocess.DEVNULL,
-            cwd=claude_cwd,
+            cwd=run_cwd,
             # 抬高单行上限：CC 读附件时 tool_result 的 base64 会是超长单行（见常量说明）
             limit=_STREAM_LINE_LIMIT,
         )
@@ -1219,7 +1294,8 @@ def create_app(config) -> FastAPI:
                         new_session_id = event.get("session_id", new_session_id)
                         init_model = event.get("model") or init_model
                         if not silent:
-                            save_session(new_session_id, model or "")
+                            # 新会话在此落库绑定工作目录；已有会话走 ON CONFLICT 分支不动 cwd_key
+                            save_session(new_session_id, model or "", cwd_key)
                             # 补注册:新会话首帧才拿到 session_id
                             if turn is not None and not turn.session_id:
                                 turn.session_id = new_session_id
@@ -1437,6 +1513,8 @@ def create_app(config) -> FastAPI:
                         model=model,
                         effort=effort,
                         silent=silent,
+                        # 会话过期重开的新会话沿用同一工作目录（换会话不等于换项目）
+                        cwd_key=cwd_key,
                         _retry=True,
                     )
 
@@ -1510,10 +1588,12 @@ def create_app(config) -> FastAPI:
                         log.info("forge: no new messages to archive (msgs=%d)", len(msgs))
                     return
 
-                # Claude 在当前对话内写记忆（方案 A）
+                # Claude 在当前对话内写记忆（方案 A）。cwd 取会话绑定的工作目录——
+                # 存档轮是同一会话的 --resume，工作目录必须与可见轮次一致。
                 _, claude_raw, _ = await run_claude(
                     archive_prompt, session_id, ws,
                     model=model, effort=effort, silent=True,
+                    cwd_key=get_session_cwd_key(session_id),
                 )
 
                 if msgs:
@@ -1555,6 +1635,9 @@ def create_app(config) -> FastAPI:
         session_id = None
         system_prompt = None
         session_resumed = False  # True 表示恢复已有会话，跳过 L0+L1 重建
+        # 本连接当前会话的工作目录 key（feat-bridge-workstation）：新建对话时由前端下发并
+        # 过白名单，已有会话一律以库里落定的值为准。空串 = 客厅（CLAUDE_CWD）。
+        session_cwd_key = ""
 
         # 权限透传：为本连接注册一个 token（注入 MCP 服务 env，回调时反查连接）。
         # 仅开关打开时注册；关闭时 token_by_ws 缺失 → run_claude 不追加 CLI 参数，行为如现状。
@@ -1654,8 +1737,11 @@ def create_app(config) -> FastAPI:
                 voice_mode = False
                 mode = "chat"
                 attachments: list = []
+                msg_cwd_key = None   # 本条消息上报的工作目录 key（仅新建对话时采信）
                 try:
                     payload = json.loads(raw)
+                    if "cwd_key" in payload:
+                        msg_cwd_key = payload["cwd_key"]
                     text = payload.get("text", "").strip()
                     if "model" in payload:
                         model = payload["model"]
@@ -1675,15 +1761,18 @@ def create_app(config) -> FastAPI:
                             session_id = new_sid
                             session_resumed = True   # 恢复已有会话，跳过 L0+L1 重建
                             system_prompt = None
+                            # 切到已有会话：工作目录只认库里落定的值
+                            session_cwd_key = get_session_cwd_key(new_sid)
                             await ws.send_text(json.dumps({
                                 "type": "session_switched",
                                 "session_id": new_sid,
                             }, ensure_ascii=False))
                         else:
-                            # 新建对话
+                            # 新建对话：工作目录回到待选态（前端下一条消息带 cwd_key）
                             session_id = None
                             system_prompt = None
                             session_resumed = False
+                            session_cwd_key = normalize_cwd_key(msg_cwd_key, workspaces)
                             await ws.send_text(json.dumps({
                                 "type": "session_switched",
                                 "session_id": None,
@@ -1713,7 +1802,15 @@ def create_app(config) -> FastAPI:
 
                 loop = asyncio.get_event_loop()
 
-                log.info("mode=%s session=%s", mode, session_id or "new")
+                # 工作目录定档（feat-bridge-workstation 裁决 2/3）：已有会话读库里落定的值——
+                # 本对话内不可换，也不信前端重复上报；新会话才采信本条消息的 cwd_key 并过白名单。
+                if session_id:
+                    session_cwd_key = get_session_cwd_key(session_id)
+                elif msg_cwd_key is not None:
+                    session_cwd_key = normalize_cwd_key(msg_cwd_key, workspaces)
+
+                log.info("mode=%s session=%s cwd_key=%s", mode, session_id or "new",
+                         session_cwd_key or "default")
 
                 # 首条消息：构建 L0+L1 会话上下文（system prompt），走 on_user_message 钩子链路
                 if session_id is None and not session_resumed and system_prompt is None:
@@ -1775,6 +1872,7 @@ def create_app(config) -> FastAPI:
                     system_prompt=system_prompt if session_id is None else None,
                     model=model,
                     effort=effort,
+                    cwd_key=session_cwd_key,
                 )
 
                 effective_sid = new_session_id or session_id
