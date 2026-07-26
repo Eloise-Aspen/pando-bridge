@@ -1117,7 +1117,7 @@ async function loadHistory(sid){
         if(md.recall && !md.recall.startsWith('【context injected】')) assistantChipRow(row).insertBefore(makeRecallChip(md.recall), assistantChipRow(row).firstChild);
         // 思考或工具任一有,就重画 chip(工具-only 轮此前漏画);tools 随 metadata 落库
         if(md.thinking || (md.tools&&md.tools.length)) addThinking(row, md.thinking, md.tools||null, md.duration_ms);
-        foldDiffs(row, x.content);   // 历史重画同样折 diff(与实时路径一致)
+        renderAssistantBody(row, x.content, true);   // 历史重画同样折 diff(与实时路径一致)
         addToolbar(row,x.content,x.metadata);
         if(md.context) updateCtx(md.context); }
       // 每条历史消息广播给插件(带 row/metadata),插件可就地改造(如语音消息重建成语音条)
@@ -1188,7 +1188,9 @@ function addThinking(row, thinking, tools, durationMs){
   const label = thinking ? `思考 · ${fmtDur(durationMs)}` : `工具 · ${tools.length}`;
   pill.innerHTML=`${icon}<span>${label}</span><span class="tp-car"> ▸</span>`;
   pill.onclick=()=> DESKTOP_MQ.matches ? toggleThinkInline(pill, thinking, tools, durationMs) : openThinkSheet(thinking, tools, durationMs);
-  assistantChipRow(row).appendChild(pill);
+  // diff chip 在流式中途就挂上了,思考 pill(结束才有)要插到它前面,保持 [记忆][思考][diff] 定序
+  const chips=assistantChipRow(row), firstDiff=chips.querySelector('.diff-pill');
+  if(firstDiff) chips.insertBefore(pill, firstDiff); else chips.appendChild(pill);
 }
 function toggleThinkInline(pill, thinking, tools, durationMs){
   const car=pill.querySelector('.tp-car');
@@ -1249,22 +1251,46 @@ function renderDiffLines(box, lines){
   box.innerHTML='';
   lines.forEach(ln=>{ const el=document.createElement('div'); el.className='l '+diffLineClass(ln); el.textContent=ln; box.appendChild(el); });
 }
-function makeDiffChip(diff, idx){
+function makeDiffChip(diff){
   const lines=(diff||'').split('\n');
   const n=lines.filter(l=>/^[+-]/.test(l)&&!/^(\+\+\+|---)/.test(l)).length;   // 只数真正的增删行
-  const chip=document.createElement('button'); chip.className='think-pill';
-  chip.innerHTML=`${IC_DIFF}<span>diff${idx?' '+idx:''} · ${n} 行</span><span class="tp-car"> ▸</span>`;
+  const chip=document.createElement('button'); chip.className='think-pill diff-pill';
+  chip.innerHTML=`${IC_DIFF}<span>diff · ${n} 行</span><span class="tp-car"> ▸</span>`;
   chip.onclick=()=>openDiffSheet(diff);
   return chip;
 }
-// 折叠一条助手消息里的所有 diff 块:正文去掉块体,chip 追加到同一排 chip-row
-function foldDiffs(row, text){
+// 正在流式写入、还没闭合的 diff 围栏连同其后内容整段暂隐——不这么做的话 diff 原文会先在
+// 正文里滚一遍、收进 chip 时正文再塌一块(真机实测的闪烁)。
+// 围栏成对出现,奇数个说明最后一个是未闭合的开围栏;只有它需要判断藏不藏:
+//   语言标记还没写完(```dif)→ 先藏,下一帧就见分晓;已确定是 diff/patch → 藏到闭合;
+//   其它语言(```python)→ 原样流式显示,与改动前一致。
+function diffStreamBody(text){
+  let body=splitDiffBlocks(text).body;
+  const fences=[...body.matchAll(/(^|\n)```([^\n]*)/g)];
+  if(fences.length%2===1){
+    const f=fences[fences.length-1];
+    const infoDone=f.index+f[0].length<body.length;   // 后面还有字符 ⇒ 信息行已换行
+    if(!infoDone || /^(diff|patch)\b/i.test(f[2].trim())) body=body.slice(0,f.index)+(f[1]||'');
+  }
+  return body.replace(/\n{3,}/g,'\n\n');
+}
+// 增量挂 chip:只为「本次新闭合」的 diff 块补 chip,流式中途反复调用幂等。
+// 块一闭合 chip 立刻出现,正文里始终不出现 diff 原文。
+function syncDiffChips(row, text){
   if(!row) return;
-  const {body,diffs}=splitDiffBlocks(text);
-  if(!diffs.length) return;
-  updateAssistant(row, body.replace(/\n{3,}/g,'\n\n').trim());
+  const diffs=splitDiffBlocks(text).diffs;
+  const have=row._diffN||0;
+  if(diffs.length<=have) return;
   const chips=assistantChipRow(row);
-  diffs.forEach((d,i)=>chips.appendChild(makeDiffChip(d, diffs.length>1?i+1:0)));
+  for(let i=have;i<diffs.length;i++) chips.appendChild(makeDiffChip(diffs[i]));
+  row._diffN=diffs.length;
+}
+// 助手正文的统一出口:流式中途 final=false(不 trim 尾部,免抖),全文到手 final=true
+function renderAssistantBody(row, text, final){
+  if(!row) return;
+  const body=diffStreamBody(text);
+  updateAssistant(row, final?body.trim():body);
+  syncDiffChips(row, text);
 }
 function openDiffSheet(diff){
   const lines=(diff||'').split('\n');
@@ -1405,7 +1431,8 @@ function connect(){
       case 'text':
         removeTyping(); assistantText+=m.text;
         if(!currentAssistantRow) currentAssistantRow=addAssistant('');
-        updateAssistant(currentAssistantRow, assistantText); break;
+        // 流式期间就折 diff:正文永不出现 diff 原文,块闭合的那一刻 chip 直接出现
+        renderAssistantBody(currentAssistantRow, assistantText, false); break;
       case 'result':
         _clearStopFallback();
         removeTyping();
@@ -1413,13 +1440,11 @@ function connect(){
         // result.text 为服务端权威全文——以它为准(落差时静默修正,textContent 同值无重绘)
         if(m.text){
           if(!currentAssistantRow) currentAssistantRow=addAssistant('');
-          assistantText=m.text;
-          updateAssistant(currentAssistantRow, assistantText);
+          assistantText=m.text;   // 全文(含 diff)留着给复制/朗读用,正文只渲染折叠后的部分
+          renderAssistantBody(currentAssistantRow, assistantText, true);
         }
         if(currentAssistantRow && _pendingRecall){ assistantChipRow(currentAssistantRow).insertBefore(makeRecallChip(_pendingRecall), assistantChipRow(currentAssistantRow).firstChild); _pendingRecall=null; }
         if(currentAssistantRow) addThinking(currentAssistantRow, m.thinking, roundTools, m.duration_ms);
-        // 全文到手后再折 diff(流式中途围栏可能还没闭合);copy/朗读仍拿未折叠的全文
-        if(currentAssistantRow) foldDiffs(currentAssistantRow, assistantText);
         if(currentAssistantRow && assistantText) addToolbar(currentAssistantRow, assistantText, m.stopped?null:{cost_usd:m.cost_usd,duration_ms:m.duration_ms,usage:m.usage});
         if(currentAssistantRow && m.stopped) addStopped(currentAssistantRow);
         if(m.context) updateCtx(m.context);
