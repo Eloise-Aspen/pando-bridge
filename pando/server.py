@@ -673,7 +673,19 @@ def create_app(config) -> FastAPI:
         conn.commit()
         conn.close()
 
-    def list_sessions(limit: int = 30) -> list[dict]:
+    def _display_title(title: str | None, first_msg: str | None) -> str:
+        """标题口径的唯一入口：手动标题（sessions.title 非空）优先，
+        为空则回退首条用户消息截断——列表与改名接口共用，防两处口径漂移。"""
+        if title:
+            return title
+        if not first_msg:
+            return ""
+        return first_msg[:50] + ("…" if len(first_msg) > 50 else "")
+
+    def list_sessions(limit: int = 30, offset: int = 0) -> list[dict]:
+        """会话列表（按 updated_at 倒序）。offset 供前端滑底增量加载用——
+        会话量级只有几十，不上 cursor 分页；删除造成的偏移抖动由前端按 id 去重容忍
+        （feat-session-management 裁决）。"""
         conn = _chat_conn()
         cur = conn.execute("""
             SELECT s.id, s.title, s.model, s.created_at, s.updated_at,
@@ -682,13 +694,11 @@ def create_app(config) -> FastAPI:
                     ORDER BY id ASC LIMIT 1) as first_msg,
                    s.cwd_key
             FROM sessions s
-            ORDER BY s.updated_at DESC LIMIT ?
-        """, (limit,))
+            ORDER BY s.updated_at DESC LIMIT ? OFFSET ?
+        """, (limit, offset))
         sessions = []
         for row in cur.fetchall():
-            title = row[1]
-            if not title and row[6]:
-                title = row[6][:50] + ("…" if len(row[6] or "") > 50 else "")
+            title = _display_title(row[1], row[6])
             sessions.append({
                 "id": row[0],
                 "title": title,
@@ -701,6 +711,29 @@ def create_app(config) -> FastAPI:
             })
         conn.close()
         return sessions
+
+    def rename_session(session_id: str, title: str) -> dict | None:
+        """手动改名：非空 = 永久手动标题，自动标题从此不碰该对话；
+        空串 = 清空手动标题、回退首条用户消息（feat-session-management 裁决 3）。
+        刻意不动 updated_at——改名不该把对话顶到列表最前。
+        会话不存在返回 None，由端点转 404。"""
+        clean = (title or "").strip()[:200]
+        conn = _chat_conn()
+        cur = conn.execute("UPDATE sessions SET title = ? WHERE id = ?", (clean, session_id))
+        if cur.rowcount == 0:
+            conn.close()
+            return None
+        conn.commit()
+        row = conn.execute(
+            "SELECT content FROM messages WHERE session_id = ? AND role = 'user' ORDER BY id ASC LIMIT 1",
+            (session_id,),
+        ).fetchone()
+        conn.close()
+        return {
+            "id": session_id,
+            "title": _display_title(clean, row[0] if row else None),
+            "manual": bool(clean),
+        }
 
     def get_session_messages(session_id: str) -> list[dict]:
         conn = _chat_conn()
@@ -843,8 +876,26 @@ def create_app(config) -> FastAPI:
         }
 
     @app.get("/sessions")
-    async def api_list_sessions(limit: int = 30):
-        return list_sessions(limit=limit)
+    async def api_list_sessions(limit: int = 30, offset: int = 0):
+        return list_sessions(limit=max(1, limit), offset=max(0, offset))
+
+    @app.patch("/sessions/{session_id}")
+    async def api_rename_session(session_id: str, req: Request):
+        """改名。请求体 {"title": "新标题"}；title 传空串 = 回退自动标题。
+        返回 {"id","title","manual"}，title 是改名后前端该显示的生效标题。"""
+        try:
+            body = await req.json()
+        except Exception:
+            raise HTTPException(status_code=400, detail="invalid JSON body")
+        if not isinstance(body, dict) or "title" not in body:
+            raise HTTPException(status_code=400, detail="body must be {\"title\": str}")
+        title = body["title"]
+        if not isinstance(title, str):
+            raise HTTPException(status_code=400, detail="title must be a string")
+        result = rename_session(session_id, title)
+        if result is None:
+            raise HTTPException(status_code=404, detail="session not found")
+        return result
 
     @app.delete("/sessions/{session_id}")
     async def api_delete_session(session_id: str):
