@@ -25,6 +25,28 @@ class GoodPlugin:
         return ""
 
 
+class PermissionNotifyPlugin:
+    """记录 on_permission_request 的入参——验证权限请求通知钩子被调用、且不带工具入参。"""
+
+    calls: list[tuple] = []
+
+    def on_startup(self, app, config_dict):
+        pass
+
+    def on_permission_request(self, tool_name, request_id):
+        PermissionNotifyPlugin.calls.append((tool_name, request_id))
+
+
+class BrokenOnPermissionRequestPlugin:
+    """on_permission_request 必炸——验证通知钩子异常不影响权限往返本身。"""
+
+    def on_startup(self, app, config_dict):
+        pass
+
+    def on_permission_request(self, tool_name, request_id):
+        raise RuntimeError("boom: on_permission_request")
+
+
 class BrokenOnUserMessagePlugin:
     """on_startup 正常，但 on_user_message 每次都炸——验证单次钩子调用异常不冒泡。"""
 
