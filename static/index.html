@@ -179,8 +179,10 @@
   .a-tools{display:flex;align-items:center;gap:2px}
   .a-tool{border:none;background:none;padding:7px;color:var(--faint);cursor:pointer;display:flex}
   .a-tool:active{color:var(--accent-press)}
-  .typing{align-self:flex-start;display:flex;align-items:center;gap:7px}
-  .typing .lb{font:400 14px var(--ui);color:var(--faint);font-style:italic}
+  /* 活动行:可点(打开实时思考 sheet),文本随事件流刷新 */
+  .typing{align-self:flex-start;display:flex;align-items:center;gap:7px;cursor:pointer}
+  .typing .lb{font:400 14px var(--ui);color:var(--faint);font-style:italic;font-variant-numeric:tabular-nums}
+  .typing .tp-car{font:400 12px var(--ui);color:var(--fainter)}
   .typing .d{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--accent)}
   .empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:40px 0;color:var(--fainter)}
   .msg-sys{align-self:center;max-width:88%;font:400 13px/1.6 var(--ui);color:var(--danger-text);white-space:pre-wrap;text-align:center}
@@ -653,6 +655,10 @@ const IC = {
 
 /* ===== state ===== */
 let ws, busy=false, currentAssistantRow=null, assistantText='', roundTools=[];
+// 过程直播(feat-workstation-ux2 Task 1):本轮已产生的思考流与起始时刻,供活动行/实时 sheet 用
+let roundThinking='', roundStartTs=0;
+// 一轮结束/切会话时的统一复位——五处调用点共用一个函数,避免漏字段
+function resetRoundState(){ currentAssistantRow=null; assistantText=''; roundTools=[]; roundThinking=''; roundStartTs=0; }
 let _hasMemory=true; // hello 帧更新;false 时「自动记住上下文」开关置灰
 let currentSessionId = localStorage.getItem('currentSessionId') || null;
 // 无「默认」占位项(看不出具体哪个模型);composer 显示的就是设置页选的默认模型——
@@ -1249,7 +1255,7 @@ function renderRecent(){
   });
 }
 async function switchSession(sid){ go('chat'); $('msgs').innerHTML=''; setSessionId(sid); _pendingRecall=null; _pandoEmit('session_switch',{session_id:sid}); await loadHistory(sid); if(ws&&ws.readyState===1) ws.send(JSON.stringify({switch_session:sid})); }
-function newChat(){ setSessionId(null); resetCwdKey(); _pendingRecall=null; _pandoEmit('session_switch',{session_id:null}); currentAssistantRow=null; assistantText=''; roundTools=[]; $('msgs').innerHTML=''; hideCtx(); go('home'); loadSessions(); if(ws&&ws.readyState===1) ws.send(JSON.stringify({switch_session:null})); }
+function newChat(){ setSessionId(null); resetCwdKey(); _pendingRecall=null; _pandoEmit('session_switch',{session_id:null}); resetRoundState(); $('msgs').innerHTML=''; hideCtx(); go('home'); loadSessions(); if(ws&&ws.readyState===1) ws.send(JSON.stringify({switch_session:null})); }
 // 会话 id 一落定,工作目录选择器即隐去(绑定已成、本对话内不可换);回到新建态才重新出现
 function setSessionId(id){ currentSessionId=id; if(id) localStorage.setItem('currentSessionId',id); else localStorage.removeItem('currentSessionId'); renderWorkspacePicker(); }
 
@@ -1364,13 +1370,27 @@ function toggleThinkInline(pill, thinking, tools, durationMs){
 }
 function openThinkSheet(thinking, tools, durationMs){
   // 弹窗头部保留时长 + token 数两项(用户澄清:上一轮误删了 token 数,只有 chip 上不要它)
+  _liveThink=false;
   const metaParts=[]; if(durationMs) metaParts.push(fmtDur(durationMs));
   if(thinking) metaParts.push(fmtThinkCount(thinking.length)+' tokens');
   $('think-sheet-meta').textContent = metaParts.join(' · ');
   renderThinkLines($('think-sheet-body'), thinking, tools, 'tool-ln');
   $('think-ov').classList.add('open');
 }
-function closeThinkSheet(){ $('think-ov').classList.remove('open'); }
+/* 实时版:同一个 sheet,内容源换成本轮累积的 roundThinking/roundTools,
+   每来一帧事件重渲染(refreshTyping 里驱动);用户手动上滚时不抢滚动位置。*/
+let _liveThink=false;
+function openLiveThinkSheet(){ _liveThink=true; renderLiveThinkSheet(); $('think-ov').classList.add('open'); }
+function renderLiveThinkSheet(){
+  const el=$('think-sheet-body'); if(!el) return;
+  const metaParts=[]; if(roundStartTs) metaParts.push(fmtDur(Date.now()-roundStartTs));
+  if(roundThinking) metaParts.push(fmtThinkCount(roundThinking.length)+' tokens');
+  $('think-sheet-meta').textContent = metaParts.join(' · ');
+  const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+  renderThinkLines(el, roundThinking || '还没有思考内容，稍等…', roundTools, 'tool-ln');
+  if(atBottom) el.scrollTop = el.scrollHeight;
+}
+function closeThinkSheet(){ _liveThink=false; $('think-ov').classList.remove('open'); }
 // 记忆召回 chip(灯泡图标 + 「记忆」标签,点开底部 sheet 看完整召回上下文)
 function makeRecallChip(ctx){
   const chip=document.createElement('button'); chip.className='think-pill';
@@ -1499,9 +1519,37 @@ function addSystem(text){ ensureChat(); const el=document.createElement('div'); 
 let speaking=null;
 function speak(text,btn){ try{ if(speaking){ speechSynthesis.cancel(); speaking=null; return; } const u=new SpeechSynthesisUtterance(text); u.lang='zh-CN'; u.onend=()=>speaking=null; speaking=u; speechSynthesis.speak(u); }catch(e){} }
 
-function showTyping(){ removeTyping(); ensureChat(); typingEl=document.createElement('div'); typingEl.className='typing';
-  typingEl.innerHTML=`<span class="lb">正在思考,稍等</span><span class="d blink"></span>`; $('msgs').appendChild(typingEl); scrollDown(); }
-function removeTyping(){ if(typingEl){ typingEl.remove(); typingEl=null; } }
+/* ===== 活动行(feat-workstation-ux2 Task 1)=====
+   原「正在思考,稍等」升级为随事件流刷新的进展行:无工具时「思考中 · Ns」,来了 tool_use
+   变「⚙ <工具名> · 第 N 个调用」;整行可点,打开思考 sheet 的实时版(边跑边看已产生的
+   思考流与工具列表)。轮次结束仍走 addThinking 折 chip——历史消息形态零变化。*/
+let _typingTimer=null;
+function typingLabel(){
+  if(roundTools.length){
+    const t=roundTools[roundTools.length-1].tool||'工具';
+    return `⚙ ${t} · 第 ${roundTools.length} 个调用`;
+  }
+  const s = roundStartTs ? Math.max(0, Math.round((Date.now()-roundStartTs)/1000)) : 0;
+  return `思考中 · ${s}s`;
+}
+function refreshTyping(){
+  if(!typingEl) return;
+  const lb=typingEl.querySelector('.lb'); if(lb) lb.textContent=typingLabel();
+  if(_liveThink) renderLiveThinkSheet();
+}
+function showTyping(){ ensureChat();
+  if(!typingEl){
+    typingEl=document.createElement('div'); typingEl.className='typing';
+    typingEl.innerHTML=`<span class="lb"></span><span class="d blink"></span><span class="tp-car"> ▸</span>`;
+    typingEl.onclick=openLiveThinkSheet;
+  }
+  $('msgs').appendChild(typingEl);   // 已存在则被移到底部(appendChild 移动节点,不重建,计时不断)
+  if(!roundStartTs) roundStartTs=Date.now();
+  if(!_typingTimer) _typingTimer=setInterval(refreshTyping,1000);   // 秒级刷「思考中 · Ns」
+  refreshTyping(); scrollDown(); }
+function removeTyping(){
+  if(_typingTimer){ clearInterval(_typingTimer); _typingTimer=null; }
+  if(typingEl){ typingEl.remove(); typingEl=null; } }
 
 /* ===== send ===== */
 function onSendBtn(){ if(busy) stopStreaming(); else send(); }
@@ -1516,7 +1564,7 @@ function send(){
   if(inp){ inp.value=''; inp.style.height='auto'; }   // 先清发起处输入(HOME→CHAT 切换会重指 $input)
   maybeTimeDivider();
   addUser(text, ready.map(a=>a.name));
-  currentAssistantRow=null; assistantText=''; roundTools=[];
+  resetRoundState();
   // effort 始终随消息下发(含空串):空串让服务端把上一轮的档位复位回默认,不留粘性
   const payload={text, model:currentModel||undefined, effort:currentEffort};
   // 工作目录只在新建对话的首条消息上报;已有会话服务端只认库里绑定的值,报了也不采信
@@ -1529,7 +1577,7 @@ function send(){
 // 重发:用原文按当前模型再发一遍(不重复上屏用户气泡,直接进流式);忙碌或断线时忽略
 function retryMsg(text, atts){
   if(busy||!ws||ws.readyState!==1||!text) return;
-  currentAssistantRow=null; assistantText=''; roundTools=[];
+  resetRoundState();
   const payload={text, model:currentModel||undefined, effort:currentEffort};
   if(!currentSessionId && currentCwdKey) payload.cwd_key=currentCwdKey;
   _pandoEmit('send_payload',payload);
@@ -1547,7 +1595,7 @@ function _startStopFallback(){
   _clearStopFallback();
   _stopFallbackTimer=setTimeout(()=>{
     // 3 秒无回执:本地复位,不再等服务端
-    removeTyping(); currentAssistantRow=null; assistantText=''; roundTools=[]; setBusy(false);
+    removeTyping(); resetRoundState(); setBusy(false);
   }, 3000);
 }
 function _clearStopFallback(){ if(_stopFallbackTimer){ clearTimeout(_stopFallbackTimer); _stopFallbackTimer=null; } }
@@ -1582,7 +1630,8 @@ function connect(){
       case 'memory_recall':
         if(m.context && !m.context.startsWith('【context injected】')) _pendingRecall=m.context;
         _pandoEmit('memory_recall',m); break;
-      case 'thinking': break;
+      // 过程直播:thinking 不再丢弃,累进本轮思考流并刷新活动行/实时 sheet
+      case 'thinking': roundThinking+=(m.text||''); showTyping(); break;
       case 'tool_use': roundTools.push({tool:m.tool,preview:m.input_preview}); showTyping(); break;
       case 'text':
         removeTyping(); assistantText+=m.text;
@@ -1606,12 +1655,12 @@ function connect(){
         if(m.context) updateCtx(m.context);
         if(m.session_id) setSessionId(m.session_id);
         _pandoEmit('message_result',m);
-        currentAssistantRow=null; assistantText=''; roundTools=[]; setBusy(false); break;
+        resetRoundState(); setBusy(false); break;
       case 'error': removeTyping(); addSystem('⚠ '+(m.message||'error')+(m.detail?'\n'+m.detail:'')); setBusy(false); break;
       // 重连对账:有在途轮次,进入忙碌态准备接收回放帧(feat-reconnect-resume)
       case 'inflight': setBusy(true); showTyping(); break;
       // 重连对账回执:无在途轮次,前端复位(feat-reconnect-resume)
-      case 'no_inflight': removeTyping(); currentAssistantRow=null; assistantText=''; roundTools=[]; setBusy(false); break;
+      case 'no_inflight': removeTyping(); resetRoundState(); setBusy(false); break;
       case 'permission_request': enqueuePermission(m); break;
       default:
         // 未知消息类型交给插件注册的渲染器(registerMessageRenderer);没人认领则忽略
