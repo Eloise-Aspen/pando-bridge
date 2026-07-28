@@ -677,6 +677,39 @@ if(!EFFORTS.some(e=>e[0]===currentEffort)) currentEffort='';   // 容错:陈旧/
 const effortLabel = id => (EFFORTS.find(e=>e[0]===id)||['',''])[1];
 // 输入区按钮文案:「<模型>」或「<模型> · <档>」(默认档只显模型)
 const modelBtnLabel = () => modelLabel(currentModel) + (currentEffort ? ' · '+effortLabel(currentEffort) : '');
+function syncModelBtn(){ document.querySelectorAll('#model-btn').forEach(b=>b.textContent=modelBtnLabel()+' ▾'); }
+
+/* ===== 模型/effort 会话级化(feat-workstation-ux2 Task 3)=====
+   之前选择存成全局单键,一个窗口调 Fable 会把别的窗口一起改掉。改成随会话存:
+   localStorage 的 sessionModel:<sid> / sessionEffort:<sid> 各管各的;新会话与存量会话
+   首次打开继承当前全局默认(defaultModel/defaultEffort)后即独立,此后互不覆盖。
+   设置页的「默认模型」仍是全局默认——它管的是新对话从哪起步,不回头改已有会话。
+   服务端零改动:模型/effort 依旧逐消息随 WS payload 下发(fix-model-selector 契约)。*/
+const _mKey = sid => 'sessionModel:'+sid, _eKey = sid => 'sessionEffort:'+sid;
+const _defModel = () => localStorage.getItem('defaultModel') || currentModel;
+const _defEffort = () => { const e=localStorage.getItem('defaultEffort')||''; return EFFORTS.some(x=>x[0]===e)?e:''; };
+// 切到某会话:有自己的选择就用自己的,没有(存量会话/首次打开)就继承全局默认并当场落键
+function adoptSessionPrefs(sid){
+  if(!sid) return;
+  let m=localStorage.getItem(_mKey(sid)), e=localStorage.getItem(_eKey(sid));
+  if(m===null){ m=_defModel(); localStorage.setItem(_mKey(sid), m); }
+  if(e===null){ e=_defEffort(); localStorage.setItem(_eKey(sid), e); }
+  currentModel=m; currentEffort=EFFORTS.some(x=>x[0]===e)?e:'';
+  syncModelBtn();
+}
+// 新对话拿到服务端分配的 id:把此刻的选择落到这个会话名下(用户可能发第一条前就改过档)
+function bindSessionPrefs(sid){
+  if(!sid) return;
+  localStorage.setItem(_mKey(sid), currentModel);
+  localStorage.setItem(_eKey(sid), currentEffort);
+}
+// 用户在 composer 改选择:写进当前会话;还没有 id(新对话)则先留在内存,等 bind 时落库
+function saveSessionPrefs(){
+  if(!currentSessionId) return;
+  localStorage.setItem(_mKey(currentSessionId), currentModel);
+  localStorage.setItem(_eKey(currentSessionId), currentEffort);
+}
+if(currentSessionId) adoptSessionPrefs(currentSessionId);   // 刷新页面后回到本会话自己的模型
 
 /* ===== 工作目录(feat-bridge-workstation)=====
    白名单由 /health 下发(只有 key+label,没有绝对路径——路径只在服务端解析)。
@@ -805,15 +838,15 @@ function selectCustomModel(){
 function selectEffort(id,e){ if(e) e.stopPropagation(); applyEffort(id); }
 function applyEffort(id){
   currentEffort = EFFORTS.some(x=>x[0]===id) ? id : '';   // 只接受白名单档,异常回落默认
-  localStorage.setItem('defaultEffort', currentEffort);
-  document.querySelectorAll('#model-btn').forEach(b=>b.textContent=modelBtnLabel()+' ▾');
+  saveSessionPrefs();   // 会话级:只改当前会话,不动别的窗口(Task 3)
+  syncModelBtn();
   renderModelPop();   // 仅刷新高亮/按钮,不触碰 pop.display → 弹层保持打开
 }
 function applyModel(id){
   if(!id) return;  // 无「默认」空态可选,忽略空值(自定义输入已在源头挡了空输入)
   currentModel=id;
-  localStorage.setItem('defaultModel', currentModel);
-  document.querySelectorAll('#model-btn').forEach(b=>b.textContent=modelBtnLabel()+' ▾');
+  saveSessionPrefs();
+  syncModelBtn();
   renderModelPop();
 }
 document.addEventListener('click',e=>{ if(!e.target.closest('.model-slot')&&!e.target.closest('.ws-slot')) document.querySelectorAll('.model-pop').forEach(p=>p.style.display='none');
@@ -1072,7 +1105,7 @@ function loadSettings(){
       </div>
       <div class="set-sec">模型与记忆</div>
       <div class="set-group">
-        <div class="set-row tap" onclick="cycleDefaultModel()"><span class="k">默认模型</span><span class="v" id="s-model">${modelLabel(currentModel)}</span>${CHEV}</div>
+        <div class="set-row tap" onclick="cycleDefaultModel()"><span class="k">默认模型</span><span class="v" id="s-model">${modelLabel(_defModel())}</span>${CHEV}</div>
         <div class="set-row"><span class="k">自动记住上下文<span class="set-hint">对新消息生效</span></span><button class="tog${autoMem?' on':''}${_hasMemory?'':' disabled'}" id="s-automem" onclick="toggleAutoMem()"></button></div>
       </div>
       <div class="set-sec">工具权限</div>
@@ -1115,7 +1148,8 @@ async function _clearToolPolicy(){
 }
 function toggleThemeMenu(e){ e.stopPropagation(); const m=$('theme-menu'); m.style.display=m.style.display==='none'?'block':'none'; }
 function pickTheme(t){ if(t) localStorage.setItem('theme',t); else localStorage.removeItem('theme'); $('theme-menu').style.display='none'; $('s-theme').textContent=t==='_smoke'?'简洁·烟':'简洁'; _pandoEmit('theme_change',{theme:t||''}); toast('主题已切换(需刷新生效)'); }
-function cycleDefaultModel(){ const ids=MODELS.map(m=>m[0]); const i=ids.indexOf(currentModel); const next=ids[(i+1)%ids.length]; applyModel(next); $('s-model').textContent=modelLabel(next); }
+// 设置页的「默认模型」= 新对话从哪个模型起步(全局);模型已会话级化后它不再回头改已有会话(Task 3)
+function cycleDefaultModel(){ const ids=MODELS.map(m=>m[0]); const i=ids.indexOf(_defModel()); const next=ids[(i+1)%ids.length]; localStorage.setItem('defaultModel', next); $('s-model').textContent=modelLabel(next); }
 function openSidebar(){ loadSessions(); $('overlay').classList.add('open'); $('drawer').classList.add('open'); }
 function closeSidebar(){ $('overlay').classList.remove('open'); $('drawer').classList.remove('open'); }
 
@@ -1257,7 +1291,16 @@ function renderRecent(){
 async function switchSession(sid){ go('chat'); $('msgs').innerHTML=''; setSessionId(sid); _pendingRecall=null; _pandoEmit('session_switch',{session_id:sid}); await loadHistory(sid); if(ws&&ws.readyState===1) ws.send(JSON.stringify({switch_session:sid})); }
 function newChat(){ setSessionId(null); resetCwdKey(); _pendingRecall=null; _pandoEmit('session_switch',{session_id:null}); resetRoundState(); $('msgs').innerHTML=''; hideCtx(); go('home'); loadSessions(); if(ws&&ws.readyState===1) ws.send(JSON.stringify({switch_session:null})); }
 // 会话 id 一落定,工作目录选择器即隐去(绑定已成、本对话内不可换);回到新建态才重新出现
-function setSessionId(id){ currentSessionId=id; if(id) localStorage.setItem('currentSessionId',id); else localStorage.removeItem('currentSessionId'); renderWorkspacePicker(); }
+function setSessionId(id){
+  const prev=currentSessionId;
+  currentSessionId=id;
+  if(id) localStorage.setItem('currentSessionId',id); else localStorage.removeItem('currentSessionId');
+  // 模型/effort 随会话(Task 3):新对话拿到 id → 落当前选择;换到别的会话 → 取它自己的;
+  // 回到新对话空态 → 从全局默认起步。同 id 重复调用(每帧 result 都会调)天然无副作用。
+  if(id){ if(!prev) bindSessionPrefs(id); else if(prev!==id) adoptSessionPrefs(id); }
+  else { currentModel=_defModel(); currentEffort=_defEffort(); syncModelBtn(); }
+  renderWorkspacePicker();
+}
 
 function showEmpty(){ const m=$('msgs'); if(m.children.length) return; const e=document.createElement('div'); e.className='empty';
   e.innerHTML=`<div style="opacity:.5">${PANDO_LOGO(34)}</div><span style="font:400 14px var(--ui)">新对话 · 说点什么开始</span>`; m.appendChild(e); }
