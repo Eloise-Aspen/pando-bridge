@@ -703,6 +703,11 @@ function bindSessionPrefs(sid){
   localStorage.setItem(_mKey(sid), currentModel);
   localStorage.setItem(_eKey(sid), currentEffort);
 }
+// 会话被删:顺手清掉它的两条键,不留没主的孤儿(键名带 sid,新会话是新 UUID 不会撞上复用)
+function dropSessionPrefs(sid){
+  if(!sid) return;
+  localStorage.removeItem(_mKey(sid)); localStorage.removeItem(_eKey(sid));
+}
 // 用户在 composer 改选择:写进当前会话;还没有 id(新对话)则先留在内存,等 bind 时落库
 function saveSessionPrefs(){
   if(!currentSessionId) return;
@@ -1272,6 +1277,7 @@ async function confirmDeleteSession(){
   try{
     const r=await fetch(`/sessions/${sid}`,{method:'DELETE'});
     if(!r.ok) throw new Error(r.status);
+    dropSessionPrefs(sid);   // 会话没了,它的模型/effort 键跟着走
     allSessions=allSessions.filter(x=>x.id!==sid);
     if(_sessOffset>0) _sessOffset--;   // 删掉一行,后面那批整体左移一位,下一页起点跟着退
     renderSessions(); renderRecent(); renderConversations();
