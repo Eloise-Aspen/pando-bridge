@@ -166,6 +166,9 @@
   .think-pill{align-self:flex-start;display:inline-flex;align-items:center;gap:5px;background:var(--surface);border:none;border-radius:9999px;padding:4px 10px;cursor:pointer;font:500 11px var(--ui);color:var(--icon)}
   .think-pill.tool-only{color:#B07A5E}
   .think-pill svg{flex-shrink:0}
+  /* 活的 chip:轮次进行中就挂在轮末 chip 的位置原地刷新,轮末定格成静态 chip(不挪窝) */
+  .think-pill .lc-lb{font-variant-numeric:tabular-nums}
+  .think-pill .lc-dot{display:inline-block;width:5px;height:5px;border-radius:50%;background:var(--accent)}
   /* 记忆召回 sheet body(弹层结构复用 .sheet-ov > .sheet) */
   .rc-body{padding:0 20px calc(24px + var(--safe-bottom));max-height:50vh;overflow:auto;min-height:0;font:400 14px/1.85 var(--ui);color:var(--dim);white-space:pre-wrap;word-break:break-word;-webkit-overflow-scrolling:touch}
   /* 桌面(≥880px)"原文处展开"态:不弹底部弹窗,直接在 chip 下方续写(边线样式沿用早期未启用的稿子) */
@@ -180,10 +183,6 @@
   .a-tool{border:none;background:none;padding:7px;color:var(--faint);cursor:pointer;display:flex}
   .a-tool:active{color:var(--accent-press)}
   /* 活动行:可点(打开实时思考 sheet),文本随事件流刷新 */
-  .typing{align-self:flex-start;display:flex;align-items:center;gap:7px;cursor:pointer}
-  .typing .lb{font:400 14px var(--ui);color:var(--faint);font-style:italic;font-variant-numeric:tabular-nums}
-  .typing .tp-car{font:400 12px var(--ui);color:var(--fainter)}
-  .typing .d{display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--accent)}
   .empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;padding:40px 0;color:var(--fainter)}
   .msg-sys{align-self:center;max-width:88%;font:400 13px/1.6 var(--ui);color:var(--danger-text);white-space:pre-wrap;text-align:center}
 
@@ -658,14 +657,15 @@ let ws, busy=false, currentAssistantRow=null, assistantText='', roundTools=[];
 // 过程直播(feat-workstation-ux2 Task 1):本轮已产生的思考流与起始时刻,供活动行/实时 sheet 用
 let roundThinking='', roundStartTs=0;
 // 一轮结束/切会话时的统一复位——五处调用点共用一个函数,避免漏字段
-function resetRoundState(){ currentAssistantRow=null; assistantText=''; roundTools=[]; roundThinking=''; roundStartTs=0; }
+function resetRoundState(){ currentAssistantRow=null; assistantText=''; roundTools=[]; roundThinking=''; roundStartTs=0;
+  if(_liveTimer){ clearInterval(_liveTimer); _liveTimer=null; } _liveChip=null; _livePanel=null; }
 let _hasMemory=true; // hello 帧更新;false 时「自动记住上下文」开关置灰
 let currentSessionId = localStorage.getItem('currentSessionId') || null;
 // 无「默认」占位项(看不出具体哪个模型);composer 显示的就是设置页选的默认模型——
 // 首次无持久化值时落到 Sonnet 5(与 Pando 原型初始态一致),并立即写回 localStorage
 let currentModel = localStorage.getItem('defaultModel') || 'claude-sonnet-4-6';
 if(!localStorage.getItem('defaultModel')) localStorage.setItem('defaultModel', currentModel);
-let allSessions = [], typingEl=null, lastMsgTime=null, view='home';
+let allSessions = [], lastMsgTime=null, view='home';
 let ASST='Claude';
 const MODELS = [['claude-fable-5','Fable 5'],['claude-opus-4-6','Opus 4.6'],['claude-sonnet-4-6','Sonnet 4.6'],['claude-haiku-4-5-20251001','Haiku 4.5']];
 const modelLabel = id => (MODELS.find(m=>m[0]===id)||['',id])[1] || id;
@@ -1403,19 +1403,26 @@ function addThinking(row, thinking, tools, durationMs){
   const chips=assistantChipRow(row), firstDiff=chips.querySelector('.diff-pill');
   if(firstDiff) chips.insertBefore(pill, firstDiff); else chips.appendChild(pill);
 }
-function toggleThinkInline(pill, thinking, tools, durationMs){
-  const car=pill.querySelector('.tp-car');
-  const anchor=pill.closest('.chip-row')||pill;   // 展开面板插在整排 chip 之后,不塞进横向 flex 行内
-  const existing=anchor.nextElementSibling;
-  if(existing && existing.classList.contains('think-body')){ existing.remove(); car.textContent=' ▸'; return; }
-  const panel=document.createElement('div'); panel.className='think-body';
+// 展开面板的内容渲染(抽出来是为了让「活的 chip」展开着也能原地重灌实时内容)
+function renderThinkPanel(panel, thinking, tools, durationMs){
+  panel.innerHTML='';
   const metaParts=[]; if(durationMs) metaParts.push(fmtDur(durationMs));
   if(thinking) metaParts.push(fmtThinkCount(thinking.length)+' tokens');
   if(metaParts.length){ const m=document.createElement('div'); m.className='ti-meta'; m.textContent=metaParts.join(' · '); panel.appendChild(m); }
   const inner=document.createElement('div'); panel.appendChild(inner);
   renderThinkLines(inner, thinking, tools, 'think-tool');
+}
+// 返回展开出来的面板(收起时返回 null),供 live chip 记住它、逐帧重灌
+function toggleThinkInline(pill, thinking, tools, durationMs){
+  const car=pill.querySelector('.tp-car');
+  const anchor=pill.closest('.chip-row')||pill;   // 展开面板插在整排 chip 之后,不塞进横向 flex 行内
+  const existing=anchor.nextElementSibling;
+  if(existing && existing.classList.contains('think-body')){ existing.remove(); if(car) car.textContent=' ▸'; return null; }
+  const panel=document.createElement('div'); panel.className='think-body';
+  renderThinkPanel(panel, thinking, tools, durationMs);
   anchor.insertAdjacentElement('afterend', panel);
-  car.textContent=' ▾';
+  if(car) car.textContent=' ▾';
+  return panel;
 }
 function openThinkSheet(thinking, tools, durationMs){
   // 弹窗头部保留时长 + token 数两项(用户澄清:上一轮误删了 token 数,只有 chip 上不要它)
@@ -1426,8 +1433,9 @@ function openThinkSheet(thinking, tools, durationMs){
   renderThinkLines($('think-sheet-body'), thinking, tools, 'tool-ln');
   $('think-ov').classList.add('open');
 }
-/* 实时版:同一个 sheet,内容源换成本轮累积的 roundThinking/roundTools,
-   每来一帧事件重渲染(refreshTyping 里驱动);用户手动上滚时不抢滚动位置。*/
+/* 手机端实时版:同一个 sheet(与轮末点开同一形态),内容源换成本轮累积的
+   roundThinking/roundTools,每来一帧事件重渲染(refreshLiveChip 里驱动);
+   用户手动上滚时不抢滚动位置。*/
 let _liveThink=false;
 function openLiveThinkSheet(){ _liveThink=true; renderLiveThinkSheet(); $('think-ov').classList.add('open'); }
 function renderLiveThinkSheet(){
@@ -1436,7 +1444,7 @@ function renderLiveThinkSheet(){
   if(roundThinking) metaParts.push(fmtThinkCount(roundThinking.length)+' tokens');
   $('think-sheet-meta').textContent = metaParts.join(' · ');
   const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
-  renderThinkLines(el, roundThinking || '还没有思考内容，稍等…', roundTools, 'tool-ln');
+  renderThinkLines(el, liveThinking(), roundTools, 'tool-ln');
   if(atBottom) el.scrollTop = el.scrollHeight;
 }
 function closeThinkSheet(){ _liveThink=false; $('think-ov').classList.remove('open'); }
@@ -1568,37 +1576,82 @@ function addSystem(text){ ensureChat(); const el=document.createElement('div'); 
 let speaking=null;
 function speak(text,btn){ try{ if(speaking){ speechSynthesis.cancel(); speaking=null; return; } const u=new SpeechSynthesisUtterance(text); u.lang='zh-CN'; u.onend=()=>speaking=null; speaking=u; speechSynthesis.speak(u); }catch(e){} }
 
-/* ===== 活动行(feat-workstation-ux2 Task 1)=====
-   原「正在思考,稍等」升级为随事件流刷新的进展行:无工具时「思考中 · Ns」,来了 tool_use
-   变「⚙ <工具名> · 第 N 个调用」;整行可点,打开思考 sheet 的实时版(边跑边看已产生的
-   思考流与工具列表)。轮次结束仍走 addThinking 折 chip——历史消息形态零变化。*/
-let _typingTimer=null;
-function typingLabel(){
+/* ===== 活的 chip(feat-workstation-ux2 Task 1；7-29 按验收订正)=====
+   轮次一开始就把 chip 挂在**轮末静态 chip 的最终位置**(助手行顶部那排 chip),过程中原地
+   刷新文案(「思考中 · Ns」→「⚙ <工具名> · 第 N 个调用」),轮末**原地定格**成静态 chip——
+   同一个 DOM 节点从生到死不挪窝,不再有「活动行在回复下方、chip 在消息顶部」的视觉跳跃。
+   点开形态跟随 chip 既有惯例、过程与轮末一致:桌面(≥880px)就地 inline 展开,手机底部 sheet;
+   展开着的时候内容随事件流原地重灌。历史消息形态零变化(仍走 addThinking)。*/
+let _liveChip=null, _liveTimer=null, _livePanel=null;
+const liveThinking = () => roundThinking || '还没有思考内容，稍等…';
+const liveDur = () => roundStartTs ? Date.now()-roundStartTs : 0;
+function liveChipLabel(){
   if(roundTools.length){
     const t=roundTools[roundTools.length-1].tool||'工具';
     return `⚙ ${t} · 第 ${roundTools.length} 个调用`;
   }
-  const s = roundStartTs ? Math.max(0, Math.round((Date.now()-roundStartTs)/1000)) : 0;
-  return `思考中 · ${s}s`;
+  return `思考中 · ${Math.max(0, Math.round(liveDur()/1000))}s`;
 }
-function refreshTyping(){
-  if(!typingEl) return;
-  const lb=typingEl.querySelector('.lb'); if(lb) lb.textContent=typingLabel();
+function refreshLiveChip(){
+  if(!_liveChip) return;
+  const lb=_liveChip.querySelector('.lc-lb'); if(lb) lb.textContent=liveChipLabel();
+  // 桌面展开着:原地重灌(不合上、不重建面板);手机 sheet 开着:走 sheet 的实时渲染
+  if(_livePanel && _livePanel.isConnected) renderThinkPanel(_livePanel, liveThinking(), roundTools, liveDur());
+  else _livePanel=null;
   if(_liveThink) renderLiveThinkSheet();
 }
-function showTyping(){ ensureChat();
-  if(!typingEl){
-    typingEl=document.createElement('div'); typingEl.className='typing';
-    typingEl.innerHTML=`<span class="lb"></span><span class="d blink"></span><span class="tp-car"> ▸</span>`;
-    typingEl.onclick=openLiveThinkSheet;
+function ensureLiveChip(){
+  ensureChat();
+  // 助手行提前建出来:chip 要挂在它顶部,正文帧到了往同一行里写
+  if(!currentAssistantRow) currentAssistantRow=addAssistant('');
+  if(!_liveChip){
+    const pill=document.createElement('button'); pill.className='think-pill live';
+    pill.innerHTML=`${PANDO_LOGO(11)}<span class="lc-lb"></span><span class="lc-dot blink"></span><span class="tp-car"> ▸</span>`;
+    pill.onclick=()=>toggleLiveThink(pill);
+    assistantChipRow(currentAssistantRow).appendChild(pill);
+    _liveChip=pill;
   }
-  $('msgs').appendChild(typingEl);   // 已存在则被移到底部(appendChild 移动节点,不重建,计时不断)
   if(!roundStartTs) roundStartTs=Date.now();
-  if(!_typingTimer) _typingTimer=setInterval(refreshTyping,1000);   // 秒级刷「思考中 · Ns」
-  refreshTyping(); scrollDown(); }
-function removeTyping(){
-  if(_typingTimer){ clearInterval(_typingTimer); _typingTimer=null; }
-  if(typingEl){ typingEl.remove(); typingEl=null; } }
+  if(!_liveTimer) _liveTimer=setInterval(refreshLiveChip,1000);   // 秒级刷「思考中 · Ns」
+  refreshLiveChip(); scrollDown();
+}
+function toggleLiveThink(pill){
+  if(DESKTOP_MQ.matches) _livePanel=toggleThinkInline(pill, liveThinking(), roundTools, liveDur());
+  else openLiveThinkSheet();
+}
+// 轮末定格:同一个节点换文案/图标/点击行为,位置不动;展开着就把权威内容换进去,不合上
+function freezeLiveChip(thinking, tools, durationMs){
+  if(_liveTimer){ clearInterval(_liveTimer); _liveTimer=null; }
+  const pill=_liveChip; _liveChip=null;
+  thinking=thinking||''; tools=tools||[];
+  // 没有活的 chip 的怪路径(停止兜底已复位后来的迟到 result 等):退回改动前的挂法,内容不丢
+  if(!pill){ if(currentAssistantRow) addThinking(currentAssistantRow, thinking, tools, durationMs); return; }
+  if(!thinking && !tools.length){ dropLiveChip(pill); return; }   // 什么都没产出:与改动前一致,不留 chip
+  const openPanel = _livePanel && _livePanel.isConnected ? _livePanel : null;
+  pill.classList.remove('live');
+  if(!thinking) pill.classList.add('tool-only');
+  const icon = thinking ? PANDO_LOGO(11) : IC_WRENCH;
+  const label = thinking ? `思考 · ${fmtDur(durationMs)}` : `工具 · ${tools.length}`;
+  pill.innerHTML=`${icon}<span>${label}</span><span class="tp-car"> ${openPanel?'▾':'▸'}</span>`;
+  pill.onclick=()=> DESKTOP_MQ.matches ? toggleThinkInline(pill, thinking, tools, durationMs) : openThinkSheet(thinking, tools, durationMs);
+  if(openPanel) renderThinkPanel(openPanel, thinking, tools, durationMs);
+  _livePanel=null;
+  // 手机 sheet 正开着:换成权威内容并退出实时态
+  if(_liveThink && $('think-ov') && $('think-ov').classList.contains('open')) openThinkSheet(thinking, tools, durationMs);
+  _liveThink=false;
+}
+// 丢弃(错误/停止/无在途):chip、展开面板一起收掉;一个字都没产出的空助手行也不留在屏幕上
+function dropLiveChip(pill){
+  if(_liveTimer){ clearInterval(_liveTimer); _liveTimer=null; }
+  if(_livePanel){ _livePanel.remove(); _livePanel=null; }
+  const p=pill||_liveChip; _liveChip=null;
+  if(p) p.remove();
+  const row=currentAssistantRow;
+  if(row && row.isConnected && !assistantText){
+    const chips=row.querySelector(':scope > .chip-row');
+    if(!chips || !chips.children.length) row.remove();
+  }
+}
 
 /* ===== send ===== */
 function onSendBtn(){ if(busy) stopStreaming(); else send(); }
@@ -1621,7 +1674,7 @@ function send(){
   if(ready.length) payload.attachments=ready.map(a=>a.path);
   _pandoEmit('send_payload',payload);   // 插件可就地改 payload(如语音模式加 voice_mode 标记)
   ws.send(JSON.stringify(payload));
-  clearAttachments(); setBusy(true); showTyping();
+  clearAttachments(); setBusy(true); ensureLiveChip();
 }
 // 重发:用原文按当前模型再发一遍(不重复上屏用户气泡,直接进流式);忙碌或断线时忽略
 function retryMsg(text, atts){
@@ -1631,7 +1684,7 @@ function retryMsg(text, atts){
   if(!currentSessionId && currentCwdKey) payload.cwd_key=currentCwdKey;
   _pandoEmit('send_payload',payload);
   ws.send(JSON.stringify(payload));
-  setBusy(true); showTyping();
+  setBusy(true); ensureLiveChip();
 }
 
 /* ===== WebSocket + 断连重连续传(feat-reconnect-resume) ===== */
@@ -1644,7 +1697,7 @@ function _startStopFallback(){
   _clearStopFallback();
   _stopFallbackTimer=setTimeout(()=>{
     // 3 秒无回执:本地复位,不再等服务端
-    removeTyping(); resetRoundState(); setBusy(false);
+    freezeLiveChip(roundThinking, roundTools, liveDur()); resetRoundState(); setBusy(false);
   }, 3000);
 }
 function _clearStopFallback(){ if(_stopFallbackTimer){ clearTimeout(_stopFallbackTimer); _stopFallbackTimer=null; } }
@@ -1680,16 +1733,15 @@ function connect(){
         if(m.context && !m.context.startsWith('【context injected】')) _pendingRecall=m.context;
         _pandoEmit('memory_recall',m); break;
       // 过程直播:thinking 不再丢弃,累进本轮思考流并刷新活动行/实时 sheet
-      case 'thinking': roundThinking+=(m.text||''); showTyping(); break;
-      case 'tool_use': roundTools.push({tool:m.tool,preview:m.input_preview}); showTyping(); break;
+      case 'thinking': roundThinking+=(m.text||''); ensureLiveChip(); break;
+      case 'tool_use': roundTools.push({tool:m.tool,preview:m.input_preview}); ensureLiveChip(); break;
       case 'text':
-        removeTyping(); assistantText+=m.text;
+        assistantText+=m.text;
         if(!currentAssistantRow) currentAssistantRow=addAssistant('');
         // 流式期间就折 diff:正文永不出现 diff 原文,块闭合的那一刻 chip 直接出现
         renderAssistantBody(currentAssistantRow, assistantText, false); break;
       case 'result':
         _clearStopFallback();
-        removeTyping();
         // 权威文本校对(feat-stream-output):delta 已逐段下发并累积 assistantText,
         // result.text 为服务端权威全文——以它为准(落差时静默修正,textContent 同值无重绘)
         if(m.text){
@@ -1698,18 +1750,18 @@ function connect(){
           renderAssistantBody(currentAssistantRow, assistantText, true);
         }
         if(currentAssistantRow && _pendingRecall){ assistantChipRow(currentAssistantRow).insertBefore(makeRecallChip(_pendingRecall), assistantChipRow(currentAssistantRow).firstChild); _pendingRecall=null; }
-        if(currentAssistantRow) addThinking(currentAssistantRow, m.thinking, roundTools, m.duration_ms);
+        freezeLiveChip(m.thinking, roundTools, m.duration_ms);   // 原地定格,不重挂
         if(currentAssistantRow && assistantText) addToolbar(currentAssistantRow, assistantText, m.stopped?null:{cost_usd:m.cost_usd,duration_ms:m.duration_ms,usage:m.usage});
         if(currentAssistantRow && m.stopped) addStopped(currentAssistantRow);
         if(m.context) updateCtx(m.context);
         if(m.session_id) setSessionId(m.session_id);
         _pandoEmit('message_result',m);
         resetRoundState(); setBusy(false); break;
-      case 'error': removeTyping(); addSystem('⚠ '+(m.message||'error')+(m.detail?'\n'+m.detail:'')); setBusy(false); break;
+      case 'error': freezeLiveChip(roundThinking, roundTools, liveDur()); addSystem('⚠ '+(m.message||'error')+(m.detail?'\n'+m.detail:'')); setBusy(false); break;
       // 重连对账:有在途轮次,进入忙碌态准备接收回放帧(feat-reconnect-resume)
-      case 'inflight': setBusy(true); showTyping(); break;
+      case 'inflight': setBusy(true); ensureLiveChip(); break;
       // 重连对账回执:无在途轮次,前端复位(feat-reconnect-resume)
-      case 'no_inflight': removeTyping(); resetRoundState(); setBusy(false); break;
+      case 'no_inflight': dropLiveChip(); resetRoundState(); setBusy(false); break;
       case 'permission_request': enqueuePermission(m); break;
       default:
         // 未知消息类型交给插件注册的渲染器(registerMessageRenderer);没人认领则忽略
