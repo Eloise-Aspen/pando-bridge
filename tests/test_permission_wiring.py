@@ -9,6 +9,7 @@
 
 import json
 import threading
+import time
 
 from fastapi.testclient import TestClient
 
@@ -130,11 +131,12 @@ def test_on_appends_permission_flags(tmp_path, monkeypatch):
     assert argv[-1].endswith("hi"), "message 应是最后一个位置参数,未被 --mcp-config 吞掉"
 
 
-def _run_endpoint_roundtrip(tmp_path, monkeypatch, allow):
+def _run_endpoint_roundtrip(tmp_path, monkeypatch, allow, plugins=None):
     """开开关，跑 端点→WS→回帧 往返；返回 (POST 响应 dict, 收到的 permission_request 帧)。"""
     captured = {}
     _patch_exec(monkeypatch, captured)
-    app = create_app(_config(tmp_path, PERMISSION_PASSTHROUGH=True, PERMISSION_TIMEOUT=5))
+    app = create_app(_config(tmp_path, PERMISSION_PASSTHROUGH=True, PERMISSION_TIMEOUT=5,
+                             PLUGINS=plugins or []))
     result_box = {}
     with TestClient(app) as client:
         with client.websocket_connect("/ws") as wsc:
@@ -177,6 +179,37 @@ def test_endpoint_roundtrip_allow(tmp_path, monkeypatch):
 def test_endpoint_roundtrip_deny(tmp_path, monkeypatch):
     resp, _ = _run_endpoint_roundtrip(tmp_path, monkeypatch, allow=False)
     assert resp["decision"] == "deny"
+
+
+def test_permission_request_notifies_plugins(tmp_path, monkeypatch):
+    """on_permission_request 钩子在推 modal 的同时被调用，且只拿到工具名 + request_id——
+    通知常在锁屏可见，核心刻意不把 input 交给插件（feat-workstation-ux2 Task 2）。"""
+    from tests.fixtures.hook_plugins import PermissionNotifyPlugin
+
+    PermissionNotifyPlugin.calls.clear()
+    resp, frame = _run_endpoint_roundtrip(
+        tmp_path, monkeypatch, allow=True,
+        plugins=["tests.fixtures.hook_plugins.PermissionNotifyPlugin"])
+    assert resp["decision"] == "allow"
+    # 钩子丢线程池执行,允许稍晚于往返落地
+    for _ in range(50):
+        if PermissionNotifyPlugin.calls:
+            break
+        time.sleep(0.1)
+    assert PermissionNotifyPlugin.calls, "未调用 on_permission_request 钩子"
+    tool_name, request_id = PermissionNotifyPlugin.calls[0]
+    assert tool_name == "Write"
+    assert request_id == frame["request_id"]
+    # 入参里不得出现工具 input 的任何痕迹
+    assert "a.txt" not in str(PermissionNotifyPlugin.calls)
+
+
+def test_broken_notify_hook_does_not_break_permission_roundtrip(tmp_path, monkeypatch):
+    """通知钩子炸了,权限往返照常 allow——错误隔离(core-design 错误隔离策略)。"""
+    resp, _ = _run_endpoint_roundtrip(
+        tmp_path, monkeypatch, allow=True,
+        plugins=["tests.fixtures.hook_plugins.BrokenOnPermissionRequestPlugin"])
+    assert resp["decision"] == "allow"
 
 
 def test_endpoint_unknown_token_denies(tmp_path, monkeypatch):

@@ -554,6 +554,22 @@ def create_app(config) -> FastAPI:
                 combined += injected
         return combined
 
+    def _notify_permission_request(tool_name: str, request_id: str) -> None:
+        """广播 on_permission_request 钩子——「有一条权限请求正在等人批」的通知事件。
+
+        刻意只给工具名 + request_id，**不给 input**：订阅方（如 push 插件）拿它发系统通知，
+        通知在锁屏上可见，带命令/路径细节等于泄露。fire-and-forget：丢线程池、不 await，
+        插件慢或炸都不拖慢权限往返（错误隔离照旧由 _call_hook 兜）。"""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        for plugin in plugin_instances:
+            loop.run_in_executor(
+                None,
+                lambda p=plugin: _call_hook(p, "on_permission_request", tool_name, request_id),
+            )
+
     # -----------------------------------------------------------------------
     # Chat history DB
     # -----------------------------------------------------------------------
@@ -1154,6 +1170,8 @@ def create_app(config) -> FastAPI:
             # 记录 request_id → tool_name，供「始终允许」反查组写策略
             _pending_tool_names[request_id] = body.get("tool_name", "")
             _rid_holder.append(request_id)
+            # 通知钩子：让插件（push 插件）把「在等你批」推到设备上，人锁屏离场也能被叫回来
+            _notify_permission_request(body.get("tool_name", ""), request_id)
             ws = permission_broker.ws_for_token(body.get("token"))
             await ws.send_text(json.dumps({
                 "type": "permission_request",

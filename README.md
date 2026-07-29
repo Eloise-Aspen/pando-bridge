@@ -368,6 +368,7 @@ curl -X POST http://127.0.0.1:8780/memory/import -H "Content-Type: application/j
 | `register_session_source` | `(registry) -> None` | 启动时（会话源注册；形态为未来 spec 预留）。 |
 | `on_user_message` | `(session_id, text, is_new_session) -> str` | 每条用户消息。返回文本被注入（`is_new_session` 时作 system prompt，否则作为 recall 前置到消息）。在线程池里跑。 |
 | `on_archive` | `(session_id, messages, force) -> None` | 归档 prompt 构建前。 |
+| `on_permission_request` | `(tool_name, request_id) -> None` | 权限透传模式下，一条授权请求推给前端的同时。用于把「在等你批」通知到设备（人锁屏离场也能被叫回来批）。在线程池里跑且**不等待结果**，不拖慢授权往返。**刻意不传工具入参**——通知常在锁屏可见，带命令/路径细节等于泄露。 |
 
 内置的 [`MemoryPlugin`](pando/plugins/memory.py) 是个完整示例：它的 `on_user_message` 做
 上下文/回忆注入，`register_routes` 挂一个 `/memory-admin/*` 透传代理到记忆服务的管理 API。
@@ -818,6 +819,7 @@ raises, that plugin is disabled for **all** subsequent hooks.
 | `register_session_source` | `(registry) -> None` | At startup (session-source registration; shape reserved for a future spec). |
 | `on_user_message` | `(session_id, text, is_new_session) -> str` | On every user message. Return text is injected (system prompt when `is_new_session`, otherwise recall prepended to the message). Runs in a thread pool. |
 | `on_archive` | `(session_id, messages, force) -> None` | Before an archive prompt is built. |
+| `on_permission_request` | `(tool_name, request_id) -> None` | In permission pass-through mode, as an authorization request is pushed to the front end. Use it to notify devices that something is waiting for approval (so you can approve after walking away). Runs in a thread pool and is **not awaited** — it never slows the approval round trip. Tool input is **deliberately not passed**: notifications are often visible on a lock screen, so command/path details would leak. |
 
 The built-in [`MemoryPlugin`](pando/plugins/memory.py) is a worked example: its
 `on_user_message` does context/recall injection, and its `register_routes` mounts a
