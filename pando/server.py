@@ -142,6 +142,52 @@ def _cfg(config, key: str, default=None):
 VALID_EFFORTS = ("low", "medium", "high", "xhigh", "max")
 
 
+# 内置策展模型列表：`GET /models` 的最后一级兜底。公开仓 clone 即跑，且不再是死在 HTML
+# 里的常量——部署方可用 config 的 MODELS 覆盖，或用插件 provide_models() 供实时数据。
+# 一个模型一行，不含 [1m] 长上下文变体（手机端弹层窄，双行同名易选错）。
+DEFAULT_MODELS = [
+    {"id": "claude-opus-5", "label": "Opus 5"},
+    {"id": "claude-sonnet-5", "label": "Sonnet 5"},
+    {"id": "claude-fable-5", "label": "Fable 5"},
+    {"id": "claude-opus-4-8", "label": "Opus 4.8"},
+    {"id": "claude-sonnet-4-6", "label": "Sonnet 4.6"},
+    {"id": "claude-haiku-4-5", "label": "Haiku 4.5"},
+]
+
+
+def normalize_models(raw):
+    """把各种写法的模型列表规整成 [{"id","label"}]，非法条目静默丢弃。
+
+    接受三种条目形态，方便配置表与插件各写各的顺手写法：
+      - {"id": ..., "label": ...}（label 缺省回落 id）
+      - ("claude-opus-5", "Opus 5") 二元组/列表
+      - "claude-opus-5" 裸字符串（label = id）
+    id 去重（保留首次出现的顺序），空/非字符串 id 一律丢弃。
+    """
+    if not isinstance(raw, (list, tuple)):
+        return []
+    out, seen = [], set()
+    for item in raw:
+        mid = label = None
+        if isinstance(item, dict):
+            mid, label = item.get("id"), item.get("label")
+        elif isinstance(item, (list, tuple)) and len(item) >= 1:
+            mid = item[0]
+            label = item[1] if len(item) >= 2 else None
+        elif isinstance(item, str):
+            mid = item
+        if not isinstance(mid, str) or not mid.strip():
+            continue
+        mid = mid.strip()
+        if mid in seen:
+            continue
+        seen.add(mid)
+        if not isinstance(label, str) or not label.strip():
+            label = mid
+        out.append({"id": mid, "label": label.strip()})
+    return out
+
+
 def normalize_effort(effort):
     """校验 effort 白名单。合法值原样返回；空/未选返回 None（不追加 flag）；
     非法非空值返回 None 并 log 警告（含手工 WS 注入的任意类型，均不抛异常）。
@@ -890,6 +936,25 @@ def create_app(config) -> FastAPI:
             # 服务端再按白名单解析路径）。前端启动必拉 /health，故复用此口不新开端点。
             "workspaces": [{"key": k, "label": v["label"]} for k, v in workspaces.items()],
         }
+
+    @app.get("/models")
+    async def api_list_models():
+        """前端模型选择器的候选来源。三级取值，先到先得：
+
+        1. 插件 `provide_models()`——取**第一个返回非空列表的**插件（私有部署可在这里
+           接实时数据源；凭证之类的环境事实全留在插件侧，核心只见通用契约）。
+        2. 配置表 `config.MODELS`（部署方策展，无需改代码）。
+        3. 内置 `DEFAULT_MODELS`（公开仓 clone 即跑）。
+
+        任何一级返回空/形状不对都往下落，插件抛错由 _call_hook 吞掉——外部依赖降级规范：
+        前端永远有东西可显示。返回形如 `[{"id","label"}, ...]`。
+        """
+        for plugin in plugin_instances:
+            models = normalize_models(_call_hook(plugin, "provide_models", default=None))
+            if models:
+                return models
+        models = normalize_models(_cfg(config, "MODELS", None))
+        return models or list(DEFAULT_MODELS)
 
     @app.get("/sessions")
     async def api_list_sessions(limit: int = 30, offset: int = 0):
