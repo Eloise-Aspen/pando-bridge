@@ -145,14 +145,62 @@ VALID_EFFORTS = ("low", "medium", "high", "xhigh", "max")
 # 内置策展模型列表：`GET /models` 的最后一级兜底。公开仓 clone 即跑，且不再是死在 HTML
 # 里的常量——部署方可用 config 的 MODELS 覆盖，或用插件 provide_models() 供实时数据。
 # 一个模型一行，不含 [1m] 长上下文变体（手机端弹层窄，双行同名易选错）。
+# primary=True 的进菜单主线，其余收进前端的「更多模型」（静态表**手工标注**；带
+# created_at 的动态列表由 assign_primary 自动算，见下）。
 DEFAULT_MODELS = [
-    {"id": "claude-opus-5", "label": "Opus 5"},
-    {"id": "claude-sonnet-5", "label": "Sonnet 5"},
-    {"id": "claude-fable-5", "label": "Fable 5"},
-    {"id": "claude-opus-4-8", "label": "Opus 4.8"},
-    {"id": "claude-sonnet-4-6", "label": "Sonnet 4.6"},
-    {"id": "claude-haiku-4-5", "label": "Haiku 4.5"},
+    {"id": "claude-opus-5", "label": "Opus 5", "primary": True},
+    {"id": "claude-sonnet-5", "label": "Sonnet 5", "primary": True},
+    {"id": "claude-fable-5", "label": "Fable 5", "primary": True},
+    {"id": "claude-haiku-4-5", "label": "Haiku 4.5", "primary": True},
+    {"id": "claude-opus-4-8", "label": "Opus 4.8", "primary": False},
+    {"id": "claude-sonnet-4-6", "label": "Sonnet 4.6", "primary": False},
 ]
+
+
+def model_family(model_id) -> str | None:
+    """从模型 id 解析「族」——id 里去掉 claude 与纯数字段后的第一个字母段。
+
+    `claude-opus-4-5-20251101` → `opus`；`claude-3-5-haiku-20241022` → `haiku`。
+    **刻意不写死族名单**（opus/sonnet/haiku/fable…）：写死会让每出一个新族就得改一次
+    代码，抵消本端点「实时」的意义。解析不出族的返回 None（一律归非主线）。
+    """
+    for part in str(model_id or "").lower().split("-"):
+        if part == "claude" or not part.isalpha():
+            continue
+        return part
+    return None
+
+
+def assign_primary(models):
+    """给模型列表算「主线 / 更多模型」分层，返回新列表（每项带 bool primary）。
+
+    规则（单一出处，前端只渲染不判断）：同族按 `created_at` 降序，各族**最新一代**为
+    主线，其余为 False；解析不出族的一律 False。
+
+    两种输入都要吃得下：
+      · 条目已**显式标注** primary（静态策展表手工标）→ 原样尊重，不再自动算。
+        判据是「整张表里有任何一条带 primary 键」，避免半自动半手工的暧昧状态。
+      · 条目带 `created_at`（动态 API 列表）→ 自动算。**缺 created_at 的条目按列表
+        顺序参与**（官方列表本就新→旧返回），故整表缺该字段时自然退化为「每族取列表
+        中首个」——旧版缓存文件（只有 id/label）不会因此失去分层。
+    """
+    items = list(models or [])
+    if any(isinstance(m, dict) and "primary" in m for m in items):
+        return [{**m, "primary": bool(m.get("primary"))} for m in items]
+    # 排序键：有 created_at（字符串，ISO 可字典序比较）的一律优先于没有的；都没有则比
+    # 列表位置（越靠前视为越新）。winners[族] = (排序键, 该族当选者的下标)
+    winners: dict = {}
+    for idx, m in enumerate(items):
+        fam = model_family(m.get("id"))
+        if not fam:
+            continue
+        ts = m.get("created_at")
+        key = (1, ts) if isinstance(ts, str) and ts else (0, "")
+        cur = winners.get(fam)
+        if cur is None or key > cur[0] or (key == cur[0] and idx < cur[1]):
+            winners[fam] = (key, idx)
+    chosen = {idx for _, idx in winners.values()}
+    return [{**m, "primary": i in chosen} for i, m in enumerate(items)]
 
 
 def normalize_models(raw):
@@ -160,20 +208,31 @@ def normalize_models(raw):
 
     接受三种条目形态，方便配置表与插件各写各的顺手写法：
       - {"id": ..., "label": ...}（label 缺省回落 id）
-      - ("claude-opus-5", "Opus 5") 二元组/列表
+      - ("claude-opus-5", "Opus 5") 二元组/列表；三元组第三位 = primary
       - "claude-opus-5" 裸字符串（label = id）
     id 去重（保留首次出现的顺序），空/非字符串 id 一律丢弃。
+
+    分层相关的两个可选字段**原样带出**，交给 assign_primary 处置（本函数不判分层）：
+      - `primary`（显式标注，静态策展表用）
+      - `created_at`（字符串，动态 API 列表用）
     """
     if not isinstance(raw, (list, tuple)):
         return []
     out, seen = [], set()
     for item in raw:
         mid = label = None
+        primary = created_at = None
         if isinstance(item, dict):
             mid, label = item.get("id"), item.get("label")
+            if "primary" in item:
+                primary = bool(item.get("primary"))
+            if isinstance(item.get("created_at"), str):
+                created_at = item["created_at"]
         elif isinstance(item, (list, tuple)) and len(item) >= 1:
             mid = item[0]
             label = item[1] if len(item) >= 2 else None
+            if len(item) >= 3:
+                primary = bool(item[2])
         elif isinstance(item, str):
             mid = item
         if not isinstance(mid, str) or not mid.strip():
@@ -184,7 +243,12 @@ def normalize_models(raw):
         seen.add(mid)
         if not isinstance(label, str) or not label.strip():
             label = mid
-        out.append({"id": mid, "label": label.strip()})
+        entry = {"id": mid, "label": label.strip()}
+        if primary is not None:
+            entry["primary"] = primary
+        if created_at:
+            entry["created_at"] = created_at
+        out.append(entry)
     return out
 
 
@@ -947,14 +1011,24 @@ def create_app(config) -> FastAPI:
         3. 内置 `DEFAULT_MODELS`（公开仓 clone 即跑）。
 
         任何一级返回空/形状不对都往下落，插件抛错由 _call_hook 吞掉——外部依赖降级规范：
-        前端永远有东西可显示。返回形如 `[{"id","label"}, ...]`。
+        前端永远有东西可显示。
+
+        返回形如 `[{"id","label","primary"}, ...]`。`primary` 由服务端算（单一出处，
+        前端只渲染）：静态表手工标注，动态列表按 assign_primary 的每族取最新规则自动算。
+        中间字段 `created_at` 只用于算分层，不出契约。
         """
+        def _out(raw):
+            return [
+                {"id": m["id"], "label": m["label"], "primary": m["primary"]}
+                for m in assign_primary(raw)
+            ]
+
         for plugin in plugin_instances:
             models = normalize_models(_call_hook(plugin, "provide_models", default=None))
             if models:
-                return models
+                return _out(models)
         models = normalize_models(_cfg(config, "MODELS", None))
-        return models or list(DEFAULT_MODELS)
+        return _out(models or list(DEFAULT_MODELS))
 
     @app.get("/sessions")
     async def api_list_sessions(limit: int = 30, offset: int = 0):

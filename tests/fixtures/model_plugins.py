@@ -22,6 +22,17 @@ class BrokenModelProviderPlugin:
         raise RuntimeError("boom: provide_models")
 
 
+class DatedModelProviderPlugin:
+    """带 created_at 的动态列表（模拟官方 API 供数）：分层应自动算，且 created_at
+    只是中间字段，不得出现在 `GET /models` 的返回里。"""
+
+    def provide_models(self):
+        return [
+            {"id": "claude-opus-5", "label": "Opus 5", "created_at": "2026-06-01T00:00:00Z"},
+            {"id": "claude-opus-4-8", "label": "Opus 4.8", "created_at": "2026-02-01T00:00:00Z"},
+        ]
+
+
 class LooseShapeModelProviderPlugin:
     """混写形态 + 脏条目：二元组 / 裸字符串 / 缺 label / 非法项，验证 normalize_models。"""
 

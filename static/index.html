@@ -124,6 +124,9 @@
   .model-pop{position:absolute;left:0;bottom:calc(100% + 6px);background:var(--card);border:1px solid var(--line-strong);border-radius:10px;padding:4px;min-width:150px;box-shadow:0 10px 30px rgba(31,30,29,.16);z-index:20}
   .model-opt{padding:9px 12px;border-radius:7px;font:400 13.5px var(--ui);color:var(--dim);cursor:pointer}
   .model-opt.sel{background:var(--accent-bg);color:var(--accent-press);font-weight:500}
+  /* 「更多模型」行:与 model-opt 同规格(padding/字号不变),只换配色 —— 弹层宽度形态不得改变 */
+  .model-opt.more{color:var(--faint)}
+  .more-cav{font-size:11px}
   .model-opt.custom{border-top:1px solid var(--line-soft);margin-top:2px;color:var(--faint)}
   /* 自定义模型:点「自定义…」后本行原地展开内联输入(替代 window.prompt,根治 PWA 静默吞返回) */
   .model-opt.custom.editing{display:flex;align-items:center;gap:6px;padding:6px 6px;cursor:default}
@@ -670,7 +673,9 @@ let ASST='Claude';
 // 候选来自 `GET /models`(服务端三级取值:插件供数 → 配置表 → 内置策展)。这里的值只是
 // **首屏兜底**——启动时 fetch 成功就整体替换,失败静默沿用兜底,菜单永远有东西可选。
 // 因此是 let 不是 const。服务端对模型名不做白名单,值原样透传 --model(fix-model-selector 契约)。
-let MODELS = [['claude-opus-5','Opus 5'],['claude-sonnet-5','Sonnet 5'],['claude-fable-5','Fable 5'],['claude-opus-4-8','Opus 4.8'],['claude-haiku-4-5','Haiku 4.5']];
+// 条目形如 [id, 显示名, primary]:primary 由**服务端**算(每族取最新一代),前端只渲染
+// 不判断——主线直接列出,其余收进「更多模型」原地展开(Task 5)。
+let MODELS = [['claude-opus-5','Opus 5',true],['claude-sonnet-5','Sonnet 5',true],['claude-fable-5','Fable 5',true],['claude-haiku-4-5','Haiku 4.5',true],['claude-opus-4-8','Opus 4.8',false]];
 const modelLabel = id => (MODELS.find(m=>m[0]===id)||['',id])[1] || id;
 // 陈旧 localStorage 回落:存量 defaultModel / sessionModel:<sid> 若已不在候选列表里
 // (模型下线/改名),回落到当前默认 Sonnet;自定义模型(用户手输)不在列表里也属正常,
@@ -830,7 +835,7 @@ async function loadModels(){
     if(r.ok) list=await r.json();
   }catch(e){}
   if(!Array.isArray(list)||!list.length) return;              // 拿不到就沿用兜底
-  const pairs=list.filter(m=>m&&typeof m.id==='string'&&m.id).map(m=>[m.id, (m.label||m.id)]);
+  const pairs=list.filter(m=>m&&typeof m.id==='string'&&m.id).map(m=>[m.id, (m.label||m.id), !!m.primary]);
   if(!pairs.length) return;
   MODELS=pairs;
   _reconcileModels();
@@ -851,14 +856,35 @@ function _reconcileModels(){
   }
   if(currentModel && !known(currentModel)) currentModel=localStorage.getItem('defaultModel')||FALLBACK_MODEL_ID;
 }
+/* ===== 菜单分层(feat-model-list-live Task 5 / 补裁 5)=====
+   服务端算好 primary(每族取最新一代),前端只渲染:主线直接列出,其余收进「更多模型」
+   **原地展开/收起**(不做 flyout 子菜单——手机端单手更好点,且不必处理二级定位与溢出)。
+   三态:null=自动(当前模型在「更多」里就自动展开,否则看不到选中态),true/false=用户手动。*/
+let _modelPopExpanded=null;
+// 「更多」是否可见:服务端一个主线都没标出时退化为平铺(菜单不至于空掉)
+const _modelRest = () => MODELS.filter(m=>!m[2]);
+function _restShown(){
+  if(!MODELS.some(m=>m[2])) return true;                                   // 平铺退化
+  if(_modelPopExpanded!==null) return _modelPopExpanded;
+  return _modelRest().some(m=>m[0]===currentModel);                        // 自动展开
+}
+function toggleMoreModels(e){ if(e) e.stopPropagation(); _modelPopExpanded=!_restShown(); renderModelPop(); }
 function renderModelPop(){
   const host = activeComposer(); const pop = host.querySelector('#model-pop'); if(!pop) return;
-  pop.innerHTML = MODELS.map(([id,nm])=>`<div class="model-opt${id===currentModel?' sel':''}" onclick="selectModel('${id}')">${nm}</div>`).join('')
+  const flat = !MODELS.some(m=>m[2]), rest = flat ? [] : _modelRest();
+  const shown = _restShown();
+  const opt = ([id,nm])=>`<div class="model-opt${id===currentModel?' sel':''}" onclick="selectModel('${id}')">${nm}</div>`;
+  pop.innerHTML = (flat ? MODELS : MODELS.filter(m=>m[2])).map(opt).join('')
+    + (rest.length ? `<div class="model-opt more" onclick="toggleMoreModels(event)">更多模型 <span class="more-cav">${shown?'▴':'▾'}</span></div>` : '')
+    + (rest.length && shown ? rest.map(opt).join('') : '')
     + `<div class="model-opt custom" id="custom-opt" onclick="selectCustomModel()">自定义…</div>`
     // effort 档位行:选档保持弹层打开(仅更新高亮与按钮),便于连改;点模型/点外部才收起
     + `<div class="eff-row">`+ EFFORTS.map(([id,nm])=>`<button class="eff-pill${id===currentEffort?' sel':''}" onclick="selectEffort('${id}',event)">${nm}</button>`).join('') +`</div>`;
 }
-function toggleModel(e){ e.stopPropagation(); const host=activeComposer(); const p=host.querySelector('#model-pop'); p.style.display = p.style.display==='none'?'block':'none'; }
+function toggleModel(e){ e.stopPropagation(); const host=activeComposer(); const p=host.querySelector('#model-pop');
+  const open = p.style.display==='none';
+  if(open){ _modelPopExpanded=null; renderModelPop(); }   // 每次开都回到默认态(只显主线)
+  p.style.display = open?'block':'none'; }
 function selectModel(id){ applyModel(id); const host=activeComposer(); host.querySelector('#model-pop').style.display='none'; }
 // PWA 兼容:Android standalone 下 window.prompt() 静默返回 null。改为本行原地展开内联输入,
 // 回车/点✓提交,Esc/失焦收起——不依赖任何 prompt/alert 系 API。值原样透传 --model(信任 CLI 校验)。
