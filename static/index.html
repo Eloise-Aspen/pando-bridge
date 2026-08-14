@@ -663,12 +663,19 @@ let _hasMemory=true; // hello 帧更新;false 时「自动记住上下文」开�
 let currentSessionId = localStorage.getItem('currentSessionId') || null;
 // 无「默认」占位项(看不出具体哪个模型);composer 显示的就是设置页选的默认模型——
 // 首次无持久化值时落到 Sonnet 5(与 Pando 原型初始态一致),并立即写回 localStorage
-let currentModel = localStorage.getItem('defaultModel') || 'claude-sonnet-4-6';
+let currentModel = localStorage.getItem('defaultModel') || 'claude-sonnet-5';
 if(!localStorage.getItem('defaultModel')) localStorage.setItem('defaultModel', currentModel);
 let allSessions = [], lastMsgTime=null, view='home';
 let ASST='Claude';
-const MODELS = [['claude-fable-5','Fable 5'],['claude-opus-4-6','Opus 4.6'],['claude-sonnet-4-6','Sonnet 4.6'],['claude-haiku-4-5-20251001','Haiku 4.5']];
+// 候选来自 `GET /models`(服务端三级取值:插件供数 → 配置表 → 内置策展)。这里的值只是
+// **首屏兜底**——启动时 fetch 成功就整体替换,失败静默沿用兜底,菜单永远有东西可选。
+// 因此是 let 不是 const。服务端对模型名不做白名单,值原样透传 --model(fix-model-selector 契约)。
+let MODELS = [['claude-opus-5','Opus 5'],['claude-sonnet-5','Sonnet 5'],['claude-fable-5','Fable 5'],['claude-opus-4-8','Opus 4.8'],['claude-haiku-4-5','Haiku 4.5']];
 const modelLabel = id => (MODELS.find(m=>m[0]===id)||['',id])[1] || id;
+// 陈旧 localStorage 回落:存量 defaultModel / sessionModel:<sid> 若已不在候选列表里
+// (模型下线/改名),回落到当前默认 Sonnet;自定义模型(用户手输)不在列表里也属正常,
+// 故只在**列表就位之后**做一次,且只兜「曾经内置、如今消失」的那批(见 _reconcileModels)。
+const FALLBACK_MODEL_ID = 'claude-sonnet-5';
 // effort 档位（对齐 CLI --effort）：'' = 默认(不传 flag，回落 CLI 默认档，与现状零回归)。
 // 空态时输入区按钮只显模型；选了档才追加「· <档>」。持久化到 localStorage.defaultEffort。
 const EFFORTS = [['','默认'],['low','Low'],['medium','Medium'],['high','High'],['xhigh','XHigh'],['max','Max']];
@@ -811,6 +818,38 @@ function syncComposerRefs(){
   $input = host.querySelector('#input');
   renderModelPop();
   renderWorkspacePicker();
+}
+/* ===== 模型列表实时化(feat-model-list-live Task 3)=====
+   启动时拉一次 `GET /models`:成功则整体替换 MODELS 并刷新按钮/已开弹层;失败静默用
+   首屏兜底(菜单照常可用,聊天零影响——外部依赖降级规范)。服务端已做 24h 缓存,
+   这里每次开页只是读缓存结果,不构成对官方 API 的额外请求。*/
+async function loadModels(){
+  let list=null;
+  try{
+    const r=await fetch('/models');
+    if(r.ok) list=await r.json();
+  }catch(e){}
+  if(!Array.isArray(list)||!list.length) return;              // 拿不到就沿用兜底
+  const pairs=list.filter(m=>m&&typeof m.id==='string'&&m.id).map(m=>[m.id, (m.label||m.id)]);
+  if(!pairs.length) return;
+  MODELS=pairs;
+  _reconcileModels();
+  syncModelBtn();
+  // 弹层可能已经渲染过(甚至正开着):重渲一次让新候选立刻可见,不改开合状态
+  document.querySelectorAll('.model-pop').forEach(p=>{ if(p.id==='model-pop') renderModelPop(); });
+}
+// 陈旧持久化值回落:候选列表就位后,把已不在列表里的 defaultModel / 当前会话模型
+// 回落到默认 Sonnet(此前只有 effort 有这层容错,model 没有)。只在列表来自服务端之后
+// 调用——列表还是内置兜底时不动,免得误伤。
+function _reconcileModels(){
+  const known=id=>MODELS.some(m=>m[0]===id);
+  const def=localStorage.getItem('defaultModel');
+  if(def && !known(def)) localStorage.setItem('defaultModel', FALLBACK_MODEL_ID);
+  if(currentSessionId){
+    const cur=localStorage.getItem(_mKey(currentSessionId));
+    if(cur && !known(cur)){ localStorage.setItem(_mKey(currentSessionId), FALLBACK_MODEL_ID); currentModel=FALLBACK_MODEL_ID; }
+  }
+  if(currentModel && !known(currentModel)) currentModel=localStorage.getItem('defaultModel')||FALLBACK_MODEL_ID;
 }
 function renderModelPop(){
   const host = activeComposer(); const pop = host.querySelector('#model-pop'); if(!pop) return;
@@ -1917,6 +1956,7 @@ async function boot(){
     WORKSPACES=Array.isArray(h&&h.workspaces)?h.workspaces.filter(w=>w&&typeof w.key==='string'):[];
     if(!currentSessionId) resetCwdKey(); else renderWorkspacePicker();
   }catch(e){}
+  loadModels();                  // 模型候选实时化:成功即替换菜单,失败静默用首屏兜底
   await loadSessions();
   await loadFrontendPlugins();   // 先装插件再连 WS,保证消息渲染器/事件监听先注册好
   // PWA service worker:注册 + 把 sw 的通用转发消息(push_click)接到插件事件总线
