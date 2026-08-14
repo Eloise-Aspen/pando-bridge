@@ -859,14 +859,16 @@ function _reconcileModels(){
 /* ===== 菜单分层(feat-model-list-live Task 5 / 补裁 5)=====
    服务端算好 primary(每族取最新一代),前端只渲染:主线直接列出,其余收进「更多模型」
    **原地展开/收起**(不做 flyout 子菜单——手机端单手更好点,且不必处理二级定位与溢出)。
-   三态:null=自动(当前模型在「更多」里就自动展开,否则看不到选中态),true/false=用户手动。*/
-let _modelPopExpanded=null;
+   两态:false=收起(默认),true=用户手动展开;每次开弹层都复位回收起。
+   曾做过「当前模型在『更多』里就自动展开」的三态,2026-08-15 真机验收判否——
+   用户选着非主线模型时每次开弹层都是展开的,与「默认收起」的预期相悖;
+   选中态看不见不构成问题:输入区按钮本身就显示当前模型名。*/
+let _modelPopExpanded=false;
 // 「更多」是否可见:服务端一个主线都没标出时退化为平铺(菜单不至于空掉)
 const _modelRest = () => MODELS.filter(m=>!m[2]);
 function _restShown(){
   if(!MODELS.some(m=>m[2])) return true;                                   // 平铺退化
-  if(_modelPopExpanded!==null) return _modelPopExpanded;
-  return _modelRest().some(m=>m[0]===currentModel);                        // 自动展开
+  return _modelPopExpanded;
 }
 function toggleMoreModels(e){ if(e) e.stopPropagation(); _modelPopExpanded=!_restShown(); renderModelPop(); }
 function renderModelPop(){
@@ -883,7 +885,7 @@ function renderModelPop(){
 }
 function toggleModel(e){ e.stopPropagation(); const host=activeComposer(); const p=host.querySelector('#model-pop');
   const open = p.style.display==='none';
-  if(open){ _modelPopExpanded=null; renderModelPop(); }   // 每次开都回到默认态(只显主线)
+  if(open){ _modelPopExpanded=false; renderModelPop(); }  // 每次开都回到默认态(只显主线)
   p.style.display = open?'block':'none'; }
 function selectModel(id){ applyModel(id); const host=activeComposer(); host.querySelector('#model-pop').style.display='none'; }
 // PWA 兼容:Android standalone 下 window.prompt() 静默返回 null。改为本行原地展开内联输入,
