@@ -23,15 +23,19 @@ log = logging.getLogger("pando.memory.http")
 class HttpMemoryProvider:
     """通过 HTTP 对接外部记忆服务的 provider。"""
 
-    def __init__(self, base_url: str, timeout: float = 10.0):
+    def __init__(self, base_url: str, timeout: float = 10.0, headers: dict | None = None):
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
+        # 固定请求头（如记忆服务的鉴权 token）。也供 MemoryPlugin 的管理面代理复用，
+        # 避免同一份凭证在两处各配一遍。
+        self.headers = dict(headers or {})
 
     def _post(self, path: str, payload: dict) -> dict | None:
         """POST 并返回 JSON dict；任何异常都降级为 None（只 warning）。"""
         try:
             resp = requests.post(
-                f"{self.base_url}{path}", json=payload, timeout=self.timeout
+                f"{self.base_url}{path}", json=payload, timeout=self.timeout,
+                headers=self.headers or None,
             )
             resp.raise_for_status()
             data = resp.json()

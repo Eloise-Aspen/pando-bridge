@@ -498,6 +498,7 @@ def create_app(config) -> FastAPI:
         CLAUDE_EXE, CLAUDE_CWD, DATA_DIR                 —— 必需
         MEMORY_SERVICE_URL (默认 "")                      —— 留空则用 NullMemoryProvider
         MEMORY_SERVICE_TIMEOUT (默认 10.0)
+        MEMORY_SERVICE_HEADERS (默认 None)                —— 记忆服务鉴权用的固定请求头 dict
         PLUGINS (默认 [])                                  —— 声明式插件类路径列表
         ARCHIVE_INTERVAL (默认 600)
         STATIC_DIR (默认包内 static/，demo 前端)
@@ -517,6 +518,9 @@ def create_app(config) -> FastAPI:
     data_dir: Path = Path(_cfg(config, "DATA_DIR", "./data"))
     memory_service_url = _cfg(config, "MEMORY_SERVICE_URL", "") or ""
     memory_service_timeout = _cfg(config, "MEMORY_SERVICE_TIMEOUT", 10.0)
+    # 记忆服务要求鉴权时，调用方在此传固定请求头（如 {"X-Memory-Token": "..."}）。
+    # 核心不解释其含义、不落盘、不打日志值；契约四端点与 /memory-admin 代理共用这一份。
+    memory_service_headers = _cfg(config, "MEMORY_SERVICE_HEADERS", None) or None
     # list() 拷一份，避免下面 append 记忆插件时改到调用方传入的原列表。
     plugin_paths = list(_cfg(config, "PLUGINS", []) or [])
 
@@ -582,7 +586,8 @@ def create_app(config) -> FastAPI:
         or (Path(claude_cwd) / ".pando-uploads" if claude_cwd else data_dir / ".pando-uploads")
     )
 
-    memory = get_provider(memory_service_url, timeout=memory_service_timeout)
+    memory = get_provider(memory_service_url, timeout=memory_service_timeout,
+                          headers=memory_service_headers)
     # 记忆服务是否可用：NullMemoryProvider 表示未配置，前端据此决定「自动记住上下文」
     # 开关是否可操作（不可用时置灰隐藏）。
     from .providers.null import NullMemoryProvider

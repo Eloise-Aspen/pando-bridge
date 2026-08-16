@@ -38,6 +38,10 @@ class MemoryPlugin:
             url = f"{base_url}/{path}"
             body = await request.body()
             headers = {k: v for k, v in request.headers.items() if k.lower() not in _HOP_BY_HOP_HEADERS}
+            # provider 的固定头（如记忆服务鉴权 token）由服务端注入，且**覆盖**浏览器
+            # 传来的同名头——凭证只从服务端配置来，不接受客户端自带。
+            for k, v in getattr(self._provider, "headers", {}).items():
+                headers[k] = v
             try:
                 async with httpx.AsyncClient(timeout=_ADMIN_PROXY_TIMEOUT) as client:
                     resp = await client.request(
