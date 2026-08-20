@@ -22,6 +22,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 
+from . import carryover as carryover_engine
 from .providers import get_provider
 
 log = logging.getLogger("pando")
@@ -546,6 +547,35 @@ def create_app(config) -> FastAPI:
     voice_inline_hint = _cfg(config, "VOICE_INLINE_HINT", "") or ""
     voice_exit_hint = _cfg(config, "VOICE_EXIT_HINT", "") or ""
     chat_mode_hint = _cfg(config, "CHAT_MODE_HINT", "") or ""
+
+    # 精炼续窗（feat-forge-carryover 裁决 7）。forge 时把当前 CLI transcript 精炼成一份
+    # 新 JSONL 并 --resume 接续，让新窗带着最近几轮原话醒来。参数集中在此，禁硬编码。
+    # CARRYOVER_ENABLED=False 时整条链路短路，forge 行为与本功能上线前完全一致。
+    carryover_enabled = bool(_cfg(config, "CARRYOVER_ENABLED", True))
+    carryover_tail_turns = int(_cfg(config, "CARRYOVER_TAIL_TURNS", 12))
+    carryover_max_chars = int(_cfg(config, "CARRYOVER_MAX_CHARS", 120_000))
+    # CLI transcript 根目录。默认 ~/.claude/projects——各会话按其绑定的工作目录编码成子目录。
+    claude_projects_dir = Path(
+        _cfg(config, "CLAUDE_PROJECTS_DIR", None)
+        or (Path.home() / ".claude" / "projects")
+    )
+    # 边界声明（裁决 5）：携带精炼上下文的新会话，第一条真实消息追加一次性附注，
+    # 提醒模型「精炼尾部之外的近况你不知道」。key=新 session_id，消费即删。
+    carryover_notice_pending: dict[str, str] = {}
+    # L0 重注入待办（2026-08-20 真机推翻裁决 2 的假设后新增）：
+    # 裁决 2 原以为 L0+L1 在 transcript 首轮 user 消息正文里，精炼头能零成本延续身份层。
+    # 真机实证不成立——bridge 的 L0+L1 走 `--system-prompt` CLI 参数，是运行时入参，
+    # 根本不落 JSONL（实测首轮 user 帧只有「[当前时间…] 正文」，全文件无任何 system 帧）。
+    # 且 `--resume` 与 `--system-prompt` 互斥，接续会话拿不到身份层 → 走插件冷启动仪式。
+    # 修正案：接续会话的第一条真实消息重建一次 L0+L1，以文本前缀拼进消息最前。
+    carryover_l0_pending: set[str] = set()
+    # forge 在途闸（2026-08-20 日志实证：11:52:52 同一秒对同一源会话 4a8d6586 跑了两次
+    # carryover，89c24679 与 a2062fcd 各生成一份新 JSONL，前者当场变孤儿）。
+    # 闸按**源 session_id** 建在 create_app 作用域，而不是连接级布尔——主循环对单条连接
+    # 是顺序消费的，同连接的第二个 forge 帧只会在第一个跑完后处理（那时源已换成新会话，
+    # 对不上号）。两条日志的源相同，说明重复来自另一条 WS 连接（重连/多开），
+    # 只有跨连接共享的闸拦得住。
+    forge_in_flight: set[str] = set()
 
     # 权限确认透传（feat-permission-passthrough）。默认关闭——存量用户零感知（完成标准 4）。
     # 开启后 run_claude 追加 --permission-prompt-tool + --mcp-config，把 CC 的门控工具授权
@@ -1832,6 +1862,40 @@ def create_app(config) -> FastAPI:
             except Exception as e:
                 log.error("auto_archive error: %s", e)
 
+    def _carryover_notice() -> str:
+        """裁决 5 的边界声明。只在携带精炼上下文的新会话第一条真实消息里出现一次。"""
+        return (
+            "[系统提示：刚完成换窗，你携带的是精炼后的上下文——开头的记忆注入与最近约 "
+            f"{carryover_tail_turns} 轮对话是全部，中段已蒸馏进记忆库。"
+            "此外的近况你不知道，不确定就说不知道，不要补。]\n"
+        )
+
+    def _forge_carryover(src_session_id: str, cwd_key: str) -> str | None:
+        """同步精炼当前会话的 transcript，返回新 session_id；任何失败返回 None。
+
+        transcript 目录按会话绑定的 cwd_key 解析（裁决 3）——必须与 run_claude 的
+        workspace_cwd 一致，否则找不到源文件、或新文件落错目录导致 --resume 失败。
+        新文件与源文件同目录，CLI 在同一 cwd 下才认得出这个会话。
+        """
+        try:
+            run_cwd = workspace_cwd(cwd_key)
+            if not run_cwd:
+                log.info("carryover skipped: no cwd bound for session %s", src_session_id)
+                return None
+            src = carryover_engine.transcript_path(
+                claude_projects_dir, run_cwd, src_session_id)
+            new_id, stats = carryover_engine.refine_detailed(
+                src, src.parent,
+                tail_turns=carryover_tail_turns,
+                max_chars=carryover_max_chars,
+            )
+            if new_id is None:
+                log.info("carryover degraded: %s", stats.as_log_fields())
+            return new_id
+        except Exception as e:                     # noqa: BLE001 —— fail closed
+            log.warning("carryover error, degrading to plain reset: %s", e)
+            return None
+
     async def _auto_archive_loop(ws: WebSocket, get_session_id, get_model, get_effort):
         """Background task: auto-archive every ARCHIVE_INTERVAL seconds while session is alive."""
         await asyncio.sleep(archive_interval)
@@ -1993,16 +2057,64 @@ def create_app(config) -> FastAPI:
                         continue
                     # 主动换窗：先存档当前会话（跳过条数门槛），再重置状态
                     if payload.get("forge"):
-                        if session_id:
-                            await _try_archive(session_id, ws, model=model, effort=effort, force=True,
-                                               archive_enabled=conn_archive_enabled.get(ws, True))
-                        session_id = None
-                        system_prompt = None
-                        session_resumed = False
-                        await ws.send_text(json.dumps({
-                            "type": "forged",
-                            "message": "已换窗，记忆已存档",
-                        }, ensure_ascii=False))
+                        old_session_id = session_id
+                        old_cwd_key = session_cwd_key
+                        # 在途防重入：同一源会话的第二个 forge 帧直接忽略，
+                        # 不重复归档、不重复精炼（否则先落地的那份新 JSONL 变孤儿）
+                        if old_session_id and old_session_id in forge_in_flight:
+                            log.info("forge already in flight, ignored (session=%s)",
+                                     old_session_id)
+                            continue
+                        # 连点的另一种形态：上一次 forge 刚产出的接续会话还没被任何真实
+                        # 消息碰过（L0 仍待注入 = 一句话都没说）。此时再 forge，源换成了
+                        # 新会话、在途闸对不上号，但语义上仍是重复——没有新内容可存档，
+                        # 只会再生成一份没人 resume 的孤儿 JSONL。同样直接忽略。
+                        if old_session_id and old_session_id in carryover_l0_pending:
+                            log.info("forge ignored: session %s untouched since last forge",
+                                     old_session_id)
+                            continue
+                        if old_session_id:
+                            forge_in_flight.add(old_session_id)
+                        try:
+                            if session_id:
+                                old_cwd_key = get_session_cwd_key(session_id)
+                                await _try_archive(session_id, ws, model=model, effort=effort,
+                                                   force=True,
+                                                   archive_enabled=conn_archive_enabled.get(ws, True))
+                            # 精炼续窗（裁决 4）：归档落定后再做，纯本地秒级。成功则新会话
+                            # 带着精炼上下文 --resume 起来；失败一律降级为下面的纯重置三连。
+                            carried_id = None
+                            if carryover_enabled and old_session_id:
+                                carried_id = await asyncio.to_thread(
+                                    _forge_carryover, old_session_id, old_cwd_key,
+                                )
+                            if carried_id:
+                                session_id = carried_id
+                                session_resumed = True   # 身份层改在首条消息重建（裁决 2 修正案）
+                                system_prompt = None
+                                session_cwd_key = old_cwd_key
+                                # 新会话继承工作目录绑定，否则下一轮会落回默认 cwd
+                                save_session(carried_id, model or "", old_cwd_key)
+                                carryover_notice_pending[carried_id] = _carryover_notice()
+                                carryover_l0_pending.add(carried_id)
+                                forged_message = "已换窗，上下文已接续"
+                            else:
+                                session_id = None
+                                system_prompt = None
+                                session_resumed = False
+                                forged_message = "已存档，新对话已开始"
+                            log.info("forge: src=%s new=%s carryover=%s",
+                                     old_session_id or "-", carried_id or "-", bool(carried_id))
+                            await ws.send_text(json.dumps({
+                                "type": "forged",
+                                "session_id": carried_id,
+                                "carryover": bool(carried_id),
+                                "message": forged_message,
+                            }, ensure_ascii=False))
+                        finally:
+                            # 异常路径也必须放闸，否则这个会话此后再也 forge 不了
+                            if old_session_id:
+                                forge_in_flight.discard(old_session_id)
                         continue
                 except (json.JSONDecodeError, AttributeError):
                     text = raw.strip()
@@ -2041,12 +2153,40 @@ def create_app(config) -> FastAPI:
                     if mode == "chat" and chat_mode_hint:
                         system_prompt = (system_prompt or "") + chat_mode_hint
 
+                # 精炼续窗的接续会话：重建一次 L0+L1，走文本前缀而非 --system-prompt
+                # （后者与 --resume 互斥，且其内容从不落 transcript——2026-08-20 真机推翻
+                # 裁决 2 的「精炼头自带身份层」假设）。只做一次，消费即销号。
+                carryover_l0 = ""
+                if session_id and session_id in carryover_l0_pending:
+                    carryover_l0_pending.discard(session_id)
+                    await ws.send_text(json.dumps({
+                        "type": "status",
+                        "message": "loading memory layers...",
+                    }, ensure_ascii=False))
+                    carryover_l0 = await _run_on_user_message_hooks(loop, session_id, text, True)
+                    if mode == "chat" and chat_mode_hint:
+                        carryover_l0 = (carryover_l0 or "") + chat_mode_hint
+                    if carryover_l0:
+                        carryover_l0 += "\n\n"
+                        await ws.send_text(json.dumps({
+                            "type": "memory_recall",
+                            "context": f"【context injected】({len(carryover_l0)} chars)",
+                        }, ensure_ascii=False))
+                    log.info("carryover L0 reinjected: session=%s chars=%d",
+                             session_id, len(carryover_l0))
+
                 # 时间注入
                 local_now = datetime.now()
                 weekdays = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
                 time_prefix = "[当前时间: {}]\n".format(
                     local_now.strftime("%Y-%m-%d ") + weekdays[local_now.weekday()] + local_now.strftime(" %H:%M")
                 )
+
+                # 边界声明消费（裁决 5，位置随 L0 修正案调整）：只发一次，pop 即销号。
+                # 换窗后第二条消息起不再出现——附注是一次性交底，不是每轮提醒。
+                carryover_note = carryover_notice_pending.pop(session_id, "") if session_id else ""
+                if carryover_note:
+                    log.info("carryover notice injected for session %s", session_id)
 
                 if voice_mode and voice_inline_hint:
                     claude_text = voice_inline_hint + time_prefix + text
@@ -2055,6 +2195,10 @@ def create_app(config) -> FastAPI:
                     claude_text = voice_exit_hint + time_prefix + text
                 else:
                     claude_text = time_prefix + text
+
+                # 接续会话的开场装配顺序：身份层(L0+L1) → 边界声明 → 时间/正文。
+                # 先立身份再交底边界，模型读到「你是谁」之后才读「你不知道什么」。
+                claude_text = carryover_l0 + carryover_note + claude_text
 
                 # L2：每条消息做情节记忆检索，走 on_user_message 钩子链路
                 recall_ctx = await _run_on_user_message_hooks(loop, session_id, text, False)
