@@ -57,6 +57,20 @@ class BrokenOnUserMessagePlugin:
         raise RuntimeError("boom: on_user_message")
 
 
+class LayerInjectPlugin:
+    """模拟记忆插件的分层注入：is_new_session=True 出 L0+L1 身份层，False 出 L2 召回。
+    供精炼续窗验证「接续会话的第一条消息重建了 L0」。"""
+
+    L0 = "【L0 身份层】你是被测人格。"
+    L2 = "\n【相关记忆】- 某条召回\n"
+
+    def on_startup(self, app, config_dict):
+        pass
+
+    def on_user_message(self, session_id, text, is_new_session):
+        return LayerInjectPlugin.L0 if is_new_session else LayerInjectPlugin.L2
+
+
 class UnconstructiblePlugin:
     """构造函数直接炸——验证插件加载阶段（非钩子调用阶段）失败也会被跳过。"""
 

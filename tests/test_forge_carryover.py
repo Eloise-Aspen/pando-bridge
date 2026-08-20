@@ -262,8 +262,8 @@ def test_boundary_notice_injected_once(tmp_path, spy):
     assert "换窗后第一句" in first
     assert "刚完成换窗" not in second
     assert "换窗后第二句" in second
-    # 附注紧跟时间注入之后（裁决 5）
-    assert first.index("[当前时间") < first.index("[系统提示")
+    # 装配顺序：边界声明在时间注入/正文之前（裁决 5 的 L0 修正案）
+    assert first.index("[系统提示") < first.index("[当前时间")
 
 
 def test_no_notice_when_degraded(tmp_path, spy):
@@ -328,6 +328,82 @@ def test_max_chars_config_respected(tmp_path, spy):
     assert "用户第 0 问" in dumped
     assert "用户第 7 问" in dumped
     assert "用户第 4 问" not in dumped
+
+
+# ------------------------------------------- L0 重注入（2026-08-20 真机修正案）
+
+_LAYER_PLUGIN = "tests.fixtures.hook_plugins.LayerInjectPlugin"
+
+
+def test_carryover_reinjects_l0(tmp_path, spy):
+    """接续会话第一条消息必须带 L0——transcript 里没有 --system-prompt 的内容，
+    不重建就会走插件冷启动仪式（真机 bug）。"""
+    s = spy(["sess-old", "sess-new"])
+    app = create_app(_config(tmp_path, PLUGINS=[_LAYER_PLUGIN]))
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as wsc:
+            wsc.receive_json()
+            wsc.send_json({"text": "第一句"})
+            _drain_to(wsc, "result")
+            _seed_transcript(tmp_path, "sess-old")
+            wsc.send_json({"forge": True})
+            forged = _drain_to(wsc, "forged")
+            assert forged["carryover"] is True
+            wsc.send_json({"text": "换窗后第一句"})
+            recall = _drain_to(wsc, "memory_recall")   # L0 注入证据帧
+            _drain_to(wsc, "result")
+
+    assert "context injected" in recall["context"]
+    first = s.messages[-1]
+    from tests.fixtures.hook_plugins import LayerInjectPlugin as P
+    assert P.L0 in first
+    # 装配顺序：身份层 → 边界声明 → 时间/正文
+    assert first.index(P.L0) < first.index("[系统提示") < first.index("[当前时间")
+    assert "换窗后第一句" in first
+    # --resume 与 --system-prompt 互斥：绝不能同时出现
+    argv = s.calls[-1]["argv"]
+    assert "--resume" in argv and "--system-prompt" not in argv
+
+
+def test_carryover_l0_injected_only_once(tmp_path, spy):
+    s = spy(["sess-old", "a", "b"])
+    app = create_app(_config(tmp_path, PLUGINS=[_LAYER_PLUGIN]))
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as wsc:
+            wsc.receive_json()
+            wsc.send_json({"text": "第一句"})
+            _drain_to(wsc, "result")
+            _seed_transcript(tmp_path, "sess-old")
+            wsc.send_json({"forge": True})
+            _drain_to(wsc, "forged")
+            wsc.send_json({"text": "换窗后第一句"})
+            _drain_to(wsc, "result")
+            wsc.send_json({"text": "换窗后第二句"})
+            _drain_to(wsc, "result")
+
+    from tests.fixtures.hook_plugins import LayerInjectPlugin as P
+    assert P.L0 in s.messages[-2]
+    assert P.L0 not in s.messages[-1]      # 第二条只剩 L2 召回，不再重建身份层
+
+
+def test_degraded_path_keeps_system_prompt(tmp_path, spy):
+    """降级（纯重置）路径不受修正案影响：仍走 --system-prompt 冷启动。"""
+    s = spy(["sess-old", "sess-fresh"])
+    app = create_app(_config(tmp_path, PLUGINS=[_LAYER_PLUGIN]))
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as wsc:
+            wsc.receive_json()
+            wsc.send_json({"text": "第一句"})
+            _drain_to(wsc, "result")
+            wsc.send_json({"forge": True})      # 无 transcript → 降级
+            _drain_to(wsc, "forged")
+            wsc.send_json({"text": "降级后第一句"})
+            _drain_to(wsc, "result")
+
+    argv = s.calls[-1]["argv"]
+    assert "--system-prompt" in argv and "--resume" not in argv
+    from tests.fixtures.hook_plugins import LayerInjectPlugin as P
+    assert P.L0 not in s.messages[-1]           # 身份层在 CLI 参数里，不在消息正文里
 
 
 def test_carryover_can_be_disabled(tmp_path, spy):

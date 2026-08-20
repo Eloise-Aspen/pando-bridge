@@ -562,6 +562,13 @@ def create_app(config) -> FastAPI:
     # 边界声明（裁决 5）：携带精炼上下文的新会话，第一条真实消息追加一次性附注，
     # 提醒模型「精炼尾部之外的近况你不知道」。key=新 session_id，消费即删。
     carryover_notice_pending: dict[str, str] = {}
+    # L0 重注入待办（2026-08-20 真机推翻裁决 2 的假设后新增）：
+    # 裁决 2 原以为 L0+L1 在 transcript 首轮 user 消息正文里，精炼头能零成本延续身份层。
+    # 真机实证不成立——bridge 的 L0+L1 走 `--system-prompt` CLI 参数，是运行时入参，
+    # 根本不落 JSONL（实测首轮 user 帧只有「[当前时间…] 正文」，全文件无任何 system 帧）。
+    # 且 `--resume` 与 `--system-prompt` 互斥，接续会话拿不到身份层 → 走插件冷启动仪式。
+    # 修正案：接续会话的第一条真实消息重建一次 L0+L1，以文本前缀拼进消息最前。
+    carryover_l0_pending: set[str] = set()
 
     # 权限确认透传（feat-permission-passthrough）。默认关闭——存量用户零感知（完成标准 4）。
     # 开启后 run_claude 追加 --permission-prompt-tool + --mcp-config，把 CC 的门控工具授权
@@ -2064,6 +2071,7 @@ def create_app(config) -> FastAPI:
                             # 新会话继承工作目录绑定，否则下一轮会落回默认 cwd
                             save_session(carried_id, model or "", old_cwd_key)
                             carryover_notice_pending[carried_id] = _carryover_notice()
+                            carryover_l0_pending.add(carried_id)
                             forged_message = "已换窗，上下文已接续"
                         else:
                             session_id = None
@@ -2116,6 +2124,28 @@ def create_app(config) -> FastAPI:
                     if mode == "chat" and chat_mode_hint:
                         system_prompt = (system_prompt or "") + chat_mode_hint
 
+                # 精炼续窗的接续会话：重建一次 L0+L1，走文本前缀而非 --system-prompt
+                # （后者与 --resume 互斥，且其内容从不落 transcript——2026-08-20 真机推翻
+                # 裁决 2 的「精炼头自带身份层」假设）。只做一次，消费即销号。
+                carryover_l0 = ""
+                if session_id and session_id in carryover_l0_pending:
+                    carryover_l0_pending.discard(session_id)
+                    await ws.send_text(json.dumps({
+                        "type": "status",
+                        "message": "loading memory layers...",
+                    }, ensure_ascii=False))
+                    carryover_l0 = await _run_on_user_message_hooks(loop, session_id, text, True)
+                    if mode == "chat" and chat_mode_hint:
+                        carryover_l0 = (carryover_l0 or "") + chat_mode_hint
+                    if carryover_l0:
+                        carryover_l0 += "\n\n"
+                        await ws.send_text(json.dumps({
+                            "type": "memory_recall",
+                            "context": f"【context injected】({len(carryover_l0)} chars)",
+                        }, ensure_ascii=False))
+                    log.info("carryover L0 reinjected: session=%s chars=%d",
+                             session_id, len(carryover_l0))
+
                 # 时间注入
                 local_now = datetime.now()
                 weekdays = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
@@ -2123,12 +2153,11 @@ def create_app(config) -> FastAPI:
                     local_now.strftime("%Y-%m-%d ") + weekdays[local_now.weekday()] + local_now.strftime(" %H:%M")
                 )
 
-                # 边界声明消费（裁决 5）：紧跟 time_prefix，只发一次，pop 即销号。
+                # 边界声明消费（裁决 5，位置随 L0 修正案调整）：只发一次，pop 即销号。
                 # 换窗后第二条消息起不再出现——附注是一次性交底，不是每轮提醒。
                 carryover_note = carryover_notice_pending.pop(session_id, "") if session_id else ""
                 if carryover_note:
                     log.info("carryover notice injected for session %s", session_id)
-                time_prefix = time_prefix + carryover_note
 
                 if voice_mode and voice_inline_hint:
                     claude_text = voice_inline_hint + time_prefix + text
@@ -2137,6 +2166,10 @@ def create_app(config) -> FastAPI:
                     claude_text = voice_exit_hint + time_prefix + text
                 else:
                     claude_text = time_prefix + text
+
+                # 接续会话的开场装配顺序：身份层(L0+L1) → 边界声明 → 时间/正文。
+                # 先立身份再交底边界，模型读到「你是谁」之后才读「你不知道什么」。
+                claude_text = carryover_l0 + carryover_note + claude_text
 
                 # L2：每条消息做情节记忆检索，走 on_user_message 钩子链路
                 recall_ctx = await _run_on_user_message_hooks(loop, session_id, text, False)
