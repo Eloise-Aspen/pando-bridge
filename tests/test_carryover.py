@@ -75,12 +75,12 @@ def dst(tmp_path):
 
 def test_encode_project_dir():
     assert carryover.encode_project_dir("C:\\_Projects\\Aspen\\dev") == "C---Projects-Aspen-dev"
-    assert carryover.encode_project_dir("C:\\Users\\Tellule") == "C--Users-Tellule"
+    assert carryover.encode_project_dir("C:\\Users\\testuser") == "C--Users-testuser"
 
 
 def test_transcript_path(tmp_path):
-    p = carryover.transcript_path(tmp_path, "C:\\Users\\Tellule", "abc-123")
-    assert p == tmp_path / "C--Users-Tellule" / "abc-123.jsonl"
+    p = carryover.transcript_path(tmp_path, "C:\\Users\\testuser", "abc-123")
+    assert p == tmp_path / "C--Users-testuser" / "abc-123.jsonl"
 
 
 # ---------------------------------------------------------------- 基本精炼
