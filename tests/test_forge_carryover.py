@@ -10,6 +10,8 @@
 
 import asyncio
 import json
+import logging
+import time
 import uuid
 
 import pytest
@@ -404,6 +406,131 @@ def test_degraded_path_keeps_system_prompt(tmp_path, spy):
     assert "--system-prompt" in argv and "--resume" not in argv
     from tests.fixtures.hook_plugins import LayerInjectPlugin as P
     assert P.L0 not in s.messages[-1]           # 身份层在 CLI 参数里，不在消息正文里
+
+
+# ------------------------------------------- forge 在途防重入（Fix 3）
+
+def _count_transcripts(tmp_path):
+    d = (tmp_path / "projects" / carryover.encode_project_dir(str(tmp_path / "cwd")))
+    return sorted(p.name for p in d.iterdir() if p.suffix == ".jsonl")
+
+
+def test_double_forge_same_connection_ignored(tmp_path, spy):
+    """同一连接连发两帧 forge：只精炼一次，只多出一份新 JSONL。"""
+    spy(["sess-old"])
+    app = create_app(_config(tmp_path))
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as wsc:
+            wsc.receive_json()
+            wsc.send_json({"text": "第一句"})
+            _drain_to(wsc, "result")
+            _seed_transcript(tmp_path, "sess-old")
+            wsc.send_json({"forge": True})
+            wsc.send_json({"forge": True})
+            first = _drain_to(wsc, "forged")
+
+    files = _count_transcripts(tmp_path)
+    assert "sess-old.jsonl" in files
+    assert len(files) == 2, f"应只多出一份新 JSONL，实际 {files}"
+    assert first["session_id"] + ".jsonl" in files
+
+
+def test_concurrent_forge_across_connections_gated(tmp_path, spy, monkeypatch, caplog):
+    """两条 WS 连接对**同一源会话**并发 forge——真机孤儿事故的原始形态
+    （11:52:52 两次 carryover 源同为 4a8d6586，前者当场变孤儿）。
+    把精炼拖慢制造真实的在途窗口，第二条必须被在途闸挡下。"""
+    spy(["sess-shared"])
+    app = create_app(_config(tmp_path))
+
+    real = carryover.refine_detailed
+
+    def slow(*a, **k):
+        time.sleep(0.6)          # 跑在 asyncio.to_thread 里，不挡事件循环
+        return real(*a, **k)
+
+    monkeypatch.setattr(carryover, "refine_detailed", slow)
+
+    with caplog.at_level(logging.INFO, logger="pando"):
+        with TestClient(app) as client:
+            with client.websocket_connect("/ws") as w1:
+                w1.receive_json()
+                w1.send_json({"text": "第一句"})
+                _drain_to(w1, "result")
+                _seed_transcript(tmp_path, "sess-shared")
+
+                with client.websocket_connect("/ws") as w2:
+                    w2.receive_json()
+                    w2.send_json({"switch_session": "sess-shared"})
+                    _drain_to(w2, "session_switched")
+
+                    w1.send_json({"forge": True})
+                    time.sleep(0.25)              # 让 w1 进入精炼在途
+                    w2.send_json({"forge": True})  # 撞闸，被忽略且不回帧
+                    forged = _drain_to(w1, "forged")
+
+    assert forged["carryover"] is True
+    assert "forge already in flight, ignored" in caplog.text
+    files = _count_transcripts(tmp_path)
+    assert files == sorted(["sess-shared.jsonl", forged["session_id"] + ".jsonl"]), \
+        f"并发 forge 只该产出一份新 JSONL，实际 {files}"
+
+
+def test_forge_gate_released_after_completion(tmp_path, spy):
+    """闸必须在 finally 里放开：同一会话第二次 forge（非并发）仍要能跑。"""
+    spy(["sess-a", "sess-b"])
+    app = create_app(_config(tmp_path))
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as wsc:
+            wsc.receive_json()
+            wsc.send_json({"text": "第一句"})
+            _drain_to(wsc, "result")
+            _seed_transcript(tmp_path, "sess-a")
+            wsc.send_json({"forge": True})
+            first = _drain_to(wsc, "forged")
+            assert first["carryover"] is True
+
+            # 回到原会话再 forge 一次：闸已放开，应当照常工作
+            wsc.send_json({"switch_session": "sess-a"})
+            _drain_to(wsc, "session_switched")
+            wsc.send_json({"forge": True})
+            second = _drain_to(wsc, "forged")
+
+    assert second["carryover"] is True
+    assert second["session_id"] != first["session_id"]
+
+
+def test_forge_gate_released_on_error(tmp_path, spy, monkeypatch):
+    """精炼内部抛异常时闸也要放开，否则该会话此后永远 forge 不了。"""
+    spy(["sess-old"])
+    app = create_app(_config(tmp_path))
+
+    boom = {"n": 0}
+    real = carryover.refine_detailed
+
+    def flaky(*a, **k):
+        boom["n"] += 1
+        if boom["n"] == 1:
+            raise RuntimeError("boom")
+        return real(*a, **k)
+
+    monkeypatch.setattr(carryover, "refine_detailed", flaky)
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as wsc:
+            wsc.receive_json()
+            wsc.send_json({"text": "第一句"})
+            _drain_to(wsc, "result")
+            _seed_transcript(tmp_path, "sess-old")
+            wsc.send_json({"forge": True})
+            first = _drain_to(wsc, "forged")
+            assert first["carryover"] is False      # 异常 → 降级
+
+            wsc.send_json({"switch_session": "sess-old"})
+            _drain_to(wsc, "session_switched")
+            wsc.send_json({"forge": True})
+            second = _drain_to(wsc, "forged")
+
+    assert second["carryover"] is True              # 闸已放开，第二次正常精炼
 
 
 def test_carryover_can_be_disabled(tmp_path, spy):

@@ -569,6 +569,13 @@ def create_app(config) -> FastAPI:
     # 且 `--resume` 与 `--system-prompt` 互斥，接续会话拿不到身份层 → 走插件冷启动仪式。
     # 修正案：接续会话的第一条真实消息重建一次 L0+L1，以文本前缀拼进消息最前。
     carryover_l0_pending: set[str] = set()
+    # forge 在途闸（2026-08-20 日志实证：11:52:52 同一秒对同一源会话 4a8d6586 跑了两次
+    # carryover，89c24679 与 a2062fcd 各生成一份新 JSONL，前者当场变孤儿）。
+    # 闸按**源 session_id** 建在 create_app 作用域，而不是连接级布尔——主循环对单条连接
+    # 是顺序消费的，同连接的第二个 forge 帧只会在第一个跑完后处理（那时源已换成新会话，
+    # 对不上号）。两条日志的源相同，说明重复来自另一条 WS 连接（重连/多开），
+    # 只有跨连接共享的闸拦得住。
+    forge_in_flight: set[str] = set()
 
     # 权限确认透传（feat-permission-passthrough）。默认关闭——存量用户零感知（完成标准 4）。
     # 开启后 run_claude 追加 --permission-prompt-tool + --mcp-config，把 CC 的门控工具授权
@@ -2052,40 +2059,62 @@ def create_app(config) -> FastAPI:
                     if payload.get("forge"):
                         old_session_id = session_id
                         old_cwd_key = session_cwd_key
-                        if session_id:
-                            old_cwd_key = get_session_cwd_key(session_id)
-                            await _try_archive(session_id, ws, model=model, effort=effort, force=True,
-                                               archive_enabled=conn_archive_enabled.get(ws, True))
-                        # 精炼续窗（裁决 4）：归档落定后再做，纯本地秒级。成功则新会话
-                        # 带着精炼上下文 --resume 起来；失败一律降级为下面的纯重置三连。
-                        carried_id = None
-                        if carryover_enabled and old_session_id:
-                            carried_id = await asyncio.to_thread(
-                                _forge_carryover, old_session_id, old_cwd_key,
-                            )
-                        if carried_id:
-                            session_id = carried_id
-                            session_resumed = True   # 旧 L0 已在精炼头部，不重建
-                            system_prompt = None
-                            session_cwd_key = old_cwd_key
-                            # 新会话继承工作目录绑定，否则下一轮会落回默认 cwd
-                            save_session(carried_id, model or "", old_cwd_key)
-                            carryover_notice_pending[carried_id] = _carryover_notice()
-                            carryover_l0_pending.add(carried_id)
-                            forged_message = "已换窗，上下文已接续"
-                        else:
-                            session_id = None
-                            system_prompt = None
-                            session_resumed = False
-                            forged_message = "已存档，新对话已开始"
-                        log.info("forge: src=%s new=%s carryover=%s",
-                                 old_session_id or "-", carried_id or "-", bool(carried_id))
-                        await ws.send_text(json.dumps({
-                            "type": "forged",
-                            "session_id": carried_id,
-                            "carryover": bool(carried_id),
-                            "message": forged_message,
-                        }, ensure_ascii=False))
+                        # 在途防重入：同一源会话的第二个 forge 帧直接忽略，
+                        # 不重复归档、不重复精炼（否则先落地的那份新 JSONL 变孤儿）
+                        if old_session_id and old_session_id in forge_in_flight:
+                            log.info("forge already in flight, ignored (session=%s)",
+                                     old_session_id)
+                            continue
+                        # 连点的另一种形态：上一次 forge 刚产出的接续会话还没被任何真实
+                        # 消息碰过（L0 仍待注入 = 一句话都没说）。此时再 forge，源换成了
+                        # 新会话、在途闸对不上号，但语义上仍是重复——没有新内容可存档，
+                        # 只会再生成一份没人 resume 的孤儿 JSONL。同样直接忽略。
+                        if old_session_id and old_session_id in carryover_l0_pending:
+                            log.info("forge ignored: session %s untouched since last forge",
+                                     old_session_id)
+                            continue
+                        if old_session_id:
+                            forge_in_flight.add(old_session_id)
+                        try:
+                            if session_id:
+                                old_cwd_key = get_session_cwd_key(session_id)
+                                await _try_archive(session_id, ws, model=model, effort=effort,
+                                                   force=True,
+                                                   archive_enabled=conn_archive_enabled.get(ws, True))
+                            # 精炼续窗（裁决 4）：归档落定后再做，纯本地秒级。成功则新会话
+                            # 带着精炼上下文 --resume 起来；失败一律降级为下面的纯重置三连。
+                            carried_id = None
+                            if carryover_enabled and old_session_id:
+                                carried_id = await asyncio.to_thread(
+                                    _forge_carryover, old_session_id, old_cwd_key,
+                                )
+                            if carried_id:
+                                session_id = carried_id
+                                session_resumed = True   # 身份层改在首条消息重建（裁决 2 修正案）
+                                system_prompt = None
+                                session_cwd_key = old_cwd_key
+                                # 新会话继承工作目录绑定，否则下一轮会落回默认 cwd
+                                save_session(carried_id, model or "", old_cwd_key)
+                                carryover_notice_pending[carried_id] = _carryover_notice()
+                                carryover_l0_pending.add(carried_id)
+                                forged_message = "已换窗，上下文已接续"
+                            else:
+                                session_id = None
+                                system_prompt = None
+                                session_resumed = False
+                                forged_message = "已存档，新对话已开始"
+                            log.info("forge: src=%s new=%s carryover=%s",
+                                     old_session_id or "-", carried_id or "-", bool(carried_id))
+                            await ws.send_text(json.dumps({
+                                "type": "forged",
+                                "session_id": carried_id,
+                                "carryover": bool(carried_id),
+                                "message": forged_message,
+                            }, ensure_ascii=False))
+                        finally:
+                            # 异常路径也必须放闸，否则这个会话此后再也 forge 不了
+                            if old_session_id:
+                                forge_in_flight.discard(old_session_id)
                         continue
                 except (json.JSONDecodeError, AttributeError):
                     text = raw.strip()
