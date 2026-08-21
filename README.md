@@ -352,6 +352,42 @@ curl -X POST http://127.0.0.1:8780/memory/import -H "Content-Type: application/j
 
 ---
 
+## 换窗不失忆：精炼续窗（Refined Session Carryover）
+
+上下文塞满时开个新窗口，通常意味着从头讲一遍。Pando 的换窗会先把当前会话的 Claude CLI
+transcript **就地精炼**：滤掉工具回包、终端日志、思考块等噪音，保留首个回合与最近 N 轮
+**干净对话原文**，重写消息链后生成一份新的会话文件，再 `--resume` 接续。
+
+不是摘要，是原话——新窗醒来时最近的话头还在，不必等语义召回撞运气。
+
+**触发方式**：前端点“新对话”（当前会话有内容时自动走此路径），或 WebSocket 发
+`{"forge": true}`。服务端回 `{"type":"forged", "session_id": ..., "carryover": true|false}`。
+
+**关键性质**
+
+- **只读源文件**：旧 transcript 一个字节都不改，新会话是新文件，天然可回溯。
+- **配对完整性**：`tool_use` / `tool_result` 成对整删，配对不完整的回合整个丢弃，
+  绝不产生孤儿块（否则 `--resume` 会拒绝载入）。
+- **失败即降级**：精炼链路任何一步出错（源文件缺失、损坏、写入失败），自动退回原有的
+  “存档 + 开新会话”行为，换窗本身永不因此失败。
+- **身份层重建**：`--resume` 与 `--system-prompt` 互斥，且系统提示词从不落 transcript，
+  故接续会话的第一条消息会重新构建一次记忆上下文，以文本前缀注入（只注入一次）。
+
+**配置项**（均有默认值，可不配）
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `CARRYOVER_ENABLED` | `True` | 总开关。关闭后换窗行为与本功能上线前一致 |
+| `CARRYOVER_TAIL_TURNS` | `12` | 保留的尾部对话回合数 |
+| `CARRYOVER_MAX_CHARS` | `120000` | 字符预算，超出时从中段往回削（首回合永不裁） |
+| `CLAUDE_PROJECTS_DIR` | `~/.claude/projects` | Claude CLI 的 transcript 根目录 |
+
+> **注意**：若你设过 `CLAUDE_CONFIG_DIR` 环境变量把 Claude CLI 的配置目录挪走，
+> `CLAUDE_PROJECTS_DIR` 需要跟着指到 `<你的配置目录>/projects`，否则精炼找不到源文件，
+> 换窗会**静默降级**为“存档 + 开新会话”（功能仍可用，只是不带原话）。
+
+---
+
 ## 插件钩子 API
 
 插件在 `PLUGINS` 配置里声明为一串 import 路径，经 `importlib` 加载。每个插件如果 `__init__`
@@ -798,6 +834,51 @@ When loading history, the chip is restored from `metadata.recall`.
 With no memory service configured (`NullMemoryProvider`), `/recall` is never called,
 no `memory_recall` frame is sent, no `metadata.recall` is written — the frontend shows
 zero chips with zero errors (fully backward-compatible).
+
+---
+
+## Refined Session Carryover
+
+Starting a new window when the context fills up usually means explaining everything again.
+Pando refines the current session's Claude CLI transcript in place instead: tool results,
+terminal logs and thinking blocks are dropped, the first turn plus the last N turns of
+**actual conversation** are kept verbatim, the message chain is rewritten into a new
+session file, and the CLI is resumed on it.
+
+Not a summary — the real words. The new window wakes up with the recent thread intact,
+instead of hoping semantic recall happens to surface it.
+
+**How it fires**: press “New chat” in the UI (this path is taken automatically when the
+current session has content), or send `{"forge": true}` over the WebSocket. The server
+replies with `{"type":"forged", "session_id": ..., "carryover": true|false}`.
+
+**Guarantees**
+
+- **Source is read-only** — the old transcript is never modified; the new session is a new
+  file, so nothing is lost.
+- **Pairing integrity** — `tool_use` / `tool_result` blocks are dropped as pairs, and any
+  turn with incomplete pairing is dropped whole. Orphan blocks would make `--resume` refuse
+  the file.
+- **Fail closed** — if any step fails (source missing, corrupt, write error), Pando falls
+  back to the previous “archive + fresh session” behaviour. Switching windows never fails
+  because of carryover.
+- **Identity re-injection** — `--resume` and `--system-prompt` are mutually exclusive, and
+  the system prompt never lands in the transcript, so the first message of a carried
+  session rebuilds the memory context once and injects it as a text prefix.
+
+**Configuration** (all optional)
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `CARRYOVER_ENABLED` | `True` | Master switch; off restores pre-feature behaviour |
+| `CARRYOVER_TAIL_TURNS` | `12` | Number of trailing conversation turns to keep |
+| `CARRYOVER_MAX_CHARS` | `120000` | Character budget; trimmed from the middle (first turn is never cut) |
+| `CLAUDE_PROJECTS_DIR` | `~/.claude/projects` | Root directory of Claude CLI transcripts |
+
+> **Note**: if you have moved the Claude CLI config directory via `CLAUDE_CONFIG_DIR`,
+> point `CLAUDE_PROJECTS_DIR` at `<your config dir>/projects`. Otherwise the refiner
+> cannot find the source file and window switching **silently degrades** to
+> “archive + fresh session” (still functional, just without the verbatim tail).
 
 ---
 
