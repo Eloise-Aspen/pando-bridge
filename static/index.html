@@ -180,6 +180,25 @@
   .think-tool{font:400 12.5px/1.7 var(--ui);color:var(--dim);padding-top:8px;margin-top:8px;border-top:1px solid var(--line-soft)}
   .think-tool b{color:var(--accent-press);font-weight:600}
   .a-text{font:400 16.5px/1.9 var(--ui);color:var(--ink);white-space:pre-wrap;word-break:break-word}
+  /* markdown 渲染态(feat-md-render):渲成块级元素后 pre-wrap 会把源码换行和 <p> 边距叠成双倍空行 */
+  .a-text[data-md]{white-space:normal}
+  .a-text[data-md] > :first-child{margin-top:0}
+  .a-text[data-md] > :last-child{margin-bottom:0}
+  .a-text[data-md] p{margin:0 0 .7em}
+  .a-text[data-md] h1,.a-text[data-md] h2,.a-text[data-md] h3{font-weight:600;line-height:1.5;margin:1.1em 0 .5em;color:var(--text)}
+  .a-text[data-md] h1{font-size:19px}
+  .a-text[data-md] h2{font-size:17.5px}
+  .a-text[data-md] h3{font-size:16.5px}
+  .a-text[data-md] strong{font-weight:600;color:var(--text)}
+  .a-text[data-md] em{font-style:italic}
+  .a-text[data-md] ul,.a-text[data-md] ol{margin:0 0 .7em;padding-left:1.5em}
+  .a-text[data-md] li{margin:.15em 0}
+  .a-text[data-md] a{color:var(--link);text-decoration:underline;text-underline-offset:2px;word-break:break-all}
+  .a-text[data-md] code{font:400 14px/1.6 var(--code);background:var(--accent-bg);color:var(--accent-press);padding:.1em .35em;border-radius:5px;word-break:break-word}
+  .a-text[data-md] pre{margin:0 0 .8em;padding:11px 13px;background:var(--surface);border:1px solid var(--line-soft);border-radius:10px;overflow-x:auto;-webkit-overflow-scrolling:touch}
+  .a-text[data-md] pre code{display:block;background:none;color:var(--ink);padding:0;border-radius:0;white-space:pre;word-break:normal;font-size:13.5px;line-height:1.75}
+  .a-text[data-md] blockquote{margin:0 0 .8em;padding:2px 0 2px 13px;border-left:2px solid var(--line);color:var(--dim)}
+  .a-text[data-md] hr{border:none;border-top:1px solid var(--line);margin:1.1em 0}
   .a-usage{font:400 11px var(--ui);font-variant-numeric:tabular-nums;color:var(--fainter)}
   .a-footer{display:flex;align-items:center;gap:10px;margin-top:2px}
   .a-tools{display:flex;align-items:center;gap:2px}
@@ -642,6 +661,72 @@
 <script>
 const $ = id => document.getElementById(id);
 const escHtml = s => (s||'').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+/* ===== markdown 子集渲染(feat-md-render)=====
+   安全第一序:renderMd 第一步对全文 escHtml,之后所有模式匹配都只在「已转义文本」上做,
+   只生成白名单标签(p/strong/em/code/pre/h1-h3/ul/ol/li/a/blockquote/hr/br)。
+   因此原文里的任何 HTML 标签都只会以文本形式显示,不可能生效;链接只放行 http(s)。
+   支持子集:粗体/斜体/行内码/围栏码/标题/列表/引用/分隔线/链接。表格、图片、HTML 直通不做。 */
+// 行内替换:入参必须是已转义文本。行内码先占位抽走,免得码内的 * _ [ ] 被当成语法。
+function mdInline(s){
+  const codes=[];
+  s=s.replace(/`([^`\n]+)`/g,(m,c)=>{ codes.push(c); return '\u0000C'+(codes.length-1)+'\u0000'; });
+  // 链接:只放行 http(s)://,javascript:/data: 等一律原样退回当普通文本
+  s=s.replace(/\[([^\[\]\n]*)\]\(([^()\s]+)\)/g,(m,txt,url)=>
+    /^https?:\/\//i.test(url) ? '<a href="'+url+'" target="_blank" rel="noopener noreferrer">'+txt+'</a>' : m);
+  s=s.replace(/\*\*([^*\n]+)\*\*/g,'<strong>$1</strong>');
+  s=s.replace(/(^|[^*\w])\*([^*\n]+)\*/g,'$1<em>$2</em>');
+  s=s.replace(/(^|[^_\w])_([^_\n]+)_(?!\w)/g,'$1<em>$2</em>');
+  s=s.replace(/\u0000C(\d+)\u0000/g,(m,i)=>'<code>'+codes[i]+'</code>');
+  return s;
+}
+function renderMd(text){
+  const src=escHtml(text==null?'':String(text)).replace(/\u0000/g,'');
+  const lines=src.split('\n');
+  let out='', i=0, para=[], list=null, quote=null;
+  const flushPara=()=>{ if(para.length){ out+='<p>'+mdInline(para.join('<br>'))+'</p>'; para=[]; } };
+  const flushList=()=>{ if(list){ out+='<'+list.tag+'>'+list.items.map(x=>'<li>'+mdInline(x)+'</li>').join('')+'</'+list.tag+'>'; list=null; } };
+  const flushQuote=()=>{ if(quote){ out+='<blockquote>'+mdInline(quote.join('<br>'))+'</blockquote>'; quote=null; } };
+  const flushAll=()=>{ flushPara(); flushList(); flushQuote(); };
+  while(i<lines.length){
+    const ln=lines[i];
+    // 围栏码块:未闭合时按「到文末都是代码」渲,闭合后自然收口(流式中途不闪乱排)
+    const fence=/^\s{0,3}```(.*)$/.exec(ln);
+    if(fence){
+      flushAll();
+      const lang=fence[1].trim().replace(/[^A-Za-z0-9_+#-]/g,'').slice(0,20);
+      const buf=[]; i++;
+      while(i<lines.length && !/^\s{0,3}```\s*$/.test(lines[i])){ buf.push(lines[i]); i++; }
+      i++;  // 跳过收尾围栏;未闭合时 i 已越界,无害
+      out+='<pre'+(lang?' class="lang-'+lang+'"':'')+'><code>'+buf.join('\n')+'</code></pre>';
+      continue;
+    }
+    if(!ln.trim()){ flushAll(); i++; continue; }
+    // 分隔线
+    if(/^\s{0,3}(-{3,}|\*{3,}|_{3,})\s*$/.test(ln)){ flushAll(); out+='<hr>'; i++; continue; }
+    // 标题(只到三级)
+    const h=/^\s{0,3}(#{1,3})\s+(.*)$/.exec(ln);
+    if(h){ flushAll(); const lv=h[1].length; out+='<h'+lv+'>'+mdInline(h[2].trim())+'</h'+lv+'>'; i++; continue; }
+    // 引用
+    const q=/^\s{0,3}&gt;\s?(.*)$/.exec(ln);   // 全文已转义,> 此刻是 &gt;
+    if(q){ flushPara(); flushList(); (quote=quote||[]).push(q[1]); i++; continue; }
+    // 列表(单层;嵌套缩进按单层渲,不报错)
+    const li=/^\s*([-*+]|\d{1,9}[.)])\s+(.*)$/.exec(ln);
+    if(li){
+      flushPara(); flushQuote();
+      const tag=/^\d/.test(li[1])?'ol':'ul';
+      if(list && list.tag!==tag) flushList();
+      (list=list||{tag:tag,items:[]}).items.push(li[2]);
+      i++; continue;
+    }
+    flushList(); flushQuote();
+    para.push(ln); i++;
+  }
+  flushAll();
+  return out;
+}
+// 插件侧(展开全文等)复用同一渲染,不另写一套
+window.renderMd = renderMd;
 // Pando 根/立交桥标记(clay),原型同款
 const PANDO_LOGO = size => `<svg width="${size}" height="${size}" viewBox="0 0 92 91" fill="none"><line x1="75.8883" y1="45.3965" x2="15.8883" y2="45.3916" stroke="#DF8457" stroke-width="8"></line><line y1="-3.5" x2="24" y2="-3.5" transform="matrix(-4.37114e-08 -1 -1 4.37114e-08 42 78)" stroke="#DF8457" stroke-width="7"></line><path d="M44.9746 90.7773C42.9926 86.3882 41.8887 81.5175 41.8887 76.3887C41.8887 74.0134 42.1272 71.6937 42.5781 69.4512C49.3588 58.2688 58.7688 48.8588 69.9512 42.0781C72.1937 41.6272 74.5134 41.3887 76.8887 41.3887C82.0175 41.3887 86.8882 42.4926 91.2773 44.4746C69.1937 51.269 51.769 68.6937 44.9746 90.7773Z" fill="#DF8457"></path><line y1="-3.5" x2="24" y2="-3.5" transform="matrix(4.37114e-08 1 1 -4.37114e-08 49.2773 12.7773)" stroke="#DF8457" stroke-width="7"></line><path d="M46.3027 0C48.2847 4.38913 49.3887 9.25989 49.3887 14.3887C49.3887 16.764 49.1502 19.0837 48.6992 21.3262C41.9186 32.5086 32.5086 41.9186 21.3262 48.6992C19.0837 49.1502 16.764 49.3887 14.3887 49.3887C9.25989 49.3887 4.38913 48.2847 0 46.3027C22.0837 39.5084 39.5084 22.0837 46.3027 0Z" fill="#DF8457"></path></svg>`;
 const IC = {
