@@ -1527,10 +1527,18 @@ function addAssistant(text){
   ensureChat();
   // 回复行不再带助手名字头(与顶栏身份重复);思考 pill 直接插行首
   const row=document.createElement('div'); row.className='row assistant';
-  const t=document.createElement('div'); t.className='a-text'; t.textContent=text||''; t.dataset.role='text'; row.appendChild(t);
+  const t=document.createElement('div'); t.className='a-text'; t.dataset.role='text'; row.appendChild(t);
+  setAssistantText(t, text||'');
   $('msgs').appendChild(row); scrollDown(); return row;
 }
-function updateAssistant(row,text){ const t=row.querySelector('.a-text[data-role=text]'); if(t) t.textContent=text; scrollDown(); }
+// 正文写入的唯一出口:原文原样留在 dataset.raw(复制/朗读/回放都吃原文),DOM 只放渲染结果。
+// class 与 data-role 保持不变——外部插件靠它定位。
+function setAssistantText(t, text){
+  t.dataset.raw=text||'';
+  t.dataset.md='1';
+  t.innerHTML=renderMd(text||'');
+}
+function updateAssistant(row,text){ const t=row.querySelector('.a-text[data-role=text]'); if(t) setAssistantText(t, text); scrollDown(); }
 function fmtDur(ms){ return ms ? Math.round(ms/1000)+'s' : ''; }
 function fmtThinkCount(n){ return n>=1000 ? (n/1000).toFixed(1)+'k' : String(n); }
 const IC_WRENCH='<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M14 7l-1.5-1.5a3 3 0 0 0-4 0l-.5.5 5.5 5.5.5-.5a3 3 0 0 0 0-4zM4 20l4-1 8-8-3-3-8 8-1 4z"></path></svg>';
