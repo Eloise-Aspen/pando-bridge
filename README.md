@@ -110,6 +110,15 @@ PowerShell 写 `$env:BRIDGE_PORT = "8899"; python run.py`——或改上面 `run
 
 见 [`.env.example`](.env.example) 了解每一个配置开关。
 
+> **助手气泡渲染 markdown 子集**——助手回复在前端渲成格式：粗体、斜体、行内码、围栏
+> 代码块（保留语言名到 `class="lang-xx"`，不做高亮）、一到三级标题、有序/无序列表、
+> 引用、分隔线、`[文字](url)` 链接。渲染器（`static/index.html` 的 `renderMd`，
+> 亦挂在 `window.renderMd` 供前端插件复用）零依赖、不引任何第三方库：**第一步对全文
+> 转义，之后只在已转义文本上做替换、只产出白名单标签**，因此回复原文里的 HTML 标签
+> 一律以文本显示、不会生效；链接只放行 `http(s)://`。表格、图片、HTML 直通不支持；
+> 用户气泡保持纯文本。消息的存储与 WS 协议不受影响，复制/朗读拿到的仍是原文。
+
+
 > **WS 消息可选字段**——发往 `/ws` 的消息体除 `text` 外可带两个可选字段：`model`
 > （模型别名或全名，透传 CLI `--model`）与 `effort`（推理强度，取值
 > `low`/`medium`/`high`/`xhigh`/`max`，透传 CLI `--effort`）。两者都向后兼容：省略或
