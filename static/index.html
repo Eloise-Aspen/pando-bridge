@@ -181,7 +181,9 @@
   .think-tool b{color:var(--accent-press);font-weight:600}
   .a-text{font:400 16.5px/1.9 var(--ui);color:var(--ink);white-space:pre-wrap;word-break:break-word}
   /* markdown 渲染态(feat-md-render):渲成块级元素后 pre-wrap 会把源码换行和 <p> 边距叠成双倍空行 */
-  .a-text[data-md]{white-space:normal}
+  /* max-width:100% 必须有:.a-text 在 .row 里是 shrink-to-fit 的,长代码行会把它
+     顶成 max-content 宽而冲出气泡;有了它,超宽只由 pre 自己横向滚动消化 */
+  .a-text[data-md]{white-space:normal;max-width:100%}
   .a-text[data-md] > :first-child{margin-top:0}
   .a-text[data-md] > :last-child{margin-bottom:0}
   .a-text[data-md] p{margin:0 0 .7em}
@@ -195,7 +197,7 @@
   .a-text[data-md] li{margin:.15em 0}
   .a-text[data-md] a{color:var(--link);text-decoration:underline;text-underline-offset:2px;word-break:break-all}
   .a-text[data-md] code{font:400 14px/1.6 var(--code);background:var(--accent-bg);color:var(--accent-press);padding:.1em .35em;border-radius:5px;word-break:break-word}
-  .a-text[data-md] pre{margin:0 0 .8em;padding:11px 13px;background:var(--surface);border:1px solid var(--line-soft);border-radius:10px;overflow-x:auto;-webkit-overflow-scrolling:touch}
+  .a-text[data-md] pre{max-width:100%;margin:0 0 .8em;padding:11px 13px;background:var(--surface);border:1px solid var(--line-soft);border-radius:10px;overflow-x:auto;-webkit-overflow-scrolling:touch}
   .a-text[data-md] pre code{display:block;background:none;color:var(--ink);padding:0;border-radius:0;white-space:pre;word-break:normal;font-size:13.5px;line-height:1.75}
   .a-text[data-md] blockquote{margin:0 0 .8em;padding:2px 0 2px 13px;border-left:2px solid var(--line);color:var(--dim)}
   .a-text[data-md] hr{border:none;border-top:1px solid var(--line);margin:1.1em 0}
