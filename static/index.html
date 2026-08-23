@@ -1108,7 +1108,7 @@ const TAG_COLORS={ '项目':['#2360A8','rgba(44,132,219,.1)'], '偏好':['#B15A3
 let memActiveTag='全部', memStatsCache=null;
 // 列表态分页(搜索态不分页):offset=已取条数,total=服务端总数,loading 防重入;
 // seq 标记「当前这一轮渲染」——切标签/改搜索词后旧请求的响应按序号作废,不会混进新列表
-const MEM_PAGE=50;
+const MEM_PAGE=50, MEM_SEARCH_LIMIT=200;   // 搜索按相关度排序,一次要 200 条不分页
 let memOffset=0, memTotal=0, memLoading=false, memSeq=0, memIO=null;
 const MEM_UNCONFIGURED=`<div class="sub-empty">未配置记忆服务<br><span style="font-size:12px;color:var(--hint)">在宿主机指向 MEMORY_SERVICE_URL 后即可在此浏览记忆</span></div>`;
 async function loadMemory(){
@@ -1144,7 +1144,7 @@ async function renderMemories(){
   // 列表态:从首屏开始分页取(首页到达时整体替换,后续页追加)
   if(!q){ await loadMoreMemories(seq); return; }
   // 搜索态:单次请求、不分页(服务端按相关性取 top N)
-  const page=await fetchMemPage(`/memory-admin/memory/search?q=${encodeURIComponent(q)}`);
+  const page=await fetchMemPage(memSearchUrl(q));
   if(seq!==memSeq||!$('mem-list')) return;
   if(page==='unconfigured'){ list.innerHTML=MEM_UNCONFIGURED; return; }
   list.innerHTML='';
@@ -1156,6 +1156,12 @@ function memListUrl(offset,limit){
   const tagDef=_pandoMemDecorators.flatMap(d=>d.tags||[]).find(t=>t.label===memActiveTag);
   const parts=[((tagDef&&tagDef.query)||'').replace(/^[?&]+/,''),`offset=${offset}&limit=${limit}`].filter(Boolean);
   return '/memory-admin/memory/list?'+parts.join('&');
+}
+// 搜索态也带上当前标签的类别参数(klass/exclude_klass),标签自带的 limit 丢掉,用搜索自己的上限
+function memSearchUrl(q){
+  const tagDef=_pandoMemDecorators.flatMap(d=>d.tags||[]).find(t=>t.label===memActiveTag);
+  const tagQ=((tagDef&&tagDef.query)||'').replace(/^[?&]+/,'').split('&').filter(kv=>kv&&!/^limit=/.test(kv)).join('&');
+  return `/memory-admin/memory/search?q=${encodeURIComponent(q)}&limit=${MEM_SEARCH_LIMIT}`+(tagQ?'&'+tagQ:'');
 }
 // 拉一页:404/网络错 → 'unconfigured';管理面契约(memory_stub 软约定)是 {items,total},容忍历史裸数组形状
 async function fetchMemPage(url){
