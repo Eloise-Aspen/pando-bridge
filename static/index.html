@@ -133,6 +133,10 @@
   .custom-inp{flex:1;min-width:0;border:1px solid var(--line-strong);border-radius:6px;padding:6px 8px;font:400 13px var(--ui);color:var(--ink);background:var(--card);outline:none}
   .custom-ok{flex-shrink:0;border:none;background:var(--accent);color:#fff;border-radius:6px;width:28px;height:28px;display:flex;align-items:center;justify-content:center;cursor:pointer}
   /* effort 档位行:弹层底部五档 pill(+默认),当前档高亮 */
+  /* 设置页「默认模型」下拉:复用 .model-pop 规格,只换展开方向(聊天侧向上,设置行向下)
+     与锚点(锚在行内右侧)。不动聊天侧样式。 */
+  .set-row.def-model-row{position:relative}
+  .model-pop.down{bottom:auto;top:calc(100% + 6px);left:auto;right:14px}
   .eff-row{display:flex;flex-wrap:wrap;gap:4px;border-top:1px solid var(--line-soft);margin-top:4px;padding:8px 6px 4px}
   .eff-pill{border:1px solid var(--line-strong);background:none;border-radius:9999px;padding:4px 9px;font:500 11.5px var(--ui);color:var(--dim);cursor:pointer;white-space:nowrap}
   .eff-pill.sel{background:var(--accent-bg);color:var(--accent-press);border-color:transparent;font-weight:600}
@@ -929,6 +933,10 @@ async function loadModels(){
   syncModelBtn();
   // 弹层可能已经渲染过(甚至正开着):重渲一次让新候选立刻可见,不改开合状态
   document.querySelectorAll('.model-pop').forEach(p=>{ if(p.id==='model-pop') renderModelPop(); });
+  // 设置页可能先于本次刷新渲染(直接停在设置页时):行内文案要跟上回落/改名后的值,
+  // 否则显示陈旧 id——「没更新到最新」的病根就在这一步缺同步(裁决 5)
+  const sm=$('s-model'); if(sm) sm.textContent=modelLabel(_defModel());
+  if($('def-model-pop')) renderDefModelPop();
 }
 // 陈旧持久化值回落:候选列表就位后,把已不在列表里的 defaultModel / 当前会话模型
 // 回落到默认 Sonnet(此前只有 effort 有这层容错,model 没有)。只在列表来自服务端之后
@@ -1008,7 +1016,7 @@ function applyModel(id){
   syncModelBtn();
   renderModelPop();
 }
-document.addEventListener('click',e=>{ if(!e.target.closest('.model-slot')&&!e.target.closest('.ws-slot')) document.querySelectorAll('.model-pop').forEach(p=>p.style.display='none');
+document.addEventListener('click',e=>{ if(!e.target.closest('.model-slot')&&!e.target.closest('.ws-slot')&&!e.target.closest('.def-model-row')) document.querySelectorAll('.model-pop').forEach(p=>p.style.display='none');
   if(!e.target.closest('.ctx-slot')){ const cp=$('ctx-pop'); if(cp) cp.style.display='none'; } });
 
 let enterToSend = localStorage.getItem('enterToSend')!=='0';
@@ -1323,7 +1331,9 @@ function loadSettings(){
       </div>
       <div class="set-sec">模型与记忆</div>
       <div class="set-group">
-        <div class="set-row tap" onclick="cycleDefaultModel()"><span class="k">默认模型</span><span class="v" id="s-model">${modelLabel(_defModel())}</span>${CHEV}</div>
+        <div class="set-row tap def-model-row" onclick="toggleDefModelPop(event)"><span class="k">默认模型</span><span class="v" id="s-model">${modelLabel(_defModel())}</span>${CHEV}
+          <div class="model-pop down" id="def-model-pop" style="display:none"></div>
+        </div>
         <div class="set-row"><span class="k">自动记住上下文<span class="set-hint">对新消息生效</span></span><button class="tog${autoMem?' on':''}${_hasMemory?'':' disabled'}" id="s-automem" onclick="toggleAutoMem()"></button></div>
       </div>
       <div class="set-sec">工具权限</div>
@@ -1366,8 +1376,59 @@ async function _clearToolPolicy(){
 }
 function toggleThemeMenu(e){ e.stopPropagation(); const m=$('theme-menu'); m.style.display=m.style.display==='none'?'block':'none'; }
 function pickTheme(t){ if(t) localStorage.setItem('theme',t); else localStorage.removeItem('theme'); $('theme-menu').style.display='none'; $('s-theme').textContent=t==='_smoke'?'简洁·烟':'简洁'; _pandoEmit('theme_change',{theme:t||''}); toast('主题已切换(需刷新生效)'); }
-// 设置页的「默认模型」= 新对话从哪个模型起步(全局);模型已会话级化后它不再回头改已有会话(Task 3)
-function cycleDefaultModel(){ const ids=MODELS.map(m=>m[0]); const i=ids.indexOf(_defModel()); const next=ids[(i+1)%ids.length]; localStorage.setItem('defaultModel', next); $('s-model').textContent=modelLabel(next); }
+/* ===== 设置页「默认模型」下拉(fix-default-model-dropdown)=====
+   原点击轮换(cycleDefaultModel)改为与聊天侧同规格的 model-pop 下拉:候选同源 MODELS
+   (主线 + 「更多模型」展开 + 自定义内联输入),选中项高亮当前 _defModel()。
+   不含 effort 档位行——默认档位归独立设置项,本控件只管模型。
+   「默认模型」= 新对话从哪个模型起步(全局);模型已会话级化后它不再回头改已有会话。 */
+let _defPopExpanded=false;   // 「更多模型」展开态:每次开弹层复位回收起(与聊天侧一致)
+function toggleDefModelPop(e){
+  if(e.target.closest('#def-model-pop')) return;   // 弹层内部点击会冒泡到行,不当作开合
+  e.stopPropagation();
+  const p=$('def-model-pop'); if(!p) return;
+  const open=p.style.display==='none';
+  document.querySelectorAll('.model-pop').forEach(x=>x.style.display='none');
+  if(open){ _defPopExpanded=false; renderDefModelPop(); p.style.display='block'; }
+}
+function toggleMoreDefModels(e){ if(e) e.stopPropagation(); _defPopExpanded=!_defRestShown(); renderDefModelPop(); }
+// 服务端一个主线都没标时退化为平铺(与聊天侧 _restShown 同逻辑)
+function _defRestShown(){ if(!MODELS.some(m=>m[2])) return true; return _defPopExpanded; }
+function renderDefModelPop(){
+  const pop=$('def-model-pop'); if(!pop) return;
+  const flat=!MODELS.some(m=>m[2]), rest=flat?[]:MODELS.filter(m=>!m[2]);
+  const shown=_defRestShown(), cur=_defModel();
+  const opt=([id,nm])=>`<div class="model-opt${id===cur?' sel':''}" onclick="selectDefModel('${id}')">${nm}</div>`;
+  pop.innerHTML=(flat?MODELS:MODELS.filter(m=>m[2])).map(opt).join('')
+    + (rest.length?`<div class="model-opt more" onclick="toggleMoreDefModels(event)">更多模型 <span class="more-cav">${shown?'▴':'▾'}</span></div>`:'')
+    + (rest.length&&shown?rest.map(opt).join(''):'')
+    + `<div class="model-opt custom" id="def-custom-opt" onclick="selectDefCustomModel(event)">自定义…</div>`;
+}
+// 持久化与原 cycleDefaultModel 完全一致:写 defaultModel + 更新行内文案,只换交互
+function selectDefModel(id){
+  if(!id) return;
+  localStorage.setItem('defaultModel', id);
+  const el=$('s-model'); if(el) el.textContent=modelLabel(id);
+  const p=$('def-model-pop'); if(p) p.style.display='none';
+}
+// 「自定义…」内联输入:照抄聊天侧 selectCustomModel 的路数(PWA standalone 下 prompt 不可用)
+function selectDefCustomModel(e){
+  if(e) e.stopPropagation();
+  const pop=$('def-model-pop'); if(!pop) return;
+  const opt=pop.querySelector('#def-custom-opt'); if(!opt) return;
+  opt.classList.add('editing'); opt.onclick=null;   // 展开后本行不再当按钮响应点击
+  opt.innerHTML=`<input class="custom-inp" id="def-custom-inp" placeholder="模型 id,回车确认" autocomplete="off" spellcheck="false">`
+    + `<button class="custom-ok" id="def-custom-ok" aria-label="确认">${IC.send}</button>`;
+  const inp=pop.querySelector('#def-custom-inp'), ok=pop.querySelector('#def-custom-ok');
+  inp.value=_defModel();
+  const commit=()=>{ const v=(inp.value||'').trim(); if(v) selectDefModel(v); pop.style.display='none'; };
+  inp.onkeydown=(ev)=>{ ev.stopPropagation(); if(ev.key==='Enter'){ ev.preventDefault(); commit(); } else if(ev.key==='Escape'){ ev.preventDefault(); renderDefModelPop(); } };
+  inp.onclick=(ev)=>ev.stopPropagation();
+  // 失焦收起(还原「自定义…」);延时让 ✓ 的 click 先落地
+  inp.onblur=()=>setTimeout(()=>{ if(document.activeElement!==inp && pop.querySelector('#def-custom-inp')) renderDefModelPop(); },150);
+  ok.onmousedown=(ev)=>ev.preventDefault();   // 阻止先 blur 收起,保证 click 能提交
+  ok.onclick=(ev)=>{ ev.stopPropagation(); commit(); };
+  inp.focus(); inp.select();
+}
 function openSidebar(){ loadSessions(); $('overlay').classList.add('open'); $('drawer').classList.add('open'); }
 function closeSidebar(){ $('overlay').classList.remove('open'); $('drawer').classList.remove('open'); }
 
