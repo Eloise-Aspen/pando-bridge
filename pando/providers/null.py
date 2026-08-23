@@ -19,5 +19,5 @@ class NullMemoryProvider:
     def build_archive_prompt(self, messages: list[dict], force: bool = False) -> str | None:
         return None
 
-    def finalize_archive(self, raw: str) -> dict:
+    def finalize_archive(self, raw: str, session: str | None = None) -> dict:
         return {"stored": 0}

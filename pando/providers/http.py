@@ -5,7 +5,7 @@
     POST {url}/session_context  {}                        -> {"context": str}
     POST {url}/recall           {"query": str}            -> {"context": str}
     POST {url}/archive_prompt   {"messages": [...], "force": bool} -> {"prompt": str | null}
-    POST {url}/archive          {"raw": str}               -> {"stored": int, ...}
+    POST {url}/archive          {"raw": str, "session"?: str} -> {"stored": int, ...}
 
 任何网络/解析错误都**静默降级**（返回 "" / None / {"stored": 0}），绝不阻断聊天。
 这些方法由核心在线程池里同步调用，故用同步 HTTP 客户端。
@@ -58,6 +58,11 @@ class HttpMemoryProvider:
             return None
         return data.get("prompt") or None
 
-    def finalize_archive(self, raw: str) -> dict:
-        data = self._post("/archive", {"raw": raw})
+    def finalize_archive(self, raw: str, session: str | None = None) -> dict:
+        # session 为可选透传（feat-forge-receipt）：记忆服务可据此记会话存档账本；
+        # 未实现该字段的服务（如 memory_stub）忽略即可，契约向后兼容。
+        payload: dict = {"raw": raw}
+        if session:
+            payload["session"] = session
+        data = self._post("/archive", payload)
         return data or {"stored": 0}
