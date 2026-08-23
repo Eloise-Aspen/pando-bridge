@@ -1106,6 +1106,11 @@ const TAG_COLORS={ '项目':['#2360A8','rgba(44,132,219,.1)'], '偏好':['#B15A3
 
 /* ===== MEMORY ===== */
 let memActiveTag='全部', memStatsCache=null;
+// 列表态分页(搜索态不分页):offset=已取条数,total=服务端总数,loading 防重入;
+// seq 标记「当前这一轮渲染」——切标签/改搜索词后旧请求的响应按序号作废,不会混进新列表
+const MEM_PAGE=50, MEM_SEARCH_LIMIT=200;   // 搜索按相关度排序,一次要 200 条不分页
+let memOffset=0, memTotal=0, memLoading=false, memSeq=0, memIO=null;
+const MEM_UNCONFIGURED=`<div class="sub-empty">未配置记忆服务<br><span style="font-size:12px;color:var(--hint)">在宿主机指向 MEMORY_SERVICE_URL 后即可在此浏览记忆</span></div>`;
 async function loadMemory(){
   const v=$('v-memory');
   // 插件记忆装饰器(registerMemoryDecorator)可提供标签筛选;有标签时渲染 chip 行
@@ -1132,24 +1137,78 @@ function fmtReset(iso){ if(!iso) return ''; const d=new Date(iso), now=new Date(
 function setMemTag(t){ memActiveTag=t; document.querySelectorAll('#mem-tags .tag-chip').forEach(c=>c.classList.toggle('on',c.textContent===t)); renderMemories(); }
 async function renderMemories(){
   const list=$('mem-list'); if(!list) return;
+  const seq=++memSeq;
+  memOffset=0; memTotal=0; memLoading=false;
+  if(memIO){ memIO.disconnect(); memIO=null; }
   const q=($('mem-q')?.value||'').trim();
-  let items=null;
-  // 标签筛选:装饰器标签可携带 query 参数(如 klass=xxx),仅无搜索词时生效
+  // 列表态:从首屏开始分页取(首页到达时整体替换,后续页追加)
+  if(!q){ await loadMoreMemories(seq); return; }
+  // 搜索态:单次请求、不分页(服务端按相关性取 top N)
+  const page=await fetchMemPage(memSearchUrl(q));
+  if(seq!==memSeq||!$('mem-list')) return;
+  if(page==='unconfigured'){ list.innerHTML=MEM_UNCONFIGURED; return; }
+  list.innerHTML='';
+  if(!page.items.length){ list.innerHTML=`<div class="sub-empty">没有匹配的记忆</div>`; return; }
+  appendMemCards(list,page.items);
+}
+// 标签筛选:装饰器标签可携带 query 参数(如 klass=xxx),与 offset/limit 一起拼进 URL
+function memListUrl(offset,limit){
   const tagDef=_pandoMemDecorators.flatMap(d=>d.tags||[]).find(t=>t.label===memActiveTag);
-  const listUrl='/memory-admin/memory/list'+(tagDef&&tagDef.query?`?${tagDef.query}`:'');
-  try{ const url=q?`/memory-admin/memory/search?q=${encodeURIComponent(q)}`:listUrl;
-    const r=await fetch(url); if(r.ok) items=await r.json(); else if(r.status===404) items='unconfigured'; }catch(e){ items='unconfigured'; }
-  if(items==='unconfigured'){ list.innerHTML=`<div class="sub-empty">未配置记忆服务<br><span style="font-size:12px;color:var(--hint)">在宿主机指向 MEMORY_SERVICE_URL 后即可在此浏览记忆</span></div>`; return; }
-  // 管理面契约(memory_stub 软约定)是 {items,total};容忍历史裸数组形状
-  items=Array.isArray(items)?items:(items&&Array.isArray(items.items)?items.items:[]);
-  if(!items.length){ list.innerHTML=`<div class="sub-empty">${q?'没有匹配的记忆':'还没有记忆'}</div>`; return; }
-  // 开源服记忆无打标 → 只显示正文 + 时间;标签/卡片装饰由插件 registerMemoryDecorator 提供
-  list.innerHTML=items.map(m=>{
+  const parts=[((tagDef&&tagDef.query)||'').replace(/^[?&]+/,''),`offset=${offset}&limit=${limit}`].filter(Boolean);
+  return '/memory-admin/memory/list?'+parts.join('&');
+}
+// 搜索态也带上当前标签的类别参数(klass/exclude_klass),标签自带的 limit 丢掉,用搜索自己的上限
+function memSearchUrl(q){
+  const tagDef=_pandoMemDecorators.flatMap(d=>d.tags||[]).find(t=>t.label===memActiveTag);
+  const tagQ=((tagDef&&tagDef.query)||'').replace(/^[?&]+/,'').split('&').filter(kv=>kv&&!/^limit=/.test(kv)).join('&');
+  return `/memory-admin/memory/search?q=${encodeURIComponent(q)}&limit=${MEM_SEARCH_LIMIT}`+(tagQ?'&'+tagQ:'');
+}
+// 拉一页:404/网络错 → 'unconfigured';管理面契约(memory_stub 软约定)是 {items,total},容忍历史裸数组形状
+async function fetchMemPage(url){
+  try{ const r=await fetch(url); if(r.status===404) return 'unconfigured'; if(!r.ok) return {items:[],total:0};
+    const d=await r.json(); if(Array.isArray(d)) return {items:d,total:d.length};
+    return {items:(d&&Array.isArray(d.items))?d.items:[],total:(d&&d.total)||0}; }
+  catch(e){ return 'unconfigured'; }
+}
+// 取下一页并追加。IntersectionObserver 不可用时降级为一次取全量(limit 与 /memory/export 同口径)
+async function loadMoreMemories(seq){
+  const list=$('mem-list'); if(!list||memLoading) return;
+  memLoading=true;
+  const first=memOffset===0;
+  const limit=window.IntersectionObserver?MEM_PAGE:99999;
+  const page=await fetchMemPage(memListUrl(memOffset,limit));
+  if(seq!==memSeq||!$('mem-list')) return;  // 期间切了标签/输了搜索词:本页作废,也不碰新一轮的 loading 位
+  memLoading=false;
+  if(page==='unconfigured'){ list.innerHTML=MEM_UNCONFIGURED; return; }
+  if(first){ list.innerHTML=''; if(!page.items.length){ list.innerHTML=`<div class="sub-empty">还没有记忆</div>`; return; } }
+  memTotal=page.total; memOffset+=page.items.length;
+  if(!page.items.length) memTotal=memOffset;  // 服务端没更多了(总数缩水),收哨兵
+  appendMemCards(list,page.items);
+  mountMemSentinel(list);
+}
+// 追加卡片(不重画已有卡片);卡片装饰钩子只对新增卡片跑(装饰失败只警告,不影响列表)
+// 开源服记忆无打标 → 只显示正文 + 时间;标签/卡片装饰由插件 registerMemoryDecorator 提供
+function appendMemCards(list,items){
+  const frag=document.createDocumentFragment(), fresh=[];
+  items.forEach(m=>{
     const text=escHtml(m.text||m.content||m.body||''); const date=fmtWhen(m.created_at||m.updated_at||m.origin_date||m.date);
-    return `<div class="mem-card"><div class="tx">${text}</div><div class="ft"><span class="mem-date">${date}</span><button class="mem-del" onclick="deleteMemory('${m.id}')">${TRASH}</button></div></div>`;
-  }).join('');
-  // 卡片装饰钩子:插件可在每张卡上补标签等(装饰失败只警告,不影响列表)
-  [...list.children].forEach((el,i)=>{ _pandoMemDecorators.forEach(d=>{ if(d.card){ try{ d.card(el,items[i]); }catch(e){ console.warn('[Pando] 记忆卡片装饰失败:',d.id,e); } } }); });
+    const el=document.createElement('div'); el.className='mem-card';
+    el.innerHTML=`<div class="tx">${text}</div><div class="ft"><span class="mem-date">${date}</span><button class="mem-del" onclick="deleteMemory('${m.id}')">${TRASH}</button></div>`;
+    frag.appendChild(el); fresh.push(el);
+  });
+  list.appendChild(frag);
+  fresh.forEach((el,i)=>{ _pandoMemDecorators.forEach(d=>{ if(d.card){ try{ d.card(el,items[i]); }catch(e){ console.warn('[Pando] 记忆卡片装饰失败:',d.id,e); } } }); });
+}
+// 列表底部哨兵:进视口即取下一页(与 mountSessSentinel 同法);取完就不再放哨兵
+function mountMemSentinel(list){
+  if(memIO){ memIO.disconnect(); memIO=null; }
+  list.querySelectorAll('.sess-sentinel').forEach(n=>n.remove());
+  if(!window.IntersectionObserver||memOffset>=memTotal) return;
+  const sn=document.createElement('div'); sn.className='sess-sentinel'; sn.textContent='加载更早的记忆…';
+  list.appendChild(sn);
+  const seq=memSeq;
+  memIO=new IntersectionObserver(es=>{ if(es.some(e=>e.isIntersecting)) loadMoreMemories(seq); },{root:list.closest('.sub-body'),rootMargin:'160px'});
+  memIO.observe(sn);
 }
 let pendingDeleteId=null;
 function deleteMemory(id){ pendingDeleteId=id; $('confirm-ov').classList.add('open'); }
