@@ -19,7 +19,7 @@ Pando 核心（server.py）零记忆逻辑，只通过这个 Protocol 与记忆�
     POST {url}/session_context  {}                       -> {"context": str}
     POST {url}/recall           {"query": str}           -> {"context": str}
     POST {url}/archive_prompt   {"messages": [{role, content}, ...], "force": bool} -> {"prompt": str | null}
-    POST {url}/archive          {"raw": str}              -> {"stored": int, ...}
+    POST {url}/archive          {"raw": str, "session"?: str} -> {"stored": int, ...}
 """
 
 from __future__ import annotations
@@ -57,11 +57,13 @@ class MemoryProvider(Protocol):
         """
         ...
 
-    def finalize_archive(self, raw: str) -> dict:
+    def finalize_archive(self, raw: str, session: str | None = None) -> dict:
         """接收模型针对 archive_prompt 写出的原始输出（未解析），由记忆引擎完成解析与落库。
 
         `raw` 是模型原始文本——JSON 提取、worthy 判断、字段解析等全部由记忆引擎内部完成，
         核心不解析这段文本的语义。
+        `session` 是本次存档所属的会话 id（可选）：记忆引擎可据此维护「会话存档账本」
+        等统计；不需要时忽略即可。
         返回形如 {"stored": int, ...} 的结果字典。
         """
         ...

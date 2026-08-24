@@ -533,6 +533,49 @@ def test_forge_gate_released_on_error(tmp_path, spy, monkeypatch):
     assert second["carryover"] is True              # 闸已放开，第二次正常精炼
 
 
+# ------------------------------------------- 回执数据（feat-forge-receipt Task 1）
+
+def test_forged_frame_carries_stats_and_source(tmp_path, spy):
+    """成功路径：forged 帧带 stats（RefineStats dict 化）与 source_session。"""
+    spy(["sess-old"])
+    app = create_app(_config(tmp_path))
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as wsc:
+            wsc.receive_json()
+            wsc.send_json({"text": "第一句"})
+            _drain_to(wsc, "result")
+            _seed_transcript(tmp_path, "sess-old", turns=6)
+            wsc.send_json({"forge": True})
+            forged = _drain_to(wsc, "forged")
+
+    assert forged["source_session"] == "sess-old"
+    stats = forged["stats"]
+    assert isinstance(stats, dict)
+    assert stats["source_session"] == "sess-old"
+    assert stats["new_session"] == forged["session_id"]
+    assert stats["kept_turns"] > 0
+    assert stats["chars"] > 0
+    # 统计只含数字与 id，绝不携带对话正文
+    assert "用户第 0 问" not in json.dumps(stats, ensure_ascii=False)
+
+
+def test_forged_frame_stats_null_when_degraded(tmp_path, spy):
+    """降级路径：stats 为 null，source_session 仍在（撤销键对降级同样可用）。"""
+    spy(["sess-old"])
+    app = create_app(_config(tmp_path))
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as wsc:
+            wsc.receive_json()
+            wsc.send_json({"text": "第一句"})
+            _drain_to(wsc, "result")
+            # 刻意不建 transcript → 降级
+            wsc.send_json({"forge": True})
+            forged = _drain_to(wsc, "forged")
+
+    assert forged["stats"] is None
+    assert forged["source_session"] == "sess-old"
+
+
 def test_carryover_can_be_disabled(tmp_path, spy):
     """CARRYOVER_ENABLED=False → forge 行为回到本功能上线前。"""
     spy(["sess-old"])

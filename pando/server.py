@@ -14,6 +14,7 @@ import socket
 import sqlite3
 import time
 import uuid
+from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -1846,7 +1847,10 @@ def create_app(config) -> FastAPI:
                     log.warning("auto_archive: Claude returned empty")
                     return
 
-                archive_result = await asyncio.to_thread(memory.finalize_archive, claude_raw)
+                # session 随存档一起下发（feat-forge-receipt 裁决 8）：供记忆服务
+                # 记「会话存档账本」。旧版 provider 只收 raw 也兼容（可选参数）。
+                archive_result = await asyncio.to_thread(
+                    memory.finalize_archive, claude_raw, session_id)
 
                 if archive_result and archive_result.get("stored", 0) > 0:
                     log.info("auto_archive: saved [%s] for session %s",
@@ -1870,18 +1874,21 @@ def create_app(config) -> FastAPI:
             "此外的近况你不知道，不确定就说不知道，不要补。]\n"
         )
 
-    def _forge_carryover(src_session_id: str, cwd_key: str) -> str | None:
-        """同步精炼当前会话的 transcript，返回新 session_id；任何失败返回 None。
+    def _forge_carryover(src_session_id: str, cwd_key: str) -> tuple[str | None, dict | None]:
+        """同步精炼当前会话的 transcript，返回 (新 session_id, 精炼统计 dict)。
 
         transcript 目录按会话绑定的 cwd_key 解析（裁决 3）——必须与 run_claude 的
         workspace_cwd 一致，否则找不到源文件、或新文件落错目录导致 --resume 失败。
         新文件与源文件同目录，CLI 在同一 cwd 下才认得出这个会话。
+
+        统计随 forged 帧下发供前端回执展示（feat-forge-receipt 裁决 7）：
+        成功时是 RefineStats 的 dict 化（不含对话正文），任何失败/降级都返回 None。
         """
         try:
             run_cwd = workspace_cwd(cwd_key)
             if not run_cwd:
                 log.info("carryover skipped: no cwd bound for session %s", src_session_id)
-                return None
+                return None, None
             src = carryover_engine.transcript_path(
                 claude_projects_dir, run_cwd, src_session_id)
             new_id, stats = carryover_engine.refine_detailed(
@@ -1891,10 +1898,11 @@ def create_app(config) -> FastAPI:
             )
             if new_id is None:
                 log.info("carryover degraded: %s", stats.as_log_fields())
-            return new_id
+                return None, None
+            return new_id, asdict(stats)
         except Exception as e:                     # noqa: BLE001 —— fail closed
             log.warning("carryover error, degrading to plain reset: %s", e)
-            return None
+            return None, None
 
     async def _auto_archive_loop(ws: WebSocket, get_session_id, get_model, get_effort):
         """Background task: auto-archive every ARCHIVE_INTERVAL seconds while session is alive."""
@@ -2084,8 +2092,9 @@ def create_app(config) -> FastAPI:
                             # 精炼续窗（裁决 4）：归档落定后再做，纯本地秒级。成功则新会话
                             # 带着精炼上下文 --resume 起来；失败一律降级为下面的纯重置三连。
                             carried_id = None
+                            carried_stats = None
                             if carryover_enabled and old_session_id:
-                                carried_id = await asyncio.to_thread(
+                                carried_id, carried_stats = await asyncio.to_thread(
                                     _forge_carryover, old_session_id, old_cwd_key,
                                 )
                             if carried_id:
@@ -2110,6 +2119,10 @@ def create_app(config) -> FastAPI:
                                 "session_id": carried_id,
                                 "carryover": bool(carried_id),
                                 "message": forged_message,
+                                # 回执数据（feat-forge-receipt）：精炼统计（降级为 null）
+                                # 与源会话 id（撤销=切回旧会话要用，裁决 10）
+                                "stats": carried_stats,
+                                "source_session": old_session_id,
                             }, ensure_ascii=False))
                         finally:
                             # 异常路径也必须放闸，否则这个会话此后再也 forge 不了

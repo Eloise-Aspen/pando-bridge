@@ -45,6 +45,25 @@ def test_provider_without_headers_sends_none(monkeypatch):
     assert seen["headers"] is None
 
 
+def test_finalize_archive_passes_session(monkeypatch):
+    """/archive body 透传可选 session 字段（feat-forge-receipt 裁决 8）。"""
+    seen = {}
+
+    def fake_post(url, **kwargs):
+        seen["url"] = url
+        seen["json"] = kwargs.get("json")
+        return _FakeResp()
+
+    monkeypatch.setattr("pando.providers.http.requests.post", fake_post)
+    provider = HttpMemoryProvider("http://127.0.0.1:9/")
+    provider.finalize_archive("raw text", session="sess-1")
+    assert seen["url"].endswith("/archive")
+    assert seen["json"] == {"raw": "raw text", "session": "sess-1"}
+    # 不带 session 时 body 不出现该字段（向后兼容旧服务）
+    provider.finalize_archive("raw text")
+    assert seen["json"] == {"raw": "raw text"}
+
+
 def test_get_provider_passes_headers_through():
     provider = get_provider("http://127.0.0.1:9/", headers=HEADERS)
     assert provider.headers == HEADERS
