@@ -555,6 +555,15 @@ def create_app(config) -> FastAPI:
     carryover_enabled = bool(_cfg(config, "CARRYOVER_ENABLED", True))
     carryover_tail_turns = int(_cfg(config, "CARRYOVER_TAIL_TURNS", 12))
     carryover_max_chars = int(_cfg(config, "CARRYOVER_MAX_CHARS", 120_000))
+    # 精炼续窗自动触发（feat-carryover-auto-trigger 裁决 2/6）。这四项是**出厂默认**，
+    # 运行时值 = 默认 ⊕ settings 表覆盖（_setting 读取，POST /settings 写入）。
+    # 禁止在别处硬编码阈值——判定处一律走 _setting。
+    _AUTO_CARRYOVER_DEFAULTS: dict[str, object] = {
+        "auto_carryover_enabled": bool(_cfg(config, "AUTO_CARRYOVER_ENABLED", True)),
+        "auto_carryover_soft_tokens": int(_cfg(config, "AUTO_CARRYOVER_SOFT_TOKENS", 120_000)),
+        "auto_carryover_hard_tokens": int(_cfg(config, "AUTO_CARRYOVER_HARD_TOKENS", 160_000)),
+        "auto_carryover_idle_minutes": float(_cfg(config, "AUTO_CARRYOVER_IDLE_MINUTES", 10)),
+    }
     # CLI transcript 根目录。默认 ~/.claude/projects——各会话按其绑定的工作目录编码成子目录。
     claude_projects_dir = Path(
         _cfg(config, "CLAUDE_PROJECTS_DIR", None)
@@ -759,6 +768,11 @@ def create_app(config) -> FastAPI:
                 created_at TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_usage_created ON usage(created_at);
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
         """)
         # 旧库兼容：last_archived_id / cwd_key 都是历史加列(已存在则 ALTER 抛错,吞掉即可);
         # usage 表用 CREATE TABLE IF NOT EXISTS,旧库首次启动自动补建,无需额外迁移语句。
@@ -766,6 +780,10 @@ def create_app(config) -> FastAPI:
         for _ddl in (
             "ALTER TABLE sessions ADD COLUMN last_archived_id INTEGER DEFAULT 0",
             "ALTER TABLE sessions ADD COLUMN cwd_key TEXT DEFAULT ''",
+            # parent_session_id（feat-carryover-auto-trigger 裁决 5）：精炼续窗产生的
+            # 接续会话指向源会话，历史端点据此沿链拼接展示。空串 = 无前驱（从头开始的
+            # 会话、以及「开新对话」的干净重开）。存量会话零迁移。
+            "ALTER TABLE sessions ADD COLUMN parent_session_id TEXT DEFAULT ''",
         ):
             try:
                 conn.execute(_ddl)
@@ -794,6 +812,68 @@ def create_app(config) -> FastAPI:
         row = conn.execute("SELECT cwd_key FROM sessions WHERE id = ?", (session_id,)).fetchone()
         conn.close()
         return (row[0] or "") if row else ""
+
+    # ---------------------------------------------------------------- settings
+    # 行为参数的运行时覆盖层（feat-carryover-auto-trigger 裁决 6）。
+    # 只允许 _AUTO_CARRYOVER_DEFAULTS 里的键，且按默认值的类型强制转换——前端无鉴权，
+    # 这里放行的是「换窗频率」这类行为参数，服务端点/凭证一律不进这张表。
+    # 值以 JSON 文本落库（settings.value），读时按默认值类型回填，坏值一律回退默认。
+
+    def _coerce_setting(key: str, raw):
+        default = _AUTO_CARRYOVER_DEFAULTS[key]
+        if isinstance(default, bool):
+            if isinstance(raw, str):
+                return raw.strip().lower() not in ("false", "0", "", "null")
+            return bool(raw)
+        if isinstance(default, int):
+            return int(raw)
+        return float(raw)
+
+    def _all_settings() -> dict:
+        """当前生效的行为参数：config 出厂默认 ⊕ settings 表覆盖。
+        表里坏值（类型不对/删过的旧键）静默忽略，永远回落默认，绝不抛错。"""
+        merged = dict(_AUTO_CARRYOVER_DEFAULTS)
+        try:
+            conn = _chat_conn()
+            rows = conn.execute("SELECT key, value FROM settings").fetchall()
+            conn.close()
+        except Exception as e:                      # noqa: BLE001 —— 读设置永不阻断
+            log.warning("settings read failed, using defaults: %s", e)
+            return merged
+        for key, value in rows:
+            if key not in merged:
+                continue
+            try:
+                merged[key] = _coerce_setting(key, json.loads(value))
+            except Exception:
+                continue
+        return merged
+
+    def _setting(key: str):
+        """单键读取。判定层每轮现读一次——设置页改完下一轮即生效，无需重启（完成标准 5）。"""
+        return _all_settings()[key]
+
+    def _write_settings(body: dict) -> dict:
+        """写入白名单内的键，返回写后完整生效值。非法键/非法值静默跳过（与工具策略同口径）。"""
+        pairs = []
+        for key, raw in body.items():
+            if key not in _AUTO_CARRYOVER_DEFAULTS:
+                continue
+            try:
+                pairs.append((key, json.dumps(_coerce_setting(key, raw))))
+            except (TypeError, ValueError):
+                continue
+        if pairs:
+            conn = _chat_conn()
+            now = now_iso()
+            conn.executemany(
+                "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
+                [(k, v, now) for k, v in pairs],
+            )
+            conn.commit()
+            conn.close()
+        return _all_settings()
 
     def workspace_cwd(cwd_key: str) -> str | None:
         """按 key 解析工作目录绝对路径。空 key / 名单外一律回默认 CLAUDE_CWD。"""
@@ -1134,6 +1214,27 @@ def create_app(config) -> FastAPI:
         _quota_cache["data"] = cleaned
         _quota_cache["ts"] = now
         return cleaned
+
+    # -----------------------------------------------------------------------
+    # 行为设置 API（feat-carryover-auto-trigger Task 1）
+    # -----------------------------------------------------------------------
+
+    @app.get("/settings")
+    async def api_get_settings():
+        """当前生效的行为参数（config 默认 ⊕ settings 表覆盖）。"""
+        return _all_settings()
+
+    @app.post("/settings")
+    async def api_post_settings(req: Request):
+        """更新行为参数。请求体为 JSON 对象，只认白名单键（见 _AUTO_CARRYOVER_DEFAULTS），
+        非法键/非法值静默忽略。返回更新后的完整生效值。持久化在服务端，对所有连接生效。"""
+        try:
+            body = await req.json()
+        except Exception:
+            raise HTTPException(status_code=400, detail="invalid JSON body")
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="body must be a JSON object")
+        return _write_settings(body)
 
     # -----------------------------------------------------------------------
     # 工具策略 API（feat-tool-policy Task 2）
