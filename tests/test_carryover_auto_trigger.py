@@ -401,3 +401,46 @@ def test_manual_forge_clears_pending(tmp_path, monkeypatch, caplog):
     assert "pending until idle" in caplog.text
     # 手动换窗把 pending 划掉了，节拍器不该再对源会话投帧
     assert "idle elapsed" not in caplog.text
+
+
+# ---------------------------------------------------------------- 干净重开（Task 4）
+
+def test_clean_reopen_archives_but_skips_carryover(tmp_path, monkeypatch):
+    """「开新对话」= 干净重开（裁决 4）：照样存档，但不 carryover——
+    即使源 transcript 完好可精炼，也必须回纯重置的帧。"""
+    _install(monkeypatch, ["sess-old", "sess-fresh"], cache_read=10)
+    app = create_app(_config(tmp_path))
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as wsc:
+            wsc.receive_json()
+            wsc.send_json({"text": "第一句"})
+            _drain_to(wsc, "result")
+            _seed_transcript(tmp_path, "sess-old")      # 精炼本可成功
+            wsc.send_json({"forge": True, "clean": True})
+            forged = _drain_to(wsc, "forged")
+
+    assert forged["clean"] is True
+    assert forged["auto"] is False
+    assert forged["carryover"] is False
+    assert forged["session_id"] is None
+    assert forged["message"] == "已存档，新对话已开始"
+    # 没生成接续 JSONL：目录里只剩源文件
+    d = tmp_path / "projects" / carryover.encode_project_dir(str(tmp_path / "cwd"))
+    assert sorted(p.name for p in d.iterdir()) == ["sess-old.jsonl"]
+
+
+def test_manual_forge_frame_flags(tmp_path, monkeypatch):
+    """手动「压缩上下文」：auto/clean 都是 false，carryover 成功即无缝。"""
+    _install(monkeypatch, ["sess-old"], cache_read=10)
+    app = create_app(_config(tmp_path))
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as wsc:
+            wsc.receive_json()
+            wsc.send_json({"text": "第一句"})
+            _drain_to(wsc, "result")
+            _seed_transcript(tmp_path, "sess-old")
+            wsc.send_json({"forge": True})
+            forged = _drain_to(wsc, "forged")
+
+    assert forged["auto"] is False and forged["clean"] is False
+    assert forged["carryover"] is True
