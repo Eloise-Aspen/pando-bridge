@@ -555,6 +555,8 @@ def create_app(config) -> FastAPI:
     carryover_enabled = bool(_cfg(config, "CARRYOVER_ENABLED", True))
     carryover_tail_turns = int(_cfg(config, "CARRYOVER_TAIL_TURNS", 12))
     carryover_max_chars = int(_cfg(config, "CARRYOVER_MAX_CHARS", 120_000))
+    # 历史展示沿 parent 链最多向前拼几段（裁决 5）。含当前会话本身，故 5 = 当前 + 4 段前驱。
+    carryover_chain_max_depth = int(_cfg(config, "CARRYOVER_CHAIN_MAX_DEPTH", 5))
     # 精炼续窗自动触发（feat-carryover-auto-trigger 裁决 2/6）。这四项是**出厂默认**，
     # 运行时值 = 默认 ⊕ settings 表覆盖（_setting 读取，POST /settings 写入）。
     # 禁止在别处硬编码阈值——判定处一律走 _setting。
@@ -986,25 +988,58 @@ def create_app(config) -> FastAPI:
             "manual": bool(clean),
         }
 
-    def get_session_messages(session_id: str) -> list[dict]:
+    def session_chain(session_id: str) -> list[str]:
+        """沿 parent_session_id 向前回溯，返回**由早到晚**的会话 id 序列（裁决 5）。
+
+        限深 carryover_chain_max_depth 段：链再长也不给前端拖出无限历史；
+        visited 集合防环——库里理论上不该出现环，但 parent 是普通文本列，
+        一旦被外部工具写脏，无防护的回溯会当场死循环。遇到已访问 id 即断。
+        """
+        chain = [session_id]
+        visited = {session_id}
+        cur_id = session_id
         conn = _chat_conn()
-        cur = conn.execute(
-            "SELECT role, content, metadata, created_at FROM messages WHERE session_id = ? ORDER BY id",
-            (session_id,),
-        )
+        try:
+            for _ in range(max(1, carryover_chain_max_depth) - 1):
+                row = conn.execute(
+                    "SELECT parent_session_id FROM sessions WHERE id = ?", (cur_id,)
+                ).fetchone()
+                parent = (row[0] or "") if row else ""
+                if not parent or parent in visited:
+                    break
+                chain.append(parent)
+                visited.add(parent)
+                cur_id = parent
+        finally:
+            conn.close()
+        chain.reverse()
+        return chain
+
+    def get_session_messages(session_id: str) -> list[dict]:
+        """会话历史。精炼续窗产生的接续会话沿 parent 链向前拼接展示（裁决 5）——
+        刷新页面后对话流完整、不穿帮。消息**仍归属各自会话**，这里只是读侧拼接，
+        绝不往库里复制消息伪造归属。"""
+        conn = _chat_conn()
         msgs = []
-        for row in cur.fetchall():
-            meta = {}
-            try:
-                meta = json.loads(row[2]) if row[2] else {}
-            except json.JSONDecodeError:
-                pass
-            msgs.append({
-                "role": row[0],
-                "content": row[1],
-                "metadata": meta,
-                "created_at": row[3],
-            })
+        for sid in session_chain(session_id):
+            for row in conn.execute(
+                "SELECT role, content, metadata, created_at FROM messages "
+                "WHERE session_id = ? ORDER BY id",
+                (sid,),
+            ).fetchall():
+                meta = {}
+                try:
+                    meta = json.loads(row[2]) if row[2] else {}
+                except json.JSONDecodeError:
+                    pass
+                msgs.append({
+                    "role": row[0],
+                    "content": row[1],
+                    "metadata": meta,
+                    "created_at": row[3],
+                    # 消息真正的归属会话；前端只按序渲染，不据此分段
+                    "session_id": sid,
+                })
         conn.close()
         return msgs
 

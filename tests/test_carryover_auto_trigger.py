@@ -74,8 +74,14 @@ class _Spy:
         self.cache_read = cache_read
 
     async def __call__(self, *args, **kwargs):
-        self.calls.append({"argv": list(args), "cwd": kwargs.get("cwd")})
-        sid = self._session_ids.pop(0) if self._session_ids else "sess-fallback"
+        argv = list(args)
+        self.calls.append({"argv": argv, "cwd": kwargs.get("cwd")})
+        # --resume 的一轮沿用被 resume 的会话 id（真 CLI 就是这个行为）；
+        # 只有开新会话才从预置序列里取下一个
+        if "--resume" in argv:
+            sid = argv[argv.index("--resume") + 1]
+        else:
+            sid = self._session_ids.pop(0) if self._session_ids else "sess-fallback"
         return _FakeProc([
             _enc({"type": "system", "subtype": "init", "session_id": sid, "model": "m"}),
             _enc({"type": "assistant",
