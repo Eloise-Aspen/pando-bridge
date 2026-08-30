@@ -938,29 +938,56 @@ def create_app(config) -> FastAPI:
     def list_sessions(limit: int = 30, offset: int = 0) -> list[dict]:
         """会话列表（按 updated_at 倒序）。offset 供前端滑底增量加载用——
         会话量级只有几十，不上 cursor 分页；删除造成的偏移抖动由前端按 id 去重容忍
-        （feat-session-management 裁决）。"""
+        （feat-session-management 裁决）。
+
+        **沿 parent 链折叠（2026-08-30 真机复验 Fix B）**：精炼续窗每换一次窗就多一个
+        会话行，与「无缝」承诺正面冲突——用户眼里那是同一场对话。这里只列**链上最新
+        的那一段**（没有任何会话把它当 parent 的会话 = 链尾），链上更早的段不单独成行，
+        旧消息靠对话内向上翻（历史端点本来就沿链拼接）。「开新对话」是干净重开、
+        不写 parent，天然自成一条，不受影响。
+
+        链尾那一行的标题/条数按**整条链**算：刚换完窗的新会话自己一条消息都没有，
+        照会话本身取会得到无标题空行——列表里凭空多个空条目比重复条目更糟。
+        """
         conn = _chat_conn()
+        # 链尾判据放 SQL 里，好让 limit/offset 作用在过滤之后（分页语义不被打乱）
         cur = conn.execute("""
-            SELECT s.id, s.title, s.model, s.created_at, s.updated_at,
-                   (SELECT COUNT(*) FROM messages WHERE session_id = s.id) as msg_count,
-                   (SELECT content FROM messages WHERE session_id = s.id AND role = 'user'
-                    ORDER BY id ASC LIMIT 1) as first_msg,
-                   s.cwd_key
+            SELECT s.id, s.title, s.model, s.created_at, s.updated_at, s.cwd_key
             FROM sessions s
+            WHERE NOT EXISTS (
+                SELECT 1 FROM sessions c
+                WHERE c.parent_session_id = s.id AND c.id <> s.id
+            )
             ORDER BY s.updated_at DESC LIMIT ? OFFSET ?
         """, (limit, offset))
+        rows = cur.fetchall()
         sessions = []
-        for row in cur.fetchall():
-            title = _display_title(row[1], row[6])
+        for row in rows:
+            # 链段数很少（限深 carryover_chain_max_depth，默认个位数），每行几条小查询可接受
+            chain = session_chain(row[0])
+            placeholders = ",".join("?" * len(chain))
+            msg_count = conn.execute(
+                f"SELECT COUNT(*) FROM messages WHERE session_id IN ({placeholders})", chain
+            ).fetchone()[0]
+            # 首条用户消息取链上**最早**那段的，标题才和用户记忆里的开场白对得上
+            first_msg = None
+            for sid in chain:
+                got = conn.execute(
+                    "SELECT content FROM messages WHERE session_id = ? AND role = 'user' "
+                    "ORDER BY id ASC LIMIT 1", (sid,)
+                ).fetchone()
+                if got:
+                    first_msg = got[0]
+                    break
             sessions.append({
                 "id": row[0],
-                "title": title,
+                "title": _display_title(row[1], first_msg),
                 "model": row[2],
                 "created_at": row[3],
                 "updated_at": row[4],
-                "msg_count": row[5],
+                "msg_count": msg_count,
                 # 会话所属工作目录 key（空 = 客厅）。前端据此在列表项上标 label
-                "cwd_key": row[7] or "",
+                "cwd_key": row[5] or "",
             })
         conn.close()
         return sessions
@@ -1018,10 +1045,21 @@ def create_app(config) -> FastAPI:
     def get_session_messages(session_id: str) -> list[dict]:
         """会话历史。精炼续窗产生的接续会话沿 parent 链向前拼接展示（裁决 5）——
         刷新页面后对话流完整、不穿帮。消息**仍归属各自会话**，这里只是读侧拼接，
-        绝不往库里复制消息伪造归属。"""
+        绝不往库里复制消息伪造归属。
+
+        **压缩分割线的边界标记（2026-08-30 真机复验 Fix A）**：前端此前只在换窗当下
+        往消息流里塞一条分割线，是运行时产物——刷新就没了。这里把边界随消息读出去：
+        `carryover_seam_before` 标在每个后继链段的第一条消息上；若后继段一条消息都还
+        没有（刚换完窗、用户还没说话），则把 `carryover_seam_after` 标在最后一条上。
+        两个标记只在读侧注入 metadata 副本，**不落库**。
+        """
         conn = _chat_conn()
         msgs = []
-        for sid in session_chain(session_id):
+        chain = session_chain(session_id)
+        # 记录「本段是否是第一个产出消息的段」：不是的话，本段首条消息前该有分割线
+        seen_any = False
+        for sid in chain:
+            seg_first = True
             for row in conn.execute(
                 "SELECT role, content, metadata, created_at FROM messages "
                 "WHERE session_id = ? ORDER BY id",
@@ -1032,6 +1070,10 @@ def create_app(config) -> FastAPI:
                     meta = json.loads(row[2]) if row[2] else {}
                 except json.JSONDecodeError:
                     pass
+                if seg_first and seen_any:
+                    meta["carryover_seam_before"] = True
+                seg_first = False
+                seen_any = True
                 msgs.append({
                     "role": row[0],
                     "content": row[1],
@@ -1041,6 +1083,9 @@ def create_app(config) -> FastAPI:
                     "session_id": sid,
                 })
         conn.close()
+        # 尾段（含被请求的这个会话）还没有自己的消息 → 分割线该落在整段历史的末尾
+        if msgs and len(chain) > 1 and msgs[-1]["session_id"] != chain[-1]:
+            msgs[-1]["metadata"]["carryover_seam_after"] = True
         return msgs
 
     def record_usage(session_id: str | None, model: str, usage: dict):
@@ -1788,7 +1833,8 @@ def create_app(config) -> FastAPI:
                         total_input = cache_read + cache_create + input_tok
                         cache_hit_pct = round(cache_read / total_input * 100) if total_input else 0
 
-                        # context(上下文占用)= 最后一个 assistant 事件的 usage 快照,与账单口径分开。
+                        # context(上下文占用)= 最后一个 assistant 事件的输入快照 + 本轮真实输出,
+                        # 与账单口径分开(输出取 result 帧,assistant 事件那个是流式起始快照,见下)。
                         # 占用 = 输入 + 缓存读 + 缓存写 + 输出(下一轮会带着这些进上下文);
                         # 分母取 result.modelUsage 里该模型的 contextWindow(拿不到则回退 200k)。
                         # 压缩后此值回落是预期:CC 内部压掉早期内容,上下文真的变小了。
@@ -1796,7 +1842,6 @@ def create_app(config) -> FastAPI:
                         if last_assistant_usage:
                             lu = last_assistant_usage
                             l_input = lu.get("input_tokens", 0)
-                            l_output = lu.get("output_tokens", 0)
                             l_cread = lu.get("cache_read_input_tokens", 0)
                             l_ccreate = lu.get("cache_creation_input_tokens", 0)
                             l_total_in = l_input + l_cread + l_ccreate
@@ -1805,11 +1850,20 @@ def create_app(config) -> FastAPI:
                                 cw = mu.get("contextWindow") or 0
                                 if cw > ctx_window:
                                     ctx_window = cw
+                            # 输入/输出两行的口径修正（2026-08-30 真机复验 Fix C）：
+                            # - 输入原先只取 l_input（**未命中缓存**的那点增量）。开了
+                            #   prompt cache 后它常年是 2-4，弹窗里「输入 2」纯属误导；
+                            #   真实上下文规模是 input + cache_read + cache_create。
+                            # - 输出原先取最后一个 assistant 事件的 output_tokens，那是
+                            #   流式起始快照（实测恒为 1-5，与本轮真实输出 100-400 无关）；
+                            #   result 帧的 output_tok 才是这一轮的权威输出量。
+                            # 实测样本（data_test）：input 2 / output 2，而同轮 result
+                            # 是 total_input 48410 / output 396——两行都是死数。
                             context_meta = {
-                                "used": l_input + l_cread + l_ccreate + l_output,
+                                "used": l_total_in + output_tok,
                                 "window": ctx_window or 200000,
-                                "input": l_input,
-                                "output": l_output,
+                                "input": l_total_in,
+                                "output": output_tok,
                                 "cache_read": l_cread,
                                 "cache_create": l_ccreate,
                                 "cache_hit_pct": round(l_cread / l_total_in * 100) if l_total_in else 0,
