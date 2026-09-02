@@ -891,6 +891,16 @@ def create_app(config) -> FastAPI:
         entry = workspaces.get(cwd_key) if cwd_key else None
         return (entry or {}).get("path") or claude_cwd
 
+    def _is_chat_session(sid: str) -> bool:
+        """会话是否落在陪伴目录（客厅）。fix-carryover-chat-key 裁决 1：
+        不再看 cwd_key 空不空——前端建客厅会话会传显式 'chat'，按键判会误伤。
+        改按语义判：workspace_cwd(cwd_key) 解析出的路径 == CLAUDE_CWD 即客厅
+        （空串走默认也天然命中）。Windows 下路径比较做规范化（大小写/斜杠）。"""
+        resolved = workspace_cwd(get_session_cwd_key(sid)) or ""
+        return os.path.normcase(os.path.normpath(resolved)) == os.path.normcase(
+            os.path.normpath(claude_cwd or "")
+        )
+
     def get_last_archived_id(session_id: str) -> int:
         conn = _chat_conn()
         row = conn.execute("SELECT last_archived_id FROM sessions WHERE id = ?", (session_id,)).fetchone()
@@ -2116,7 +2126,9 @@ def create_app(config) -> FastAPI:
         返回 "hard"（立即换窗）/"soft"（置 pending，等空闲）/None（不动）。
         判定顺序刻意如此：
         - 开关关掉 → 什么都不做（完成标准 5）；
-        - 会话 cwd_key 非空 = 工位，CC 工作流自己管上下文，超线也不触发（裁决 3）；
+        - 会话工作目录不是陪伴目录 = 工位，CC 工作流自己管上下文，超线也不触发
+          （裁决 3；判据按 fix-carryover-chat-key 裁决 1 语义化——显式 'chat' 键
+          与空串都解析到 CLAUDE_CWD，同判客厅）；
         - forge 在途 → 跳过本次，等下一轮 result 重新判（裁决 7），不排队不补偿；
         - 硬顶优先于软阈值——过了硬顶就别再等空闲了。
         日志只记 session/档位/当时 total_input，不落正文（裁决 9）。
@@ -2126,7 +2138,7 @@ def create_app(config) -> FastAPI:
         cfg_now = _all_settings()
         if not cfg_now["auto_carryover_enabled"]:
             return None
-        if get_session_cwd_key(sid):
+        if not _is_chat_session(sid):
             return None                     # 工位会话：静默不触发
         if sid in forge_in_flight:
             log.info("carryover auto-trigger skipped: forge in flight "

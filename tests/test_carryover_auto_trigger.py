@@ -272,6 +272,60 @@ def test_workstation_session_never_triggers(tmp_path, monkeypatch, caplog):
     assert "carryover auto-trigger" not in caplog.text
 
 
+def test_explicit_chat_key_triggers_hard(tmp_path, monkeypatch, caplog):
+    """fix-carryover-chat-key 裁决 1/3：前端建客厅会话传显式 'chat' 键，
+    workspace 解析路径 == CLAUDE_CWD → 仍算客厅，硬顶照常触发。
+    （生产实证：旧判据按「cwd_key 非空=工位」把 'chat' 会话静默跳过。）"""
+    cwd = tmp_path / "cwd"
+    work = tmp_path / "work"
+    work.mkdir()
+    _install(monkeypatch, ["sess-old"], cache_read=5000)
+    app = create_app(_config(
+        tmp_path,
+        WORKSPACES={"chat": {"label": "客厅", "path": str(cwd)},
+                    "proj": {"label": "项目", "path": str(work)}},
+        AUTO_CARRYOVER_SOFT_TOKENS=100,
+        AUTO_CARRYOVER_HARD_TOKENS=1000,
+    ))
+    with caplog.at_level(logging.INFO, logger="pando"):
+        with TestClient(app) as client:
+            with client.websocket_connect("/ws") as wsc:
+                wsc.receive_json()
+                _seed_transcript(tmp_path, "sess-old")
+                wsc.send_json({"text": "第一句", "cwd_key": "chat"})
+                _drain_to(wsc, "result")
+                forged = _drain_to(wsc, "forged")
+
+    assert forged["auto"] is True
+    assert forged["carryover"] is True
+    assert "carryover auto-trigger (hard)" in caplog.text
+
+
+def test_explicit_chat_key_triggers_soft(tmp_path, monkeypatch, caplog):
+    """同上，软档：显式 'chat' 键过软线 → 置 pending，空闲到点后换窗。"""
+    cwd = tmp_path / "cwd"
+    _install(monkeypatch, ["sess-old"], cache_read=5000)
+    app = create_app(_config(
+        tmp_path,
+        WORKSPACES={"chat": {"label": "客厅", "path": str(cwd)},
+                    "proj": {"label": "项目", "path": str(tmp_path)}},
+        AUTO_CARRYOVER_SOFT_TOKENS=1000,
+        AUTO_CARRYOVER_HARD_TOKENS=1_000_000,
+        AUTO_CARRYOVER_IDLE_MINUTES=0.002,
+    ))
+    with caplog.at_level(logging.INFO, logger="pando"):
+        with TestClient(app) as client:
+            with client.websocket_connect("/ws") as wsc:
+                wsc.receive_json()
+                _seed_transcript(tmp_path, "sess-old")
+                wsc.send_json({"text": "第一句", "cwd_key": "chat"})
+                _drain_to(wsc, "result")
+                forged = _drain_to(wsc, "forged")
+
+    assert forged["auto"] is True
+    assert "carryover auto-trigger (soft)" in caplog.text
+
+
 def test_disabled_via_settings_endpoint(tmp_path, monkeypatch, caplog):
     """设置页关掉开关 → 超线不触发，且无需重启（同一 app 实例内即时生效）。"""
     _install(monkeypatch, ["sess-old", "sess-old"], cache_read=5000)
