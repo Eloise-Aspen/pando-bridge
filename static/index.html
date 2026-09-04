@@ -856,6 +856,24 @@ const ATT_MAX_BYTES=10*1024*1024;
 let pendingAtts=[], attSeq=0;
 const extOf = n => (n.split('.').pop()||'').toLowerCase();
 function onFilesSelected(e){ const files=Array.from(e.target.files||[]); e.target.value=''; files.forEach(uploadAttachment); }
+// 粘贴剪贴板图片(feat-paste-image Task 1):clipboardData.items 里 image/* 的项转成
+// File 喂进现有上传管道(裁决 1);文本项不拦截,交给浏览器默认行为写进输入框,
+// 图文混贴两者都收。粘贴的截图文件名多为空/generic,补一个带时间戳的名(裁决 2)。
+function onComposerPaste(e){
+  const items=Array.from((e.clipboardData&&e.clipboardData.items)||[]);
+  const imgItems=items.filter(it=>it.type&&it.type.startsWith('image/'));
+  if(!imgItems.length) return;                                  // 纯文本粘贴:不拦截,走默认行为
+  imgItems.forEach(it=>{
+    const file=it.getAsFile(); if(!file) return;
+    const ext=(file.type.split('/')[1]||'png').toLowerCase();
+    const ts=new Date();
+    const pad=n=>String(n).padStart(2,'0');
+    const stamp=`${ts.getFullYear()}${pad(ts.getMonth()+1)}${pad(ts.getDate())}-${pad(ts.getHours())}${pad(ts.getMinutes())}${pad(ts.getSeconds())}`;
+    const named=new File([file], `pasted-${stamp}.${ext}`, {type:file.type});
+    uploadAttachment(named);
+  });
+  // 不 preventDefault:剪贴板里若同时带文本(如带图 URL 的富文本),仍按浏览器默认写入输入框
+}
 async function uploadAttachment(file){
   if(!ATT_ALLOWED_EXT.includes(extOf(file.name))){ toast(file.name+' 类型不支持'); return; }
   if(file.size>ATT_MAX_BYTES){ toast(file.name+' 超过 10MB'); return; }
@@ -887,7 +905,7 @@ function renderChips(){
 
 /* ===== composer (shared, rendered into both home & chat) ===== */
 function composerHTML(){
-  return `<textarea id="input" rows="1" placeholder="写点什么…" onkeydown="onInputKey(event)" oninput="autoGrow(this)"></textarea>`+
+  return `<textarea id="input" rows="1" placeholder="写点什么…" onkeydown="onInputKey(event)" oninput="autoGrow(this)" onpaste="onComposerPaste(event)"></textarea>`+
     `<div class="comp-ctrl">`+
     `<button class="icon-btn lead" onclick="$('file-input').click()" aria-label="附件">${IC.attach}</button>`+
     `<span class="model-slot"><button class="model-btn" id="model-btn" onclick="toggleModel(event)">${escHtml(modelBtnLabel())} ▾</button>`+
