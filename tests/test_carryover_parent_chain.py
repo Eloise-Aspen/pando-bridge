@@ -3,7 +3,8 @@
 断言：
 1. carryover 成功时新会话行写入 parent_session_id
 2. 历史端点沿链向前拼接展示，顺序由早到晚
-3. 限深：链再长也只回溯 CARRYOVER_CHAIN_MAX_DEPTH 段
+3. 限深可配：CARRYOVER_CHAIN_MAX_DEPTH 参数可调；出厂默认（100）下 6 段链全量拼接，
+   列表标题固定取链根（fix-carryover-chat-key Fix D）
 4. 防环：parent 指回自己/形成环时不死循环
 5. 干净重开（clean）不写 parent；降级路径同样不写
 6. 消息仍归属各自会话——读侧拼接，不往库里复制
@@ -105,17 +106,41 @@ def _seed_chain(tmp_path, ids):
     conn.close()
 
 
-def test_chain_depth_limited(tmp_path, monkeypatch):
-    """8 段长链、限深 3 → 只回溯到第 3 段，更早的不出现。"""
+def test_chain_depth_configurable(tmp_path, monkeypatch):
+    """限深是 config 参数（Fix D）：显式设 3 时 8 段链只回溯到第 3 段——
+    验证参数可调，不再是写死的小上限；同时列表标题仍取链根、条数仍整链。"""
     ids = [f"s{i}" for i in range(8)]
     _seed_chain(tmp_path, ids)
     _install(monkeypatch, [])
     app = create_app(_config(tmp_path, CARRYOVER_CHAIN_MAX_DEPTH=3))
     with TestClient(app) as client:
         history = client.get(f"/sessions/{ids[-1]}/messages").json()
+        listed = client.get("/sessions").json()
 
     owners = [m["session_id"] for m in history]
     assert owners == ["s5", "s6", "s7"]
+    # 会话列表不受展示限深影响：只列链尾一行，标题取链根 s0，条数按整链 8
+    assert [s["id"] for s in listed] == ["s7"]
+    assert listed[0]["title"] == "消息 s0"
+    assert listed[0]["msg_count"] == 8
+
+
+def test_chain_default_depth_spans_six_segments(tmp_path, monkeypatch):
+    """Fix D 主证：6 段链（超过旧默认 5）在出厂默认下全量拼接，刷新不丢开头；
+    列表标题取链根首条消息。"""
+    ids = [f"c{i}" for i in range(6)]
+    _seed_chain(tmp_path, ids)
+    _install(monkeypatch, [])
+    app = create_app(_config(tmp_path))          # 不传 CARRYOVER_CHAIN_MAX_DEPTH
+    with TestClient(app) as client:
+        history = client.get(f"/sessions/{ids[-1]}/messages").json()
+        listed = client.get("/sessions").json()
+
+    assert [m["session_id"] for m in history] == ids
+    assert history[0]["content"] == "消息 c0"
+    assert [s["id"] for s in listed] == ["c5"]
+    assert listed[0]["title"] == "消息 c0"
+    assert listed[0]["msg_count"] == 6
 
 
 def test_chain_cycle_guarded(tmp_path, monkeypatch):

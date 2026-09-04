@@ -555,8 +555,11 @@ def create_app(config) -> FastAPI:
     carryover_enabled = bool(_cfg(config, "CARRYOVER_ENABLED", True))
     carryover_tail_turns = int(_cfg(config, "CARRYOVER_TAIL_TURNS", 12))
     carryover_max_chars = int(_cfg(config, "CARRYOVER_MAX_CHARS", 120_000))
-    # 历史展示沿 parent 链最多向前拼几段（裁决 5）。含当前会话本身，故 5 = 当前 + 4 段前驱。
-    carryover_chain_max_depth = int(_cfg(config, "CARRYOVER_CHAIN_MAX_DEPTH", 5))
+    # 历史展示沿 parent 链最多向前拼几段（裁决 5）。含当前会话本身。
+    # fix-carryover-chat-key Fix D：原默认 5 在测试服反复压缩后被打穿——刷新后开头消失、
+    # 标题跟着变。改为可配置且默认给高（100）；防环只靠 session_chain 的 visited 集合，
+    # 不再拿小上限兜底。
+    carryover_chain_max_depth = int(_cfg(config, "CARRYOVER_CHAIN_MAX_DEPTH", 100))
     # 精炼续窗自动触发（feat-carryover-auto-trigger 裁决 2/6）。这四项是**出厂默认**，
     # 运行时值 = 默认 ⊕ settings 表覆盖（_setting 读取，POST /settings 写入）。
     # 禁止在别处硬编码阈值——判定处一律走 _setting。
@@ -973,8 +976,9 @@ def create_app(config) -> FastAPI:
         rows = cur.fetchall()
         sessions = []
         for row in rows:
-            # 链段数很少（限深 carryover_chain_max_depth，默认个位数），每行几条小查询可接受
-            chain = session_chain(row[0])
+            # Fix D：列表行按**整条链**算（full=True，不受展示限深影响）——标题固定取
+            # 链根首条消息，不随深度截断漂移；条数同样整链。每行几条小查询可接受。
+            chain = session_chain(row[0], full=True)
             placeholders = ",".join("?" * len(chain))
             msg_count = conn.execute(
                 f"SELECT COUNT(*) FROM messages WHERE session_id IN ({placeholders})", chain
@@ -1025,19 +1029,24 @@ def create_app(config) -> FastAPI:
             "manual": bool(clean),
         }
 
-    def session_chain(session_id: str) -> list[str]:
+    def session_chain(session_id: str, full: bool = False) -> list[str]:
         """沿 parent_session_id 向前回溯，返回**由早到晚**的会话 id 序列（裁决 5）。
 
-        限深 carryover_chain_max_depth 段：链再长也不给前端拖出无限历史；
-        visited 集合防环——库里理论上不该出现环，但 parent 是普通文本列，
-        一旦被外部工具写脏，无防护的回溯会当场死循环。遇到已访问 id 即断。
+        默认限深 carryover_chain_max_depth 段（历史展示用）；full=True 走整条链
+        （会话列表取链根标题/整链条数用，Fix D）。两种模式防环都靠 visited 集合——
+        库里理论上不该出现环，但 parent 是普通文本列，一旦被外部工具写脏，无防护的
+        回溯会当场死循环。遇到已访问 id 即断，full 模式最多走 sessions 表行数步。
         """
         chain = [session_id]
         visited = {session_id}
         cur_id = session_id
         conn = _chat_conn()
         try:
-            for _ in range(max(1, carryover_chain_max_depth) - 1):
+            if full:
+                steps = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
+            else:
+                steps = max(1, carryover_chain_max_depth) - 1
+            for _ in range(steps):
                 row = conn.execute(
                     "SELECT parent_session_id FROM sessions WHERE id = ?", (cur_id,)
                 ).fetchone()
