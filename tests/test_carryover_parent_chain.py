@@ -2,12 +2,12 @@
 
 断言：
 1. carryover 成功时新会话行写入 parent_session_id
-2. 历史端点沿链向前拼接展示，顺序由早到晚
-3. 限深可配：CARRYOVER_CHAIN_MAX_DEPTH 参数可调；出厂默认（100）下 6 段链全量拼接，
-   列表标题固定取链根（fix-carryover-chat-key Fix D）
-4. 防环：parent 指回自己/形成环时不死循环
+2. 历史端点**按段分页**（fix-carryover-chat-key Fix D）：初始只回链尾段，开头带
+   `carryover_boundary` 标记携带 parent id；按 parent id 再请求即取那一段
+3. 链根无标记；会话列表标题固定取链根、条数整链
+4. 防环：parent 指回自己/形成环时不死循环（列表折叠与逐段请求都不卡死）
 5. 干净重开（clean）不写 parent；降级路径同样不写
-6. 消息仍归属各自会话——读侧拼接，不往库里复制
+6. 消息仍归属各自会话——不往库里复制
 """
 
 import json
@@ -50,8 +50,9 @@ def test_carryover_writes_parent(tmp_path, monkeypatch):
     assert _parent_of(tmp_path, forged["session_id"]) == "sess-old"
 
 
-def test_history_spans_chain(tmp_path, monkeypatch):
-    """换窗后刷新页面：历史端点把两段会话的消息按时序拼全。"""
+def test_history_paged_by_segment_after_forge(tmp_path, monkeypatch):
+    """换窗后刷新页面：历史端点只回链尾段 + 开头边界标记；按标记里的 parent
+    再请求一次即得换窗前那一段（链根，无标记）。"""
     _install(monkeypatch, ["sess-old"], cache_read=10)
     app = create_app(_config(tmp_path))
     with TestClient(app) as client:
@@ -65,19 +66,18 @@ def test_history_spans_chain(tmp_path, monkeypatch):
             wsc.send_json({"text": "换窗后的话"})
             _drain_to(wsc, "result")
 
-        history = client.get(f"/sessions/{forged['session_id']}/messages").json()
+        tail = client.get(f"/sessions/{forged['session_id']}/messages").json()
+        assert tail[0]["role"] == "carryover_boundary"
+        assert tail[0]["parent_session_id"] == "sess-old"
+        assert tail[0]["metadata"]["carryover_parent"] == "sess-old"
+        src = client.get(f"/sessions/{tail[0]['parent_session_id']}/messages").json()
 
-    contents = [m["content"] for m in history if m["role"] == "user"]
-    assert "换窗前的话" in contents and "换窗后的话" in contents
-    assert contents.index("换窗前的话") < contents.index("换窗后的话")
-    # 归属未被改写：早的那条仍记在源会话名下
-    owners = {m["content"]: m["session_id"] for m in history}
-    assert owners["换窗前的话"] == "sess-old"
-    assert owners["换窗后的话"] == forged["session_id"]
-    # 源会话自己的历史不受影响（不含新会话的消息）
-    src = client.get("/sessions/sess-old/messages").json()
-    assert "换窗后的话" not in [m["content"] for m in src]
-    # 归属会话字段来自 messages.session_id 本身，不是拼接时贴上的标签
+    # 尾段只含自己的消息，且归属是自己
+    assert [m["content"] for m in tail if m["role"] == "user"] == ["换窗后的话"]
+    assert {m["session_id"] for m in tail} == {forged["session_id"]}
+    # 源段只含换窗前的消息，是链根 → 没有边界标记
+    assert [m["content"] for m in src if m["role"] == "user"] == ["换窗前的话"]
+    assert all(m["role"] != "carryover_boundary" for m in src)
     assert {m["session_id"] for m in src} == {"sess-old"}
 
 
@@ -106,71 +106,78 @@ def _seed_chain(tmp_path, ids):
     conn.close()
 
 
-def test_chain_depth_configurable(tmp_path, monkeypatch):
-    """限深是 config 参数（Fix D）：显式设 3 时 8 段链只回溯到第 3 段——
-    验证参数可调，不再是写死的小上限；同时列表标题仍取链根、条数仍整链。"""
+def _walk(client, sid):
+    """模拟前端逐段向前加载：按标记里的 parent 一段段请求，已加载集合防环。
+    返回 (由早到晚的段 id 序列, 每段消息数)。"""
+    order, counts, loaded = [], {}, set()
+    cur = sid
+    while cur and cur not in loaded:
+        seg = client.get(f"/sessions/{cur}/messages").json()
+        loaded.add(cur)
+        order.append(cur)
+        marker = seg[0] if seg and seg[0]["role"] == "carryover_boundary" else None
+        counts[cur] = len(seg) - (1 if marker else 0)
+        cur = marker["parent_session_id"] if marker else None
+    order.reverse()
+    return order, counts
+
+
+def test_long_chain_paged_segment_by_segment(tmp_path, monkeypatch):
+    """8 段链：初始只回链尾段（1 条 + 标记），逐段请求可一直走到链根，链根无标记；
+    没有任何深度上限把开头截掉。列表标题固定取链根、条数整链。"""
     ids = [f"s{i}" for i in range(8)]
     _seed_chain(tmp_path, ids)
     _install(monkeypatch, [])
-    app = create_app(_config(tmp_path, CARRYOVER_CHAIN_MAX_DEPTH=3))
+    app = create_app(_config(tmp_path))
     with TestClient(app) as client:
-        history = client.get(f"/sessions/{ids[-1]}/messages").json()
+        tail = client.get(f"/sessions/{ids[-1]}/messages").json()
+        assert [m["role"] for m in tail] == ["carryover_boundary", "user"]
+        assert tail[0]["parent_session_id"] == "s6"
+        assert tail[1]["session_id"] == "s7"
+        order, counts = _walk(client, ids[-1])
+        root = client.get("/sessions/s0/messages").json()
         listed = client.get("/sessions").json()
 
-    owners = [m["session_id"] for m in history]
-    assert owners == ["s5", "s6", "s7"]
-    # 会话列表不受展示限深影响：只列链尾一行，标题取链根 s0，条数按整链 8
+    assert order == ids
+    assert all(counts[s] == 1 for s in ids)
+    assert root[0]["role"] == "user"               # 链根无标记
     assert [s["id"] for s in listed] == ["s7"]
     assert listed[0]["title"] == "消息 s0"
     assert listed[0]["msg_count"] == 8
 
 
-def test_chain_default_depth_spans_six_segments(tmp_path, monkeypatch):
-    """Fix D 主证：6 段链（超过旧默认 5）在出厂默认下全量拼接，刷新不丢开头；
-    列表标题取链根首条消息。"""
-    ids = [f"c{i}" for i in range(6)]
-    _seed_chain(tmp_path, ids)
-    _install(monkeypatch, [])
-    app = create_app(_config(tmp_path))          # 不传 CARRYOVER_CHAIN_MAX_DEPTH
-    with TestClient(app) as client:
-        history = client.get(f"/sessions/{ids[-1]}/messages").json()
-        listed = client.get("/sessions").json()
-
-    assert [m["session_id"] for m in history] == ids
-    assert history[0]["content"] == "消息 c0"
-    assert [s["id"] for s in listed] == ["c5"]
-    assert listed[0]["title"] == "消息 c0"
-    assert listed[0]["msg_count"] == 6
-
-
 def test_chain_cycle_guarded(tmp_path, monkeypatch):
-    """parent 成环（外部写脏）时不死循环，每段只出现一次。"""
+    """parent 成环（外部写脏）：按段请求由已加载集合止步，每段只出现一次；
+    会话列表折叠同样不死循环。"""
     _seed_chain(tmp_path, ["a", "b", "c"])
     conn = _chat_db(tmp_path)
     conn.execute("UPDATE sessions SET parent_session_id = 'c' WHERE id = 'a'")  # a→c→b→a
     conn.commit()
     conn.close()
     _install(monkeypatch, [])
-    app = create_app(_config(tmp_path, CARRYOVER_CHAIN_MAX_DEPTH=50))
+    app = create_app(_config(tmp_path))
     with TestClient(app) as client:
-        history = client.get("/sessions/c/messages").json()
+        order, _ = _walk(client, "c")
+        listed = client.get("/sessions").json()
 
-    owners = [m["session_id"] for m in history]
-    assert sorted(owners) == ["a", "b", "c"]
-    assert len(owners) == len(set(owners))
+    assert sorted(order) == ["a", "b", "c"]
+    assert len(order) == len(set(order))
+    assert len(listed) == len({s["id"] for s in listed})
 
 
 def test_self_parent_guarded(tmp_path, monkeypatch):
+    """parent 指回自己：不当作有前驱，历史无标记，列表仍列出自己。"""
     _seed_chain(tmp_path, ["solo"])
     conn = _chat_db(tmp_path)
     conn.execute("UPDATE sessions SET parent_session_id = 'solo' WHERE id = 'solo'")
     conn.commit()
     conn.close()
     _install(monkeypatch, [])
-    app = create_app(_config(tmp_path, CARRYOVER_CHAIN_MAX_DEPTH=50))
+    app = create_app(_config(tmp_path))
     with TestClient(app) as client:
         history = client.get("/sessions/solo/messages").json()
-    assert [m["session_id"] for m in history] == ["solo"]
+    assert [m["role"] for m in history] == ["user"]
+    assert history[0]["session_id"] == "solo"
 
 
 def test_degraded_forge_writes_no_parent(tmp_path, monkeypatch):

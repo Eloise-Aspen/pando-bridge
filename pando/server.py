@@ -555,11 +555,8 @@ def create_app(config) -> FastAPI:
     carryover_enabled = bool(_cfg(config, "CARRYOVER_ENABLED", True))
     carryover_tail_turns = int(_cfg(config, "CARRYOVER_TAIL_TURNS", 12))
     carryover_max_chars = int(_cfg(config, "CARRYOVER_MAX_CHARS", 120_000))
-    # 历史展示沿 parent 链最多向前拼几段（裁决 5）。含当前会话本身。
-    # fix-carryover-chat-key Fix D：原默认 5 在测试服反复压缩后被打穿——刷新后开头消失、
-    # 标题跟着变。改为可配置且默认给高（100）；防环只靠 session_chain 的 visited 集合，
-    # 不再拿小上限兜底。
-    carryover_chain_max_depth = int(_cfg(config, "CARRYOVER_CHAIN_MAX_DEPTH", 100))
+    # 历史沿 parent 链的展示不再有深度上限参数（fix-carryover-chat-key Fix D）：
+    # 历史端点只回一段、前端按段下拉加载；防环靠 visited/已加载集合。
     # 精炼续窗自动触发（feat-carryover-auto-trigger 裁决 2/6）。这四项是**出厂默认**，
     # 运行时值 = 默认 ⊕ settings 表覆盖（_setting 读取，POST /settings 写入）。
     # 禁止在别处硬编码阈值——判定处一律走 _setting。
@@ -956,7 +953,7 @@ def create_app(config) -> FastAPI:
         **沿 parent 链折叠（2026-08-30 真机复验 Fix B）**：精炼续窗每换一次窗就多一个
         会话行，与「无缝」承诺正面冲突——用户眼里那是同一场对话。这里只列**链上最新
         的那一段**（没有任何会话把它当 parent 的会话 = 链尾），链上更早的段不单独成行，
-        旧消息靠对话内向上翻（历史端点本来就沿链拼接）。「开新对话」是干净重开、
+        旧消息靠对话内下拉按段加载（历史端点每次回一段并带 parent，Fix D）。「开新对话」是干净重开、
         不写 parent，天然自成一条，不受影响。
 
         链尾那一行的标题/条数按**整条链**算：刚换完窗的新会话自己一条消息都没有，
@@ -976,9 +973,9 @@ def create_app(config) -> FastAPI:
         rows = cur.fetchall()
         sessions = []
         for row in rows:
-            # Fix D：列表行按**整条链**算（full=True，不受展示限深影响）——标题固定取
-            # 链根首条消息，不随深度截断漂移；条数同样整链。每行几条小查询可接受。
-            chain = session_chain(row[0], full=True)
+            # Fix D：列表行按**整条链**算——标题固定取链根首条消息（只走 id 链，
+            # 不拉正文），条数同样整链。每行几条小查询可接受。
+            chain = session_chain(row[0])
             placeholders = ",".join("?" * len(chain))
             msg_count = conn.execute(
                 f"SELECT COUNT(*) FROM messages WHERE session_id IN ({placeholders})", chain
@@ -1029,23 +1026,19 @@ def create_app(config) -> FastAPI:
             "manual": bool(clean),
         }
 
-    def session_chain(session_id: str, full: bool = False) -> list[str]:
-        """沿 parent_session_id 向前回溯，返回**由早到晚**的会话 id 序列（裁决 5）。
+    def session_chain(session_id: str) -> list[str]:
+        """沿 parent_session_id 向前回溯到链根，返回**由早到晚**的会话 id 序列（裁决 5）。
 
-        默认限深 carryover_chain_max_depth 段（历史展示用）；full=True 走整条链
-        （会话列表取链根标题/整链条数用，Fix D）。两种模式防环都靠 visited 集合——
+        只走 id 链不拉正文（会话列表取链根标题/整链条数用）。防环靠 visited 集合——
         库里理论上不该出现环，但 parent 是普通文本列，一旦被外部工具写脏，无防护的
-        回溯会当场死循环。遇到已访问 id 即断，full 模式最多走 sessions 表行数步。
+        回溯会当场死循环。遇到已访问 id 即断；步数以 sessions 行数封顶只是兜底。
         """
         chain = [session_id]
         visited = {session_id}
         cur_id = session_id
         conn = _chat_conn()
         try:
-            if full:
-                steps = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
-            else:
-                steps = max(1, carryover_chain_max_depth) - 1
+            steps = conn.execute("SELECT COUNT(*) FROM sessions").fetchone()[0]
             for _ in range(steps):
                 row = conn.execute(
                     "SELECT parent_session_id FROM sessions WHERE id = ?", (cur_id,)
@@ -1062,49 +1055,50 @@ def create_app(config) -> FastAPI:
         return chain
 
     def get_session_messages(session_id: str) -> list[dict]:
-        """会话历史。精炼续窗产生的接续会话沿 parent 链向前拼接展示（裁决 5）——
-        刷新页面后对话流完整、不穿帮。消息**仍归属各自会话**，这里只是读侧拼接，
-        绝不往库里复制消息伪造归属。
+        """会话历史——**只取这一段**（fix-carryover-chat-key Fix D，按段分页）。
 
-        **压缩分割线的边界标记（2026-08-30 真机复验 Fix A）**：前端此前只在换窗当下
-        往消息流里塞一条分割线，是运行时产物——刷新就没了。这里把边界随消息读出去：
-        `carryover_seam_before` 标在每个后继链段的第一条消息上；若后继段一条消息都还
-        没有（刚换完窗、用户还没说话），则把 `carryover_seam_after` 标在最后一条上。
-        两个标记只在读侧注入 metadata 副本，**不落库**。
+        精炼续窗产生的接续会话不再在读侧把整条 parent 链一口气拼出来（旧做法有
+        限深，反复压缩后被打穿：刷新丢开头）。改为：本段自己的消息 + 若有 parent，
+        在列表**开头**放一条边界标记 `role="carryover_boundary"`，携带
+        `parent_session_id`；前端据此画分隔线，下拉/点击再来请求 parent 那一段，
+        逐段向前。链根没有 parent → 无标记。防环由前端已加载集合负责，本端点无状态。
+
+        标记只是读侧产物，不落库；消息仍归属各自会话。
         """
         conn = _chat_conn()
         msgs = []
-        chain = session_chain(session_id)
-        # 记录「本段是否是第一个产出消息的段」：不是的话，本段首条消息前该有分割线
-        seen_any = False
-        for sid in chain:
-            seg_first = True
-            for row in conn.execute(
-                "SELECT role, content, metadata, created_at FROM messages "
-                "WHERE session_id = ? ORDER BY id",
-                (sid,),
-            ).fetchall():
-                meta = {}
-                try:
-                    meta = json.loads(row[2]) if row[2] else {}
-                except json.JSONDecodeError:
-                    pass
-                if seg_first and seen_any:
-                    meta["carryover_seam_before"] = True
-                seg_first = False
-                seen_any = True
-                msgs.append({
-                    "role": row[0],
-                    "content": row[1],
-                    "metadata": meta,
-                    "created_at": row[3],
-                    # 消息真正的归属会话；前端只按序渲染，不据此分段
-                    "session_id": sid,
-                })
+        for row in conn.execute(
+            "SELECT role, content, metadata, created_at FROM messages "
+            "WHERE session_id = ? ORDER BY id",
+            (session_id,),
+        ).fetchall():
+            meta = {}
+            try:
+                meta = json.loads(row[2]) if row[2] else {}
+            except json.JSONDecodeError:
+                pass
+            msgs.append({
+                "role": row[0],
+                "content": row[1],
+                "metadata": meta,
+                "created_at": row[3],
+                "session_id": session_id,
+            })
+        prow = conn.execute(
+            "SELECT parent_session_id FROM sessions WHERE id = ?", (session_id,)
+        ).fetchone()
         conn.close()
-        # 尾段（含被请求的这个会话）还没有自己的消息 → 分割线该落在整段历史的末尾
-        if msgs and len(chain) > 1 and msgs[-1]["session_id"] != chain[-1]:
-            msgs[-1]["metadata"]["carryover_seam_after"] = True
+        parent = (prow[0] or "") if prow else ""
+        if parent and parent != session_id:          # 自指（外部写脏）不当作有前驱
+            msgs.insert(0, {
+                "role": "carryover_boundary",
+                "content": "",
+                # parent 同时放顶层与 metadata：基座 history_message 事件只透传 metadata
+                "metadata": {"carryover_parent": parent},
+                "created_at": msgs[0]["created_at"] if msgs else None,
+                "session_id": session_id,
+                "parent_session_id": parent,
+            })
         return msgs
 
     def record_usage(session_id: str | None, model: str, usage: dict):

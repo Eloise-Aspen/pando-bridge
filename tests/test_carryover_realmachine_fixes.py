@@ -2,8 +2,9 @@
 
 用户真机验收七站过六站半，抓出三项：
 
-- Fix A：压缩分隔线要**驻留**在压缩点，刷新后仍在 → 服务端随历史下发边界标记
-  `carryover_seam_before` / `carryover_seam_after`（读侧注入，不落库）
+- Fix A：压缩分隔线要**驻留**在压缩点，刷新后仍在 → 服务端随历史下发边界标记。
+  fix-carryover-chat-key Fix D 改为按段分页后，标记形态变为列表开头一条
+  `role="carryover_boundary"` 元素（携带 parent_session_id，读侧产物不落库）
 - Fix B：会话列表沿 parent 链折叠，链上只列最新一段，旧段不单独成行
 - Fix C：上下文用量弹窗「输入/输出」恒为个位数 → 输入改 total_input 口径，
   输出改用 result 帧的真实 output_tokens
@@ -23,23 +24,25 @@ from tests.test_carryover_parent_chain import _chat_db, _seed_chain
 
 # ---------------------------------------------------------------- Fix A 边界标记
 
-def test_seam_marked_at_chain_boundary(tmp_path, monkeypatch):
-    """三段链各有一条消息 → 后两段的首条消息各带 seam_before，第一条不带。"""
+def test_boundary_marker_heads_each_non_root_segment(tmp_path, monkeypatch):
+    """三段链各有一条消息 → 请求 s2 / s1 各回「标记 + 自己那条」，s0 是链根无标记。"""
     _seed_chain(tmp_path, ["s0", "s1", "s2"])
     _install(monkeypatch, [])
-    app = create_app(_config(tmp_path, CARRYOVER_CHAIN_MAX_DEPTH=10))
+    app = create_app(_config(tmp_path))
     with TestClient(app) as client:
-        history = client.get("/sessions/s2/messages").json()
+        s2 = client.get("/sessions/s2/messages").json()
+        s1 = client.get("/sessions/s1/messages").json()
+        s0 = client.get("/sessions/s0/messages").json()
 
-    assert [m["session_id"] for m in history] == ["s0", "s1", "s2"]
-    marks = [bool(m["metadata"].get("carryover_seam_before")) for m in history]
-    assert marks == [False, True, True]
-    # 尾段自己有消息 → 不需要末尾那条线
-    assert not any(m["metadata"].get("carryover_seam_after") for m in history)
+    assert [m["role"] for m in s2] == ["carryover_boundary", "user"]
+    assert s2[0]["parent_session_id"] == "s1" and s2[1]["session_id"] == "s2"
+    assert [m["role"] for m in s1] == ["carryover_boundary", "user"]
+    assert s1[0]["parent_session_id"] == "s0"
+    assert [m["role"] for m in s0] == ["user"]
 
 
-def test_seam_after_when_tail_segment_empty(tmp_path, monkeypatch):
-    """刚换完窗、新会话一条消息都没有 → 分隔线落在整段历史末尾（刷新后仍在）。"""
+def test_boundary_marker_when_tail_segment_empty(tmp_path, monkeypatch):
+    """刚换完窗、新会话一条消息都没有 → 只回一条标记（刷新后分隔线仍在，可下拉）。"""
     _seed_chain(tmp_path, ["s0"])
     conn = _chat_db(tmp_path)
     conn.execute("INSERT INTO sessions (id, created_at, updated_at, parent_session_id) "
@@ -47,40 +50,39 @@ def test_seam_after_when_tail_segment_empty(tmp_path, monkeypatch):
     conn.commit()
     conn.close()
     _install(monkeypatch, [])
-    app = create_app(_config(tmp_path, CARRYOVER_CHAIN_MAX_DEPTH=10))
+    app = create_app(_config(tmp_path))
     with TestClient(app) as client:
         history = client.get("/sessions/s1/messages").json()
 
-    assert [m["session_id"] for m in history] == ["s0"]
-    assert history[-1]["metadata"]["carryover_seam_after"] is True
+    assert len(history) == 1
+    assert history[0]["role"] == "carryover_boundary"
+    assert history[0]["parent_session_id"] == "s0"
+    assert history[0]["created_at"] is None
 
 
-def test_seam_marks_not_persisted(tmp_path, monkeypatch):
-    """标记只在读侧注入：库里的 metadata 不该被写脏。"""
+def test_boundary_marker_not_persisted(tmp_path, monkeypatch):
+    """标记只是读侧产物：库里不该多出一行，metadata 也不该被写脏。"""
     _seed_chain(tmp_path, ["s0", "s1"])
     _install(monkeypatch, [])
-    app = create_app(_config(tmp_path, CARRYOVER_CHAIN_MAX_DEPTH=10))
+    app = create_app(_config(tmp_path))
     with TestClient(app) as client:
         client.get("/sessions/s1/messages")
 
     conn = _chat_db(tmp_path)
-    stored = [json.loads(r[0] or "{}") for r in
-              conn.execute("SELECT metadata FROM messages").fetchall()]
+    rows = conn.execute("SELECT role, metadata FROM messages").fetchall()
     conn.close()
-    assert all("carryover_seam_before" not in m and "carryover_seam_after" not in m
-               for m in stored)
+    assert all(r[0] != "carryover_boundary" for r in rows)
+    assert all("carryover_parent" not in json.loads(r[1] or "{}") for r in rows)
 
 
-def test_single_session_has_no_seam(tmp_path, monkeypatch):
-    """没换过窗的普通会话:一条线都不该有。"""
+def test_single_session_has_no_marker(tmp_path, monkeypatch):
+    """没换过窗的普通会话:没有标记，一条线都不该有。"""
     _seed_chain(tmp_path, ["solo"])
     _install(monkeypatch, [])
     app = create_app(_config(tmp_path))
     with TestClient(app) as client:
         history = client.get("/sessions/solo/messages").json()
-    assert history and not any(
-        m["metadata"].get("carryover_seam_before") or m["metadata"].get("carryover_seam_after")
-        for m in history)
+    assert history and all(m["role"] != "carryover_boundary" for m in history)
 
 
 # ---------------------------------------------------------------- Fix B 列表折叠
@@ -89,7 +91,7 @@ def test_session_list_folds_chain(tmp_path, monkeypatch):
     """三段链只在列表里占一行，且那行是链尾（最新那段）。"""
     _seed_chain(tmp_path, ["s0", "s1", "s2"])
     _install(monkeypatch, [])
-    app = create_app(_config(tmp_path, CARRYOVER_CHAIN_MAX_DEPTH=10))
+    app = create_app(_config(tmp_path))
     with TestClient(app) as client:
         rows = client.get("/sessions").json()
 
@@ -108,7 +110,7 @@ def test_folded_head_with_no_own_messages(tmp_path, monkeypatch):
     conn.commit()
     conn.close()
     _install(monkeypatch, [])
-    app = create_app(_config(tmp_path, CARRYOVER_CHAIN_MAX_DEPTH=10))
+    app = create_app(_config(tmp_path))
     with TestClient(app) as client:
         rows = client.get("/sessions").json()
 
@@ -128,7 +130,7 @@ def test_clean_restart_stays_separate(tmp_path, monkeypatch):
     conn.commit()
     conn.close()
     _install(monkeypatch, [])
-    app = create_app(_config(tmp_path, CARRYOVER_CHAIN_MAX_DEPTH=10))
+    app = create_app(_config(tmp_path))
     with TestClient(app) as client:
         rows = client.get("/sessions").json()
 
