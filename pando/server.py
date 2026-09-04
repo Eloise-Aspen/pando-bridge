@@ -1054,6 +1054,34 @@ def create_app(config) -> FastAPI:
         chain.reverse()
         return chain
 
+    def session_successor(session_id: str) -> str:
+        """该会话是否已被精炼续窗接续：返回把它当 parent 的子会话 id（无则 ''）。
+        fix-carryover-chat-key Fix E：真机实证一条链在 forge 在途期间被旧 result 帧
+        拉回旧 id，旧会话再超线再换窗 → 两个孩子共一个父 → 列表分叉成两行。
+        有多个孩子（已分叉的存量）时取最新那个，后续消息才不会再往旧枝上长。"""
+        if not session_id:
+            return ""
+        conn = _chat_conn()
+        row = conn.execute(
+            "SELECT id FROM sessions WHERE parent_session_id = ? AND id <> ? "
+            "ORDER BY created_at DESC, rowid DESC LIMIT 1",
+            (session_id, session_id),
+        ).fetchone()
+        conn.close()
+        return row[0] if row else ""
+
+    def chain_tail(session_id: str) -> str:
+        """沿「谁把我当 parent」向后走到链尾（Fix E 裁决 2）。visited 防环；
+        没有后继的会话回自己。"""
+        cur = session_id
+        visited = {cur}
+        while True:
+            nxt = session_successor(cur)
+            if not nxt or nxt in visited:
+                return cur
+            visited.add(nxt)
+            cur = nxt
+
     def get_session_messages(session_id: str) -> list[dict]:
         """会话历史——**只取这一段**（fix-carryover-chat-key Fix D，按段分页）。
 
@@ -2143,6 +2171,11 @@ def create_app(config) -> FastAPI:
             return None
         if not _is_chat_session(sid):
             return None                     # 工位会话：静默不触发
+        # Fix E 裁决 1：已被接续的会话不许再换窗——再换就是第二个孩子、列表分叉
+        if session_successor(sid):
+            log.info("carryover skipped: session already superseded "
+                     "(session=%s, total_input=%d)", sid, total_input)
+            return None
         if sid in forge_in_flight:
             log.info("carryover auto-trigger skipped: forge in flight "
                      "(session=%s, total_input=%d)", sid, total_input)
@@ -2236,6 +2269,31 @@ def create_app(config) -> FastAPI:
             if old_session_id and old_session_id in carryover_l0_pending:
                 log.info("forge ignored: session %s untouched since last forge",
                          old_session_id)
+                return
+            # Fix E 裁决 1：源会话已有后继 → 精炼路径不许再造第二个孩子。
+            # 自动路径静默跳过；手动路径不重置、把连接跟到链尾并让前端 toast 提示。
+            # clean（干净重开）不写 parent、不分叉，照常放行。
+            if old_session_id and not clean and session_successor(old_session_id):
+                tail = chain_tail(old_session_id)
+                log.info("carryover skipped: session already superseded "
+                         "(session=%s, tail=%s, auto=%s)", old_session_id, tail, auto)
+                if auto:
+                    return
+                session_id = tail
+                session_resumed = True
+                system_prompt = None
+                session_cwd_key = get_session_cwd_key(tail)
+                await ws.send_text(json.dumps({
+                    "type": "forged",
+                    "superseded": True,
+                    "session_id": tail,
+                    "carryover": False,
+                    "message": "这个对话已接续到新窗，请刷新",
+                    "stats": None,
+                    "source_session": old_session_id,
+                    "auto": False,
+                    "clean": False,
+                }, ensure_ascii=False))
                 return
             # 用户自己动了手（手动精炼/干净重开）→ pending 作废：活已经干完（裁决 7）
             if old_session_id:
@@ -2411,6 +2469,12 @@ def create_app(config) -> FastAPI:
                     if "switch_session" in payload:
                         new_sid = payload["switch_session"]
                         if new_sid:
+                            # Fix E 裁决 2：切到已被接续的会话 → 自动跟到链尾
+                            tail = chain_tail(new_sid)
+                            if tail != new_sid:
+                                log.info("session redirected to chain tail: %s -> %s",
+                                         new_sid, tail)
+                                new_sid = tail
                             session_id = new_sid
                             session_resumed = True   # 恢复已有会话，跳过 L0+L1 重建
                             system_prompt = None
@@ -2451,6 +2515,15 @@ def create_app(config) -> FastAPI:
                 # 工作目录定档（feat-bridge-workstation 裁决 2/3）：已有会话读库里落定的值——
                 # 本对话内不可换，也不信前端重复上报；新会话才采信本条消息的 cwd_key 并过白名单。
                 if session_id:
+                    # Fix E 裁决 2：消息发到已被接续的会话 → 用链尾处理本轮，
+                    # result 帧自然带链尾 id，前端据此切过去
+                    tail = chain_tail(session_id)
+                    if tail != session_id:
+                        log.info("session redirected to chain tail: %s -> %s",
+                                 session_id, tail)
+                        session_id = tail
+                        session_resumed = True
+                        system_prompt = None
                     session_cwd_key = get_session_cwd_key(session_id)
                 elif msg_cwd_key is not None:
                     session_cwd_key = normalize_cwd_key(msg_cwd_key, workspaces)

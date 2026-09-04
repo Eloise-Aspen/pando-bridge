@@ -475,28 +475,42 @@ def test_concurrent_forge_across_connections_gated(tmp_path, spy, monkeypatch, c
         f"并发 forge 只该产出一份新 JSONL，实际 {files}"
 
 
-def test_forge_gate_released_after_completion(tmp_path, spy):
-    """闸必须在 finally 里放开：同一会话第二次 forge（非并发）仍要能跑。"""
+def test_forge_gate_released_after_completion(tmp_path, spy, caplog):
+    """闸必须在 finally 里放开：换窗完成后链上再 forge（非并发）仍要能跑。
+
+    fix-carryover-chat-key Fix E 之后「切回源会话再 forge」不再成立——那正是分叉
+    事故的形态，switch 会被重定向到链尾、源会话也不许再换窗。改为验证：换窗后
+    切回源会话被带到链尾，在链尾说一句再 forge，第二次换窗照常、且不是重复精炼。"""
     spy(["sess-a", "sess-b"])
     app = create_app(_config(tmp_path))
-    with TestClient(app) as client:
-        with client.websocket_connect("/ws") as wsc:
-            wsc.receive_json()
-            wsc.send_json({"text": "第一句"})
-            _drain_to(wsc, "result")
-            _seed_transcript(tmp_path, "sess-a")
-            wsc.send_json({"forge": True})
-            first = _drain_to(wsc, "forged")
-            assert first["carryover"] is True
+    with caplog.at_level(logging.INFO, logger="pando"):
+        with TestClient(app) as client:
+            with client.websocket_connect("/ws") as wsc:
+                wsc.receive_json()
+                wsc.send_json({"text": "第一句"})
+                _drain_to(wsc, "result")
+                _seed_transcript(tmp_path, "sess-a")
+                wsc.send_json({"forge": True})
+                first = _drain_to(wsc, "forged")
+                assert first["carryover"] is True
 
-            # 回到原会话再 forge 一次：闸已放开，应当照常工作
-            wsc.send_json({"switch_session": "sess-a"})
-            _drain_to(wsc, "session_switched")
-            wsc.send_json({"forge": True})
-            second = _drain_to(wsc, "forged")
+                # 切回源会话 → 被重定向到链尾（接续会话）
+                wsc.send_json({"switch_session": "sess-a"})
+                switched = _drain_to(wsc, "session_switched")
+                assert switched["session_id"] == first["session_id"]
+                # 在链尾说一句（否则「未被碰过」的接续会话会被判重复 forge 而忽略）
+                # 本文件的 spy 对 --resume 也按预置序列回下一个 id，这一轮落在 sess-b
+                wsc.send_json({"text": "接续后一句"})
+                touched = _drain_to(wsc, "result")["session_id"]
+                assert touched == "sess-b"
+                _seed_transcript(tmp_path, touched)
+                wsc.send_json({"forge": True})
+                second = _drain_to(wsc, "forged")
 
     assert second["carryover"] is True
-    assert second["session_id"] != first["session_id"]
+    assert second["session_id"] not in {first["session_id"], "sess-a", "sess-b"}
+    assert second["source_session"] == touched
+    assert "forge already in flight" not in caplog.text
 
 
 def test_forge_gate_released_on_error(tmp_path, spy, monkeypatch):
