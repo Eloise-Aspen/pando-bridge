@@ -43,8 +43,8 @@ def test_ui_prefs_round_trip(tmp_path):
     payload = {
         "defaultModel": "claude-sonnet-4-5",
         "defaultEffort": "high",
-        "userNickname": "小猫",
-        "assistantName": "Caelum",
+        "userNickname": "阿云",
+        "assistantName": "Aria",
     }
     with TestClient(create_app(cfg)) as client:
         out = client.post("/settings", json=payload).json()
@@ -123,14 +123,14 @@ def test_behaviour_params_unaffected(tmp_path):
             "auto_carryover_enabled": False,
             "auto_carryover_soft_tokens": "5000",      # 字符串数字仍按 int 强制
             "auto_carryover_idle_minutes": 7,          # int 仍按 float 强制
-            "userNickname": "小猫",
+            "userNickname": "阿云",
         }).json()
         assert out["auto_carryover_enabled"] is False
         assert out["auto_carryover_soft_tokens"] == 5000
         assert isinstance(out["auto_carryover_soft_tokens"], int)
         assert out["auto_carryover_idle_minutes"] == 7.0
         assert isinstance(out["auto_carryover_idle_minutes"], float)
-        assert out["userNickname"] == "小猫"
+        assert out["userNickname"] == "阿云"
 
         # 行为参数的坏值仍静默忽略、回落默认，不因新分支变成 "不是数字" 这种字符串
         bad = client.post("/settings", json={"auto_carryover_hard_tokens": "不是数字"}).json()

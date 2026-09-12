@@ -145,10 +145,10 @@ pytestmark = pytest.mark.skipif(NODE is None, reason="需要 node 跑前端离�
 
 def test_offline_falls_back_to_local_cache():
     """完成标准 6：服务端不可达时，昵称与默认模型照常来自本地缓存，且不弹错。"""
-    r = _run({"userNickname": "小猫", "assistantName": "Caelum",
+    r = _run({"userNickname": "阿云", "assistantName": "Aria",
               "defaultModel": "claude-opus-5", "defaultEffort": "high"}, None)
     assert r["ok"] is False
-    assert r["nick"] == "小猫"
+    assert r["nick"] == "阿云"
     assert r["defModel"] == "claude-opus-5"
     assert r["defEffort"] == "high"
     assert r["errorsShown"] == 0
@@ -158,11 +158,11 @@ def test_offline_falls_back_to_local_cache():
 def test_server_value_wins_and_is_cached_back():
     """裁决 2：服务端值覆盖本地缓存并回写本地。"""
     r = _run({"userNickname": "旧名", "defaultModel": "claude-sonnet-5"},
-             {"userNickname": "小猫", "assistantName": "Caelum",
+             {"userNickname": "阿云", "assistantName": "Aria",
               "defaultModel": "claude-opus-5", "defaultEffort": "high"})
     assert r["ok"] is True
-    assert r["store"]["userNickname"] == "小猫"
-    assert r["store"]["assistantName"] == "Caelum"
+    assert r["store"]["userNickname"] == "阿云"
+    assert r["store"]["assistantName"] == "Aria"
     assert r["store"]["defaultModel"] == "claude-opus-5"
     assert r["defEffort"] == "high"
     assert r["posts"] == []            # 服务端四项都有值 → 无需种子
@@ -170,10 +170,10 @@ def test_server_value_wins_and_is_cached_back():
 
 def test_empty_server_gets_seeded_from_local_once():
     """裁决 9：服务端该键为空而本地有值 → 一次性种子上传，不做迁移脚本。"""
-    r = _run({"userNickname": "小猫", "defaultModel": "claude-opus-5"},
+    r = _run({"userNickname": "阿云", "defaultModel": "claude-opus-5"},
              {"userNickname": "", "assistantName": "", "defaultModel": "", "defaultEffort": ""})
-    assert r["posts"] == [{"userNickname": "小猫", "defaultModel": "claude-opus-5"}]
-    assert r["store"]["userNickname"] == "小猫"      # 空库不会把已有昵称冲掉
+    assert r["posts"] == [{"userNickname": "阿云", "defaultModel": "claude-opus-5"}]
+    assert r["store"]["userNickname"] == "阿云"      # 空库不会把已有昵称冲掉
 
 
 def test_sync_does_not_clobber_this_window_choice():
@@ -203,11 +203,11 @@ def test_nickname_debounced_into_one_post():
     r = _run({}, {"userNickname": "", "assistantName": "", "defaultModel": "", "defaultEffort": ""},
              script="""
              savePref('userNickname', '小', 500);
-             savePref('userNickname', '小猫', 500);
-             savePref('assistantName', 'Cae', 500);
+             savePref('userNickname', '阿云', 500);
+             savePref('assistantName', 'Ari', 500);
              """)
-    assert r["posts"] == [{"userNickname": "小猫", "assistantName": "Cae"}]
-    assert r["store"]["userNickname"] == "小猫"      # 本地先落，不等网络
+    assert r["posts"] == [{"userNickname": "阿云", "assistantName": "Ari"}]
+    assert r["store"]["userNickname"] == "阿云"      # 本地先落，不等网络
 
 
 def test_point_select_writes_immediately():
@@ -219,8 +219,8 @@ def test_point_select_writes_immediately():
 
 def test_clearing_nickname_writes_empty_string():
     """清空昵称 = 本地删键 + 服务端写空串（不是留着旧值）。"""
-    r = _run({"userNickname": "小猫"},
-             {"userNickname": "小猫", "assistantName": "", "defaultModel": "", "defaultEffort": ""},
+    r = _run({"userNickname": "阿云"},
+             {"userNickname": "阿云", "assistantName": "", "defaultModel": "", "defaultEffort": ""},
              script="savePref('userNickname', '', 0);")
     assert "userNickname" not in r["store"]
     assert {"userNickname": ""} in r["posts"]
