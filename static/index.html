@@ -789,12 +789,16 @@ function syncModelBtn(){ document.querySelectorAll('#model-btn').forEach(b=>b.te
    设置页的「默认模型」仍是全局默认——它管的是新对话从哪起步,不回头改已有会话。
    服务端零改动:模型/effort 依旧逐消息随 WS payload 下发(fix-model-selector 契约)。*/
 const _mKey = sid => 'sessionModel:'+sid, _eKey = sid => 'sessionEffort:'+sid;
+let _prefsStamped=false;   // 见 adoptSessionPrefs
 const _defModel = () => localStorage.getItem('defaultModel') || currentModel;
 const _defEffort = () => { const e=localStorage.getItem('defaultEffort')||''; return EFFORTS.some(x=>x[0]===e)?e:''; };
 // 切到某会话:有自己的选择就用自己的,没有(存量会话/首次打开)就继承全局默认并当场落键
 function adoptSessionPrefs(sid){
   if(!sid) return;
   let m=localStorage.getItem(_mKey(sid)), e=localStorage.getItem(_eKey(sid));
+  // 本次加载是否「靠全局默认现盖的」而非用户自己的选择——缓存被清空的设备上,这一步
+  // 会拿尚未与服务端对账的默认值盖章,syncUiPrefs 拿到服务端值后要允许改写(见那边注释)
+  _prefsStamped = (m===null);
   if(m===null){ m=_defModel(); localStorage.setItem(_mKey(sid), m); }
   if(e===null){ e=_defEffort(); localStorage.setItem(_eKey(sid), e); }
   currentModel=m; currentEffort=EFFORTS.some(x=>x[0]===e)?e:'';
@@ -861,8 +865,13 @@ async function syncUiPrefs(){
   _postPrefs(seed);
   // 服务端值就位后把「默认」重新灌进运行态。**只在本会话还没有自己的选择时**才动,
   // 免得把用户在这个窗口临时换的模型/档位覆盖掉(裁决 3)。
-  if(!currentSessionId||localStorage.getItem(_mKey(currentSessionId))===null){
-    currentModel=_defModel(); currentEffort=_defEffort(); syncModelBtn();
+  // 「还没有自己的选择」含两种:①压根没落过键;②本次加载刚被 adoptSessionPrefs 拿全局默认
+  // 现盖章(_prefsStamped)——缓存被清空的设备正是这种,那枚章盖的是尚未对账的回落值,
+  // 不是用户的选择,必须让服务端值改写它,否则本 bug 的原始现场下会一直用错模型。
+  if(!currentSessionId||_prefsStamped||localStorage.getItem(_mKey(currentSessionId))===null){
+    currentModel=_defModel(); currentEffort=_defEffort();
+    if(currentSessionId){ localStorage.setItem(_mKey(currentSessionId), currentModel); localStorage.setItem(_eKey(currentSessionId), currentEffort); }
+    syncModelBtn();
   }
   return true;
 }

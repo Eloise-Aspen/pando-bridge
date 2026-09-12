@@ -103,6 +103,9 @@ let currentModel = localStorage.getItem('defaultModel') || 'claude-sonnet-5';
 let currentEffort = localStorage.getItem('defaultEffort') || '';
 const EFFORTS = [['','默认'],['low','Low'],['medium','Medium'],['high','High'],['xhigh','XHigh'],['max','Max']];
 const _mKey = sid => 'sessionModel:' + sid;
+const _eKey = sid => 'sessionEffort:' + sid;
+// adoptSessionPrefs 在本次加载里是否拿全局默认现盖的章（缓存被清空的设备＝true）
+let _prefsStamped = __STAMPED__;
 const _defModel = () => localStorage.getItem('defaultModel') || currentModel;
 const _defEffort = () => { const e = localStorage.getItem('defaultEffort') || ''; return EFFORTS.some(x => x[0] === e) ? e : ''; };
 let btnSyncs = 0;
@@ -124,11 +127,12 @@ __BLOCK__
 """
 
 
-def _run(store, remote, sid="null", script=""):
+def _run(store, remote, sid="null", script="", stamped=False):
     js = (_HARNESS
           .replace("__STORE__", json.dumps(store))
           .replace("__REMOTE__", json.dumps(remote) if remote is not None else "null")
           .replace("__SID__", sid)
+          .replace("__STAMPED__", "true" if stamped else "false")
           .replace("__BLOCK__", _pref_block())
           .replace("__SCRIPT__", textwrap.dedent(script)))
     out = subprocess.run([NODE, "-e", js], capture_output=True, text=True, encoding="utf-8")
@@ -179,6 +183,19 @@ def test_sync_does_not_clobber_this_window_choice():
              sid="'s1'")
     assert r["store"]["sessionModel:s1"] == "claude-fable-5"
     assert r["btnSyncs"] == 0          # 没碰运行态，连按钮都不用重刷
+
+
+def test_stamped_default_is_corrected_by_server_value():
+    """核账补洞（2026-09-12 主窗口）：缓存被清空的设备上，adoptSessionPrefs 会在
+    syncUiPrefs 之前拿「尚未与服务端对账的回落默认」给本会话盖章。那枚章不是用户的
+    选择，服务端值到了必须改写它——否则本 bug 的原始现场（手机清站点数据后重开）下，
+    这个会话会一直用错模型。"""
+    r = _run({}, {"defaultModel": "claude-opus-5", "defaultEffort": "high",
+                  "userNickname": "", "assistantName": ""},
+             sid="'s1'", stamped=True)
+    assert r["store"]["sessionModel:s1"] == "claude-opus-5"
+    assert r["store"]["sessionEffort:s1"] == "high"
+    assert r["btnSyncs"] == 1
 
 
 def test_nickname_debounced_into_one_post():
