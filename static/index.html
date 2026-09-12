@@ -819,6 +819,54 @@ function saveSessionPrefs(){
 }
 if(currentSessionId) adoptSessionPrefs(currentSessionId);   // 刷新页面后回到本会话自己的模型
 
+/* ===== 界面偏好的服务端持久化(fix-settings-persistence 裁决 2/8/9)=====
+   defaultModel / defaultEffort / userNickname / assistantName 四项以**服务端 /settings
+   为准**,localStorage 降级为「首屏缓存」:启动先用本地值渲染(不闪),/settings 回来后
+   用服务端值覆盖本地并回写;服务端不可达就照常用本地缓存,不弹错、不拦路。
+   病根:这四项此前只存 localStorage,安卓 Chrome 在存储压力下会回收、清站点数据也会清,
+   清掉即回默认——用户「隔一阵回来昵称空了」就是这么来的。
+   会话级的 sessionModel:<sid> / sessionEffort:<sid> **不在此列**(裁决 3):单窗口临时
+   换模型/换档仍只影响当前窗口,一字不改。 */
+const UI_PREF_KEYS=['defaultModel','defaultEffort','userNickname','assistantName'];
+let _prefTimer=null, _prefPending={};
+function _postPrefs(body){
+  if(!body||!Object.keys(body).length) return;
+  fetch('/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).catch(()=>{});
+}
+/* 改完即写,不做保存按钮(裁决 8)。debounceMs>0 用于昵称这类逐字符输入(500ms),
+   模型/档位是点选 → 传 0 立即写。本地永远先落(离线也记得住),网络失败静默吞掉。 */
+function savePref(key, value, debounceMs){
+  if(UI_PREF_KEYS.indexOf(key)<0) return;
+  value=value||'';
+  if(value) localStorage.setItem(key,value); else localStorage.removeItem(key);
+  _prefPending[key]=value;
+  clearTimeout(_prefTimer); _prefTimer=null;
+  const flush=()=>{ const body=_prefPending; _prefPending={}; _prefTimer=null; _postPrefs(body); };
+  if(debounceMs>0) _prefTimer=setTimeout(flush,debounceMs); else flush();
+}
+/* 启动同步。服务端有值 → 覆盖本地缓存;服务端为空而本地有值 → 一次性种子上传(裁决 9),
+   老设备上已有的昵称因此自然搬家,服务端空库也不会把它冲掉。
+   返回是否拿到了服务端数据——拿不到(离线/服务未起)一切照旧走本地缓存。 */
+async function syncUiPrefs(){
+  let s=null;
+  try{ const r=await fetch('/settings'); if(r.ok) s=await r.json(); }catch(e){}
+  if(!s||typeof s!=='object') return false;
+  const seed={};
+  UI_PREF_KEYS.forEach(k=>{
+    const remote=typeof s[k]==='string'?s[k]:'';
+    const local=localStorage.getItem(k)||'';
+    if(remote){ if(remote!==local) localStorage.setItem(k,remote); }
+    else if(local){ seed[k]=local; }
+  });
+  _postPrefs(seed);
+  // 服务端值就位后把「默认」重新灌进运行态。**只在本会话还没有自己的选择时**才动,
+  // 免得把用户在这个窗口临时换的模型/档位覆盖掉(裁决 3)。
+  if(!currentSessionId||localStorage.getItem(_mKey(currentSessionId))===null){
+    currentModel=_defModel(); currentEffort=_defEffort(); syncModelBtn();
+  }
+  return true;
+}
+
 /* ===== 工作目录(feat-bridge-workstation)=====
    白名单由 /health 下发(只有 key+label,没有绝对路径——路径只在服务端解析)。
    只在「新建对话」态可选,首条消息随 payload 上报 cwd_key;会话一旦落库绑定就不可换
@@ -962,7 +1010,8 @@ async function loadModels(){
 function _reconcileModels(){
   const known=id=>MODELS.some(m=>m[0]===id);
   const def=localStorage.getItem('defaultModel');
-  if(def && !known(def)) localStorage.setItem('defaultModel', FALLBACK_MODEL_ID);
+  // 回落同步写服务端:服务端按裁决 6 不校验模型 id,陈旧值的纠正归前端这一层负责
+  if(def && !known(def)) savePref('defaultModel', FALLBACK_MODEL_ID, 0);
   if(currentSessionId){
     const cur=localStorage.getItem(_mKey(currentSessionId));
     if(cur && !known(cur)){ localStorage.setItem(_mKey(currentSessionId), FALLBACK_MODEL_ID); currentModel=FALLBACK_MODEL_ID; }
@@ -1362,9 +1411,9 @@ function loadSettings(){
   _renderSettingsToolPolicy();
   fetch('/health').then(r=>r.ok?r.json():null).then(h=>{ if(h&&h.version&&$('s-ver')) $('s-ver').textContent='Pando v'+h.version+' · 基于 Claude Code'; }).catch(()=>{});
 }
+// 昵称改完即存(手感不变),但走 500ms 防抖再打 /settings——逐字符打接口没必要(裁决 8)
 function saveIdentity(){ const nick=$('s-nick').value.trim(), asst=$('s-asst').value.trim();
-  if(nick) localStorage.setItem('userNickname',nick); else localStorage.removeItem('userNickname');
-  if(asst) localStorage.setItem('assistantName',asst); else localStorage.removeItem('assistantName');
+  savePref('userNickname',nick,500); savePref('assistantName',asst,500);
   ASST=asst||'Claude'; ['home-asst','chat-asst'].forEach(id=>$(id).textContent=ASST);
   $('hero-name').textContent=nick?`${nick},你好`:'你好'; }
 function toggleEnter(){ enterToSend=!enterToSend; if(enterToSend) localStorage.removeItem('enterToSend'); else localStorage.setItem('enterToSend','0'); $('s-enter').classList.toggle('on',enterToSend); }
@@ -1421,10 +1470,10 @@ function renderDefModelPop(){
     + (rest.length&&shown?rest.map(opt).join(''):'')
     + `<div class="model-opt custom" id="def-custom-opt" onclick="selectDefCustomModel(event)">自定义…</div>`;
 }
-// 持久化与原 cycleDefaultModel 完全一致:写 defaultModel + 更新行内文案,只换交互
+// 点选即写:defaultModel 落本地缓存 + 立即 POST /settings(裁决 8),并更新行内文案
 function selectDefModel(id){
   if(!id) return;
-  localStorage.setItem('defaultModel', id);
+  savePref('defaultModel', id, 0);
   const el=$('s-model'); if(el) el.textContent=modelLabel(id);
   const p=$('def-model-pop'); if(p) p.style.display='none';
 }
@@ -2210,7 +2259,11 @@ async function boot(){
   $('hero-mark').innerHTML=PANDO_LOGO(25);
   $('side-logo').innerHTML=PANDO_LOGO(18);
   mountComposers();
-  try{ const cfg=await (await fetch('/config')).json(); ASST=cfg.assistant_name||localStorage.getItem('assistantName')||'Claude'; }catch(e){ ASST=localStorage.getItem('assistantName')||'Claude'; }
+  // 界面偏好先与服务端对一次(fix-settings-persistence):四项以服务端为准,拿不到就用本地缓存。
+  // 旧版这里去拉一个 config 端点取 assistant_name——那个端点**从来就不存在**(全仓无此路由),
+  // 一直是 404 后静默回落 localStorage;现改为读 /settings,不新增端点。
+  await syncUiPrefs();
+  ASST=localStorage.getItem('assistantName')||'Claude';
   const nick=localStorage.getItem('userNickname');
   $('hero-name').textContent = nick? `${nick},你好` : '你好';
   // 问候屏副行(首帧防闪):等 stats 落定后一次性写入完整副行,失败/缺字段只显示日期,
