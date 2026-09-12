@@ -566,6 +566,22 @@ def create_app(config) -> FastAPI:
         "auto_carryover_hard_tokens": int(_cfg(config, "AUTO_CARRYOVER_HARD_TOKENS", 160_000)),
         "auto_carryover_idle_minutes": float(_cfg(config, "AUTO_CARRYOVER_IDLE_MINUTES", 10)),
     }
+    # 界面偏好（fix-settings-persistence 裁决 4/5）。这四项原先只存浏览器 localStorage，
+    # 被安卓回收/清站点数据就丢，现搬服务端持久化，localStorage 降级为首屏缓存。
+    # 刻意与 _AUTO_CARRYOVER_DEFAULTS 分成两张表：那张是**行为参数**（判定层每轮现读），
+    # 这张是**界面偏好**（纯展示/默认值）。分开是为了保住下面 settings 节那条注释的
+    # 约束边界——「服务端点/凭证一律不进这张表」的判断标准仍然清晰可读。
+    # 键名沿用前端现名（裁决 5），前端读写同名即可，省掉一层映射。
+    _UI_PREF_DEFAULTS: dict[str, object] = {
+        "defaultModel": "",
+        "defaultEffort": "",
+        "userNickname": "",
+        "assistantName": "",
+    }
+    # 两张合并成对外的唯一白名单，供 _all_settings / _write_settings / _coerce_setting 使用。
+    _SETTINGS_DEFAULTS: dict[str, object] = {**_AUTO_CARRYOVER_DEFAULTS, **_UI_PREF_DEFAULTS}
+    # 字符串型设置的长度上限（裁决 4）：/settings 无鉴权，防超长值灌库；超长截断而非报错。
+    _SETTING_STR_MAXLEN = 64
     # CLI transcript 根目录。默认 ~/.claude/projects——各会话按其绑定的工作目录编码成子目录。
     claude_projects_dir = Path(
         _cfg(config, "CLAUDE_PROJECTS_DIR", None)
@@ -825,25 +841,38 @@ def create_app(config) -> FastAPI:
         return (row[0] or "") if row else ""
 
     # ---------------------------------------------------------------- settings
-    # 行为参数的运行时覆盖层（feat-carryover-auto-trigger 裁决 6）。
-    # 只允许 _AUTO_CARRYOVER_DEFAULTS 里的键，且按默认值的类型强制转换——前端无鉴权，
-    # 这里放行的是「换窗频率」这类行为参数，服务端点/凭证一律不进这张表。
+    # 行为参数 + 界面偏好的运行时覆盖层（feat-carryover-auto-trigger 裁决 6，
+    # fix-settings-persistence 裁决 4 扩入 _UI_PREF_DEFAULTS）。
+    # 只允许 _SETTINGS_DEFAULTS 里的键，且按默认值的类型强制转换——前端无鉴权，
+    # 这里放行的是「换窗频率」这类行为参数和「昵称/默认模型」这类界面偏好，
+    # 服务端点/凭证一律不进这张表。
     # 值以 JSON 文本落库（settings.value），读时按默认值类型回填，坏值一律回退默认。
 
     def _coerce_setting(key: str, raw):
-        default = _AUTO_CARRYOVER_DEFAULTS[key]
+        default = _SETTINGS_DEFAULTS[key]
         if isinstance(default, bool):
             if isinstance(raw, str):
                 return raw.strip().lower() not in ("false", "0", "", "null")
             return bool(raw)
+        if isinstance(default, str):
+            # 界面偏好（fix-settings-persistence 裁决 4/6）：去空白、截到上限；
+            # None/非字符串一律回落空串，不抛错。defaultEffort 额外校验档位白名单——
+            # 模型 id 是自由文本（设置页有「自定义…」输入），服务端不校验候选列表，
+            # 陈旧模型值的回落交给前端既有逻辑。
+            if not isinstance(raw, (str, int, float)):   # None/dict/list 等一律空串
+                return ""
+            value = str(raw).strip()[:_SETTING_STR_MAXLEN]
+            if key == "defaultEffort" and value not in VALID_EFFORTS:
+                return ""
+            return value
         if isinstance(default, int):
             return int(raw)
         return float(raw)
 
     def _all_settings() -> dict:
-        """当前生效的行为参数：config 出厂默认 ⊕ settings 表覆盖。
+        """当前生效的行为参数与界面偏好：config 出厂默认 ⊕ settings 表覆盖。
         表里坏值（类型不对/删过的旧键）静默忽略，永远回落默认，绝不抛错。"""
-        merged = dict(_AUTO_CARRYOVER_DEFAULTS)
+        merged = dict(_SETTINGS_DEFAULTS)
         try:
             conn = _chat_conn()
             rows = conn.execute("SELECT key, value FROM settings").fetchall()
@@ -868,7 +897,7 @@ def create_app(config) -> FastAPI:
         """写入白名单内的键，返回写后完整生效值。非法键/非法值静默跳过（与工具策略同口径）。"""
         pairs = []
         for key, raw in body.items():
-            if key not in _AUTO_CARRYOVER_DEFAULTS:
+            if key not in _SETTINGS_DEFAULTS:
                 continue
             try:
                 pairs.append((key, json.dumps(_coerce_setting(key, raw))))
@@ -1351,12 +1380,12 @@ def create_app(config) -> FastAPI:
 
     @app.get("/settings")
     async def api_get_settings():
-        """当前生效的行为参数（config 默认 ⊕ settings 表覆盖）。"""
+        """当前生效的行为参数与界面偏好（config 默认 ⊕ settings 表覆盖）。"""
         return _all_settings()
 
     @app.post("/settings")
     async def api_post_settings(req: Request):
-        """更新行为参数。请求体为 JSON 对象，只认白名单键（见 _AUTO_CARRYOVER_DEFAULTS），
+        """更新行为参数 / 界面偏好。请求体为 JSON 对象，只认白名单键（见 _SETTINGS_DEFAULTS），
         非法键/非法值静默忽略。返回更新后的完整生效值。持久化在服务端，对所有连接生效。"""
         try:
             body = await req.json()
