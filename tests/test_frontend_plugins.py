@@ -1,12 +1,17 @@
-"""前端插件 manifest 与资源伺服（feat-frontend-plugin-arch）。
+"""前端插件 manifest、加载器与资源伺服（feat-frontend-plugin-arch）。
 
 /api/plugins：未配置目录 → []（demo 行为）；配置后 = 目录内实际 *.js 白名单。
-/plugin-assets/<文件>：只放行 .js、挡路径穿越、缺失 404。
+/plugin-assets/<文件>：只放行 .js、挡路径穿越、缺失 404，并用版本 URL 长期缓存。
 """
+
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 
 from pando import create_app
+
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def _config(tmp_path, plugins_dir=None):
@@ -58,6 +63,7 @@ def test_plugin_asset_served_and_traversal_blocked(tmp_path):
     r = c.get("/plugin-assets/a-one.js")
     assert r.status_code == 200
     assert "javascript" in r.headers["content-type"]
+    assert r.headers["cache-control"] == "public, max-age=31536000, immutable"
     assert c.get("/plugin-assets/missing.js").status_code == 404
     assert c.get("/plugin-assets/..%2Fsecret.js").status_code == 404
 
@@ -66,3 +72,13 @@ def test_plugin_asset_404_when_unconfigured(tmp_path):
     """未配置插件目录时资源路由一律 404。"""
     c = TestClient(create_app(_config(tmp_path)))
     assert c.get("/plugin-assets/a.js").status_code == 404
+
+
+def test_frontend_loader_downloads_in_parallel_and_keeps_execution_order():
+    """动态脚本全部 async=false 后入队：并行下载、按 manifest 顺序执行。"""
+    src = (ROOT / "static" / "index.html").read_text(encoding="utf-8")
+    body = src.split("async function loadFrontendPlugins()", 1)[1].split("/* ===== toast", 1)[0]
+    assert "s.async=false" in body
+    assert "pending.push(new Promise" in body
+    assert "await Promise.all(pending)" in body
+    assert "await new Promise" not in body

@@ -2803,12 +2803,11 @@ def create_app(config) -> FastAPI:
         target = (plugins_root / filename).resolve()
         if plugins_root not in target.parents or not target.is_file():
             raise HTTPException(status_code=404, detail="plugin not found")
-        # no-cache = 每次使用前必须向服务端重验(有 etag/last-modified,新鲜时回 304),
-        # 防移动端按启发式缓存拿到旧插件
+        # URL 已带 ?v=<mtime>：文件变化即换 URL；同一版本可长期缓存且无需回源重验。
         return FileResponse(
             target,
             media_type="application/javascript",
-            headers={"Cache-Control": "no-cache"},
+            headers={"Cache-Control": "public, max-age=31536000, immutable"},
         )
 
     @app.get("/", response_class=HTMLResponse)
