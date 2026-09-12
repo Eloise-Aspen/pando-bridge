@@ -1001,7 +1001,7 @@ async function loadModels(){
   document.querySelectorAll('.model-pop').forEach(p=>{ if(p.id==='model-pop') renderModelPop(); });
   // 设置页可能先于本次刷新渲染(直接停在设置页时):行内文案要跟上回落/改名后的值,
   // 否则显示陈旧 id——「没更新到最新」的病根就在这一步缺同步(裁决 5)
-  const sm=$('s-model'); if(sm) sm.textContent=modelLabel(_defModel());
+  const sm=$('s-model'); if(sm) sm.textContent=defModelRowLabel();
   if($('def-model-pop')) renderDefModelPop();
 }
 // 陈旧持久化值回落:候选列表就位后,把已不在列表里的 defaultModel / 当前会话模型
@@ -1398,7 +1398,7 @@ function loadSettings(){
       </div>
       <div class="set-sec">模型与记忆</div>
       <div class="set-group">
-        <div class="set-row tap def-model-row" onclick="toggleDefModelPop(event)"><span class="k">默认模型</span><span class="v" id="s-model">${modelLabel(_defModel())}</span>${CHEV}
+        <div class="set-row tap def-model-row" onclick="toggleDefModelPop(event)"><span class="k">默认模型</span><span class="v" id="s-model">${defModelRowLabel()}</span>${CHEV}
           <div class="model-pop down" id="def-model-pop" style="display:none"></div>
         </div>
         <div class="set-row"><span class="k">自动记住上下文<span class="set-hint">对新消息生效</span></span><button class="tog${autoMem?' on':''}${_hasMemory?'':' disabled'}" id="s-automem" onclick="toggleAutoMem()"></button></div>
@@ -1446,8 +1446,10 @@ function pickTheme(t){ if(t) localStorage.setItem('theme',t); else localStorage.
 /* ===== 设置页「默认模型」下拉(fix-default-model-dropdown)=====
    原点击轮换(cycleDefaultModel)改为与聊天侧同规格的 model-pop 下拉:候选同源 MODELS
    (主线 + 「更多模型」展开 + 自定义内联输入),选中项高亮当前 _defModel()。
-   不含 effort 档位行——默认档位归独立设置项,本控件只管模型。
-   「默认模型」= 新对话从哪个模型起步(全局);模型已会话级化后它不再回头改已有会话。 */
+   弹层底部还有一行 effort 档位(fix-settings-persistence 裁决 7):与聊天侧输入区按钮
+   同一套 EFFORTS 常量,选了档行内文案就变成「模型 · 档位」,选「默认」则不追加后缀
+   ——与输入区按钮现行规则一致。
+   「默认模型」= 新对话从哪个模型/档位起步(全局);已会话级化后它不再回头改已有会话。 */
 let _defPopExpanded=false;   // 「更多模型」展开态:每次开弹层复位回收起(与聊天侧一致)
 function toggleDefModelPop(e){
   if(e.target.closest('#def-model-pop')) return;   // 弹层内部点击会冒泡到行,不当作开合
@@ -1468,13 +1470,24 @@ function renderDefModelPop(){
   pop.innerHTML=(flat?MODELS:MODELS.filter(m=>m[2])).map(opt).join('')
     + (rest.length?`<div class="model-opt more" onclick="toggleMoreDefModels(event)">更多模型 <span class="more-cav">${shown?'▴':'▾'}</span></div>`:'')
     + (rest.length&&shown?rest.map(opt).join(''):'')
-    + `<div class="model-opt custom" id="def-custom-opt" onclick="selectDefCustomModel(event)">自定义…</div>`;
+    + `<div class="model-opt custom" id="def-custom-opt" onclick="selectDefCustomModel(event)">自定义…</div>`
+    // 档位行:复用聊天侧的 .eff-row/.eff-pill 规格,不新造控件(裁决 7)
+    + `<div class="eff-row">`+ EFFORTS.map(([id,nm])=>`<button class="eff-pill${id===_defEffort()?' sel':''}" onclick="selectDefEffort('${id}',event)">${nm}</button>`).join('') +`</div>`;
+}
+// 设置页「默认模型」行内文案:「<模型>」或「<模型> · <档>」(选「默认」档时不追加后缀)
+const defModelRowLabel = () => modelLabel(_defModel()) + (_defEffort()?' · '+effortLabel(_defEffort()):'');
+// 档位点选即写(裁决 8),弹层保持打开只刷高亮——与聊天侧 applyEffort 同手感
+function selectDefEffort(id,e){
+  if(e) e.stopPropagation();
+  savePref('defaultEffort', EFFORTS.some(x=>x[0]===id)?id:'', 0);
+  const el=$('s-model'); if(el) el.textContent=defModelRowLabel();
+  renderDefModelPop();
 }
 // 点选即写:defaultModel 落本地缓存 + 立即 POST /settings(裁决 8),并更新行内文案
 function selectDefModel(id){
   if(!id) return;
   savePref('defaultModel', id, 0);
-  const el=$('s-model'); if(el) el.textContent=modelLabel(id);
+  const el=$('s-model'); if(el) el.textContent=defModelRowLabel();
   const p=$('def-model-pop'); if(p) p.style.display='none';
 }
 // 「自定义…」内联输入:照抄聊天侧 selectCustomModel 的路数(PWA standalone 下 prompt 不可用)

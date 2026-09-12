@@ -1,6 +1,6 @@
-"""界面偏好前端侧（fix-settings-persistence Task 2，裁决 2/3/8/9）。
+"""界面偏好前端侧（fix-settings-persistence Task 2/3，裁决 2/3/7/8/9）。
 
-两部分：
+三部分（第三部分见文件末尾：默认模型行的档位选择与行内文案规则）：
 1. 源码不变量 —— `fetch('/config')` 已不复存在（那个端点从来没有过，一直 404），
    助手名改自 `/settings` 取；会话级临时切换的键一字未动（裁决 3）。
 2. **离线替身** —— 把 index.html 里的偏好同步块原样抠出来丢进 node 跑，
@@ -207,3 +207,56 @@ def test_clearing_nickname_writes_empty_string():
              script="savePref('userNickname', '', 0);")
     assert "userNickname" not in r["store"]
     assert {"userNickname": ""} in r["posts"]
+
+
+# ---------------------------------------------------------------- Task 3：默认模型行加档位
+
+def test_def_model_pop_has_effort_row():
+    """裁决 7：默认模型弹层底部有档位行，与聊天侧同一套 EFFORTS 常量、同一套 .eff-pill 规格。"""
+    src = _source()
+    body = src.split("function renderDefModelPop(", 1)[1].split("\n}", 1)[0]
+    assert 'class="eff-row"' in body
+    assert "EFFORTS.map(" in body
+    assert "selectDefEffort(" in body
+    # 高亮跟的是**默认**档位，不是当前窗口的临时档位（裁决 3）
+    assert "id===_defEffort()" in body
+    assert "currentEffort" not in body
+
+
+def test_def_effort_select_writes_default_only():
+    """选档 = 写 defaultEffort（立即），不碰会话级键。"""
+    src = _source()
+    body = src.split("function selectDefEffort(", 1)[1].split("\n}", 1)[0]
+    assert "savePref('defaultEffort'" in body
+    assert ", 0)" in body
+    assert "saveSessionPrefs" not in body and "applyEffort" not in body
+
+
+def test_row_label_uses_shared_helper_everywhere():
+    """三处行内文案（渲染设置页 / 模型列表刷新 / 选中后）都走同一个 defModelRowLabel。"""
+    src = _source()
+    assert src.count("defModelRowLabel()") >= 4        # 1 处定义 + 3 处使用
+    assert 'id="s-model">${defModelRowLabel()}' in src
+
+
+def test_row_label_formula():
+    """选了档显示「模型 · 档位」，选「默认」档不追加后缀（与输入区按钮同规则）。"""
+    src = _source()
+    line = re.search(r"const defModelRowLabel = .*", src).group(0)
+    js = """
+    const MODELS=[['claude-sonnet-5','Sonnet 5',true]];
+    const EFFORTS=[['','默认'],['low','Low'],['high','High']];
+    const modelLabel=id=>(MODELS.find(m=>m[0]===id)||['',id])[1]||id;
+    const effortLabel=id=>(EFFORTS.find(e=>e[0]===id)||['',''])[1];
+    let _M='claude-sonnet-5', _E='';
+    const _defModel=()=>_M, _defEffort=()=>_E;
+    %s
+    const out=[];
+    out.push(defModelRowLabel());
+    _E='high'; out.push(defModelRowLabel());
+    _M='my-custom'; out.push(defModelRowLabel());
+    console.log(JSON.stringify(out));
+    """ % line
+    r = subprocess.run([NODE, "-e", textwrap.dedent(js)], capture_output=True, text=True, encoding="utf-8")
+    assert r.returncode == 0, r.stderr
+    assert json.loads(r.stdout.strip()) == ["Sonnet 5", "Sonnet 5 · High", "my-custom · High"]
