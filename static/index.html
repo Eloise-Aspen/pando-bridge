@@ -851,9 +851,12 @@ function savePref(key, value, debounceMs){
 /* 启动同步。服务端有值 → 覆盖本地缓存;服务端为空而本地有值 → 一次性种子上传(裁决 9),
    老设备上已有的昵称因此自然搬家,服务端空库也不会把它冲掉。
    返回是否拿到了服务端数据——拿不到(离线/服务未起)一切照旧走本地缓存。 */
-async function syncUiPrefs(){
+async function syncUiPrefs(prefetchedResponse){
   let s=null;
-  try{ const r=await fetch('/settings'); if(r.ok) s=await r.json(); }catch(e){}
+  try{
+    const r=arguments.length ? prefetchedResponse : await fetch('/settings');
+    if(r&&r.ok) s=await r.json();
+  }catch(e){}
   if(!s||typeof s!=='object') return false;
   const seed={};
   UI_PREF_KEYS.forEach(k=>{
@@ -1528,9 +1531,11 @@ function closeSidebar(){ $('overlay').classList.remove('open'); $('drawer').clas
 const SESS_PAGE=30;
 let _sessOffset=0, _sessAllLoaded=false, _sessLoadingMore=false;
 const _sessIO={};   // 列表容器 id → IntersectionObserver(每次渲染重挂)
-async function loadSessions(){
+async function loadSessions(prefetchedResponse){
   try{
-    allSessions=await (await fetch(`/sessions?limit=${SESS_PAGE}`)).json();
+    const r=arguments.length ? prefetchedResponse : await fetch(`/sessions?limit=${SESS_PAGE}`);
+    if(!r) throw new Error('sessions request failed');
+    allSessions=await r.json();
     _sessOffset=allSessions.length; _sessAllLoaded=allSessions.length<SESS_PAGE;
     renderSessions();
   }catch(e){ console.error('loadSessions',e); }
@@ -2261,15 +2266,17 @@ async function loadFrontendPlugins(){
   try{ const r=await fetch('/api/plugins'); if(r.ok) list=await r.json(); }
   catch(e){ console.warn('[Pando] 插件 manifest 获取失败:',e); }
   if(!Array.isArray(list)) list=[];
+  const pending=[];
   for(const p of list){
     if(!p||!p.src) continue;
-    await new Promise(done=>{
-      const s=document.createElement('script'); s.src=p.src;
+    pending.push(new Promise(done=>{
+      const s=document.createElement('script'); s.src=p.src; s.async=false;
       s.onload=done;
       s.onerror=()=>{ console.warn('[Pando] 插件加载失败,已跳过:',p.id||p.src); done(); };
       document.head.appendChild(s);
-    });
+    }));
   }
+  await Promise.all(pending);
 }
 
 /* ===== toast ===== */
@@ -2281,10 +2288,16 @@ async function boot(){
   $('hero-mark').innerHTML=PANDO_LOGO(25);
   $('side-logo').innerHTML=PANDO_LOGO(18);
   mountComposers();
+  // 三个启动请求同时发起；拿齐响应后仍按原顺序处理界面状态，避免顺序依赖回归。
+  const [settingsResponse,healthResponse,sessionsResponse]=await Promise.all([
+    fetch('/settings').catch(()=>null),
+    fetch('/health').catch(()=>null),
+    fetch(`/sessions?limit=${SESS_PAGE}`).catch(()=>null),
+  ]);
   // 界面偏好先与服务端对一次(fix-settings-persistence):四项以服务端为准,拿不到就用本地缓存。
   // 旧版这里去拉一个 config 端点取 assistant_name——那个端点**从来就不存在**(全仓无此路由),
   // 一直是 404 后静默回落 localStorage;现改为读 /settings,不新增端点。
-  await syncUiPrefs();
+  await syncUiPrefs(settingsResponse);
   ASST=localStorage.getItem('assistantName')||'Claude';
   const nick=localStorage.getItem('userNickname');
   $('hero-name').textContent = nick? `${nick},你好` : '你好';
@@ -2302,14 +2315,14 @@ async function boot(){
     $('hero-sub').textContent=parts.join(' · ');
   });
   ['home-asst','chat-asst'].forEach(id=>$(id).textContent=ASST);
-  try{ const h=await (await fetch('/health')).json();
+  try{ const h=healthResponse ? await healthResponse.json() : null;
     if(h&&h.version) $('side-ver').textContent='Pando v'+h.version;
     // 工作目录白名单(feat-bridge-workstation):只有 key+label;未下发/单席则选择器不出现
     WORKSPACES=Array.isArray(h&&h.workspaces)?h.workspaces.filter(w=>w&&typeof w.key==='string'):[];
     if(!currentSessionId) resetCwdKey(); else renderWorkspacePicker();
   }catch(e){}
   loadModels();                  // 模型候选实时化:成功即替换菜单,失败静默用首屏兜底
-  await loadSessions();
+  await loadSessions(sessionsResponse);
   await loadFrontendPlugins();   // 先装插件再连 WS,保证消息渲染器/事件监听先注册好
   // PWA service worker:注册 + 把 sw 的通用转发消息(push_click)接到插件事件总线
   if('serviceWorker' in navigator){

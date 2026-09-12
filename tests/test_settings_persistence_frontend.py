@@ -36,12 +36,26 @@ def test_config_endpoint_gone():
 
 
 def test_assistant_name_comes_from_settings():
-    """助手名走 /settings 同步后的本地缓存，boot 里先 await syncUiPrefs()。"""
+    """助手名走 /settings 同步后的本地缓存，boot 先处理预取的 settings 响应。"""
     src = _source()
     boot = src.split("async function boot(", 1)[1]
     head = boot[: boot.index("loadModels()")]
-    assert "await syncUiPrefs()" in head
+    assert "await syncUiPrefs(settingsResponse)" in head
     assert "ASST=localStorage.getItem('assistantName')||'Claude'" in head
+
+
+def test_boot_fetches_start_in_parallel_but_processing_stays_ordered():
+    """三个启动请求并发；偏好、health、会话仍按原先顺序落到界面。"""
+    src = _source()
+    boot = src.split("async function boot(", 1)[1].split("boot();", 1)[0]
+    parallel = boot.split("await Promise.all([", 1)[1].split("]);", 1)[0]
+    assert "fetch('/settings')" in parallel
+    assert "fetch('/health')" in parallel
+    assert "fetch(`/sessions?limit=${SESS_PAGE}`)" in parallel
+    prefs = boot.index("await syncUiPrefs(settingsResponse)")
+    health = boot.index("healthResponse ? await healthResponse.json()")
+    sessions = boot.index("await loadSessions(sessionsResponse)")
+    assert prefs < health < sessions
 
 
 def test_ui_pref_keys_are_the_four():
