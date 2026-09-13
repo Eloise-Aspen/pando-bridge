@@ -2767,6 +2767,18 @@ def create_app(config) -> FastAPI:
             raise HTTPException(status_code=404, detail="font not found")
         return FileResponse(target, media_type="font/woff2")
 
+    @app.get("/themes")
+    async def theme_list():
+        # 可用主题 = themes/ 下含 theme.css 的子目录名（按名排序）。与 /api/plugins 同一套
+        # 白名单式列举：不接受任何用户输入路径、无外链；目录不存在 → []（前端只剩「简洁」）。
+        themes_root = static_dir / "themes"
+        if not themes_root.is_dir():
+            return []
+        return sorted(
+            d.name for d in themes_root.iterdir()
+            if d.is_dir() and (d / "theme.css").is_file()
+        )
+
     @app.get("/themes/{name}/{filename}")
     async def theme_asset(name: str, filename: str):
         # 主题资源:themes/<名>/theme.css（CSS 变量覆盖）或可选 theme.js（文案包/启动模块）。
