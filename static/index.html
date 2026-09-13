@@ -1393,19 +1393,12 @@ function loadSettings(){
   const v=$('v-settings');
   const nick=localStorage.getItem('userNickname')||''; const asst=localStorage.getItem('assistantName')||'';
   const autoMem=localStorage.getItem('autoMemory')!=='0';
-  const themeLabel=localStorage.getItem('theme')==='_smoke'?'简洁·烟':'简洁';
   v.innerHTML=`<div class="sub-top"><div class="r"><button class="icon-btn lead" onclick="openSidebar()" aria-label="菜单">${MENU}</button><span class="sub-h">设置</span></div></div>
     <div class="sub-body pd-scroll set-body">
       <div class="set-field"><div class="lb">你的昵称</div><input class="set-input" id="s-nick" value="${escHtml(nick)}" oninput="saveIdentity()" autocomplete="off"></div>
       <div class="set-field"><div class="lb">助手名称</div><input class="set-input" id="s-asst" value="${escHtml(asst)}" placeholder="Claude" oninput="saveIdentity()" autocomplete="off"></div>
       <div class="set-sec">通用</div>
       <div class="set-group">
-        <div class="set-row tap" onclick="toggleThemeMenu(event)"><span class="k">主题</span><span class="v" id="s-theme">${themeLabel}</span>${CHEV}
-          <div class="set-menu" id="theme-menu" style="display:none;top:44px">
-            <div class="mi${localStorage.getItem('theme')!=='_smoke'?' sel':''}" onclick="pickTheme('')">简洁</div>
-            <div class="mi${localStorage.getItem('theme')==='_smoke'?' sel':''}" onclick="pickTheme('_smoke')">简洁·烟</div>
-          </div>
-        </div>
         <div class="set-row"><span class="k">回车即发送</span><button class="tog${enterToSend?' on':''}" id="s-enter" onclick="toggleEnter()"></button></div>
       </div>
       <div class="set-sec">模型与记忆</div>
@@ -1453,14 +1446,17 @@ async function _setToolPolicy(group,state){
 async function _clearToolPolicy(){
   try{ const r=await fetch('/tool-policy/reset',{method:'POST'}); if(r.ok){ _renderSettingsToolPolicy(); toast('已重置工具权限为默认'); } }catch{}
 }
-function toggleThemeMenu(e){ e.stopPropagation(); const m=$('theme-menu'); m.style.display=m.style.display==='none'?'block':'none'; }
 /* ===== 主题切换机制(可切换主题,非前端插件)=====
    约定:static/themes/<名>/theme.css 用 :root 覆盖 CSS 变量(设计 token);
    可选同目录 theme.js = I18N 覆盖 + 启动模块挂点(本 spec 只留约定,不加载执行)。
    默认「简洁」= 不挂任何 <link>,故默认态零 themes/ 请求。
    2026-09-13 恢复:本函数原在 b51b201 实现,fbac693「照 Pando 原型重建 demo 前端」
    时未被带过来——设置 UI/theme.css/服务端路由三样都在,唯独挂载这步丢了,
-   静默失败两个多月(Rowan 状态机盘点 D-08)。此处按原实现取回,未作改动。 */
+   静默失败两个多月(Rowan 状态机盘点 D-08)。此处按原实现取回,未作改动。
+   2026-09-14 用户拍板删掉样例主题 _smoke 与设置页主题入口(「换皮肤换得不彻底,
+   完全不能用」)。**机制与服务端 /themes/ 路由保留**,但当前无 UI 入口:
+   根因是 CSS 里尚有 46 处硬编码颜色绕过 :root token,覆盖 :root 换不干净——
+   token 收口(见 BACKLOG)之前,任何皮肤都只能换一半。收口后再加回入口与真皮肤。 */
 function applyTheme(name){
   let link=document.getElementById('theme-css');
   if(!name){                         // 简洁(默认):移除主题 link,不发 themes/ 请求
@@ -1475,7 +1471,6 @@ function applyTheme(name){
   link.href=`/themes/${name}/theme.css`;
   // 挂点:此处可按约定再加载 themes/<name>/theme.js(文案包/启动模块),本 spec 不实现。
 }
-function pickTheme(t){ if(t) localStorage.setItem('theme',t); else localStorage.removeItem('theme'); $('theme-menu').style.display='none'; $('s-theme').textContent=t==='_smoke'?'简洁·烟':'简洁'; applyTheme(t||''); _pandoEmit('theme_change',{theme:t||''}); toast('主题已切换'); }
 /* ===== 设置页「默认模型」下拉(fix-default-model-dropdown)=====
    原点击轮换(cycleDefaultModel)改为与聊天侧同规格的 model-pop 下拉:候选同源 MODELS
    (主线 + 「更多模型」展开 + 自定义内联输入),选中项高亮当前 _defModel()。
