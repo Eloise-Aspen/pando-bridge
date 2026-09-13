@@ -1390,6 +1390,7 @@ function _renderToolPolicy(container){
 
 /* ===== SETTINGS ===== */
 function loadSettings(){
+  const themeLabel=localStorage.getItem('theme')||'简洁';
   const v=$('v-settings');
   const nick=localStorage.getItem('userNickname')||''; const asst=localStorage.getItem('assistantName')||'';
   const autoMem=localStorage.getItem('autoMemory')!=='0';
@@ -1399,6 +1400,10 @@ function loadSettings(){
       <div class="set-field"><div class="lb">助手名称</div><input class="set-input" id="s-asst" value="${escHtml(asst)}" placeholder="Claude" oninput="saveIdentity()" autocomplete="off"></div>
       <div class="set-sec">通用</div>
       <div class="set-group">
+        <div class="set-row tap" onclick="toggleThemeMenu(event)"><span class="k">主题</span><span class="v" id="s-theme">${themeLabel}</span>${CHEV}
+          <!-- 菜单项在展开时由 toggleThemeMenu 按 /themes 列举结果填充,不写死任何主题名 -->
+          <div class="set-menu" id="theme-menu" style="display:none;top:44px"></div>
+        </div>
         <div class="set-row"><span class="k">回车即发送</span><button class="tog${enterToSend?' on':''}" id="s-enter" onclick="toggleEnter()"></button></div>
       </div>
       <div class="set-sec">模型与记忆</div>
@@ -1446,6 +1451,20 @@ async function _setToolPolicy(group,state){
 async function _clearToolPolicy(){
   try{ const r=await fetch('/tool-policy/reset',{method:'POST'}); if(r.ok){ _renderSettingsToolPolicy(); toast('已重置工具权限为默认'); } }catch{}
 }
+// 展开时才列举可用主题:设置页低频,不占启动瀑布的坑(fix-plugin-boot-waterfall 的教训)。
+// 目录名即显示名;默认项「简洁」= 空值 = 不挂任何 link。
+async function toggleThemeMenu(e){
+  e.stopPropagation();
+  const m=$('theme-menu'); if(!m) return;
+  if(m.style.display!=='none'){ m.style.display='none'; return; }
+  let list=[];
+  try{ list=await (await fetch('/themes')).json(); }catch{}
+  const cur=localStorage.getItem('theme')||'';
+  m.innerHTML=[['','简洁'],...(Array.isArray(list)?list:[]).map(n=>[n,n])]
+    .map(([v,label])=>`<div class="mi${cur===v?' sel':''}" onclick="pickTheme('${escHtml(v)}')">${escHtml(label)}</div>`).join('');
+  m.style.display='block';
+}
+function pickTheme(t){ if(t) localStorage.setItem('theme',t); else localStorage.removeItem('theme'); $('theme-menu').style.display='none'; $('s-theme').textContent=t||'简洁'; applyTheme(t||''); _pandoEmit('theme_change',{theme:t||''}); toast('主题已切换'); }
 /* ===== 主题切换机制(可切换主题,非前端插件)=====
    约定:static/themes/<名>/theme.css 用 :root 覆盖 CSS 变量(设计 token);
    可选同目录 theme.js = I18N 覆盖 + 启动模块挂点(本 spec 只留约定,不加载执行)。
@@ -1453,10 +1472,11 @@ async function _clearToolPolicy(){
    2026-09-13 恢复:本函数原在 b51b201 实现,fbac693「照 Pando 原型重建 demo 前端」
    时未被带过来——设置 UI/theme.css/服务端路由三样都在,唯独挂载这步丢了,
    静默失败两个多月(Rowan 状态机盘点 D-08)。此处按原实现取回,未作改动。
-   2026-09-14 用户拍板删掉样例主题 _smoke 与设置页主题入口(「换皮肤换得不彻底,
-   完全不能用」)。**机制与服务端 /themes/ 路由保留**,但当前无 UI 入口:
-   根因是 CSS 里尚有 46 处硬编码颜色绕过 :root token,覆盖 :root 换不干净——
-   token 收口(见 BACKLOG)之前,任何皮肤都只能换一半。收口后再加回入口与真皮肤。 */
+   2026-09-14 用户删掉样例主题 _smoke(「换皮肤换得不彻底,完全不能用」),
+   **切换入口保留**——用户明确「切换皮肤的设置以后肯定要用」。菜单项不再写死,
+   改由 GET /themes 列举 themes/ 下含 theme.css 的子目录,放进去即出现。
+   注:CSS 里尚有 46 处硬编码颜色绕过 :root token(见 BACKLOG「CSS 颜色 token 收口」),
+   在收口之前任何皮肤都只能换一半——这正是 _smoke「换不彻底」的根因,不是样例偷懒。 */
 function applyTheme(name){
   let link=document.getElementById('theme-css');
   if(!name){                         // 简洁(默认):移除主题 link,不发 themes/ 请求
