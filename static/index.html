@@ -1665,7 +1665,7 @@ function renderRecent(){
     el.onclick=()=>switchSession(s.id); box.appendChild(el);
   });
 }
-async function switchSession(sid){ go('chat'); $('msgs').innerHTML=''; setSessionId(sid); _pendingRecall=null; _pandoEmit('session_switch',{session_id:sid}); await loadHistory(sid); if(ws&&ws.readyState===1) ws.send(JSON.stringify({switch_session:sid})); }
+async function switchSession(sid){ go('chat'); $('msgs').innerHTML=''; setSessionId(sid); _pendingRecall=null; _pandoEmit('session_switch',{session_id:sid}); await loadHistory(sid); if(sid!==currentSessionId) return; if(ws&&ws.readyState===1) ws.send(JSON.stringify({switch_session:sid})); }
 function newChat(){ setSessionId(null); resetCwdKey(); _pendingRecall=null; _pandoEmit('session_switch',{session_id:null}); resetRoundState(); $('msgs').innerHTML=''; hideCtx(); go('home'); loadSessions(); if(ws&&ws.readyState===1) ws.send(JSON.stringify({switch_session:null})); }
 // 会话 id 一落定,工作目录选择器即隐去(绑定已成、本对话内不可换);回到新建态才重新出现
 function setSessionId(id){
@@ -1688,7 +1688,11 @@ function clearEmpty(){ const e=$('msgs').querySelector('.empty'); if(e) e.remove
 async function loadHistory(sid){
   const m=$('msgs'); m.innerHTML='';
   try{
-    const msgs=await (await fetch(`/sessions/${sid}/messages`)).json();
+    const r=await fetch(`/sessions/${sid}/messages`);
+    // 快速连点会让旧请求晚于新请求返回；每个异步边界后都确认仍是用户最后选中的会话。
+    if(sid!==currentSessionId) return;
+    const msgs=await r.json();
+    if(sid!==currentSessionId) return;
     if(!msgs.length){ showEmpty(); return; }
     // 对话页时钟:打开既有对话时也要有开场时间戳(此前只在实时发送路径里加,切历史会话时漏了)
     addTimeDivider(msgs[0].created_at ? new Date(msgs[0].created_at) : new Date());
@@ -1718,6 +1722,7 @@ async function loadHistory(sid){
     // 实时路径的基准接到历史最后一条上——否则隔了几小时回来发消息,maybeTimeDivider
     // 拿 Date.now() 跟「加载页面的时刻」比,那条本该出现的分隔就漏了。
     lastMsgTime = prevTs;
+    scrollDown();
   }catch(e){ console.error(e); }
 }
 
@@ -2055,6 +2060,8 @@ function send(){
   if(pendingAtts.some(a=>a.uploading)) return;
   const ready=pendingAtts.filter(a=>a.path);
   if(!text && !ready.length) return;
+  // 用户已经主动开了新一轮，旧连接发出的 check_inflight 回执从此作废。
+  _awaitingInflightCheck=false;
   if(inp){ inp.value=''; inp.style.height='auto'; }   // 先清发起处输入(HOME→CHAT 切换会重指 $input)
   maybeTimeDivider();
   addUser(text, ready.map(a=>a.name));
@@ -2093,8 +2100,8 @@ function _startStopFallback(){
   }, 3000);
 }
 function _clearStopFallback(){ if(_stopFallbackTimer){ clearTimeout(_stopFallbackTimer); _stopFallbackTimer=null; } }
-// 断连前是否忙碌:重连后据此决定是否发 check_inflight 对账
-let _wasBusyOnDisconnect=false;
+// 重连对账窗口：true 仅表示 check_inflight 已发出、回执尚未到达。
+let _awaitingInflightCheck=false;
 function connect(){
   const proto=location.protocol==='https:'?'wss':'ws';
   ws=new WebSocket(`${proto}://${location.host}/ws`);
@@ -2103,13 +2110,12 @@ function connect(){
     if(currentSessionId){
       ws.send(JSON.stringify({switch_session:currentSessionId}));
       // 重连对账:无条件问服务端有无在途轮次——PWA 后台杀页后重载会丢内存状态,
-      // 不能只靠 _wasBusyOnDisconnect;无在途时服务端回 no_inflight,开销可忽略
+      // 无条件向服务端对账；无在途时会回 no_inflight，开销可忽略。
       ws.send(JSON.stringify({type:'check_inflight',session_id:currentSessionId}));
-      _wasBusyOnDisconnect=false;
+      _awaitingInflightCheck=true;
     }
   };
   ws.onclose=()=>{
-    _wasBusyOnDisconnect=busy;  // 记住断连时是否忙碌
     setStatus(false);
     // 断连时不复位 busy——保持流式态,等重连后对账决定
     if(!busy) clearPendingPermissions();
@@ -2151,9 +2157,18 @@ function connect(){
         resetRoundState(); setBusy(false); break;
       case 'error': freezeLiveChip(roundThinking, roundTools, liveDur()); addSystem('⚠ '+(m.message||'error')+(m.detail?'\n'+m.detail:'')); setBusy(false); break;
       // 重连对账:有在途轮次,进入忙碌态准备接收回放帧(feat-reconnect-resume)
-      case 'inflight': setBusy(true); ensureLiveChip(); break;
+      case 'inflight': _awaitingInflightCheck=false; setBusy(true); ensureLiveChip(); break;
       // 重连对账回执:无在途轮次,前端复位(feat-reconnect-resume)
-      case 'no_inflight': dropLiveChip(); resetRoundState(); setBusy(false); break;
+      case 'no_inflight': {
+        // 只接受仍在等待的对账回执；用户已发新消息时，旧 no_inflight 不得清掉新轮。
+        if(_awaitingInflightCheck!==true) break;
+        _awaitingInflightCheck=false;
+        const hadPartial=busy===true && !!currentAssistantRow;
+        dropLiveChip(); resetRoundState(); setBusy(false);
+        // 断线期间服务端已经收尾：整段重画，让停在本地的半截回复自动补全。
+        if(hadPartial && currentSessionId) loadHistory(currentSessionId);
+        break;
+      }
       case 'permission_request': enqueuePermission(m); break;
       default:
         // 未知消息类型交给插件注册的渲染器(registerMessageRenderer);没人认领则忽略
