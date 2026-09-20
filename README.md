@@ -415,6 +415,11 @@ transcript **就地精炼**：滤掉工具回包、终端日志、思考块等�
 | `on_archive` | `(session_id, messages, force) -> None` | 归档 prompt 构建前。 |
 | `on_permission_request` | `(tool_name, request_id) -> None` | 权限透传模式下，一条授权请求推给前端的同时。用于把「在等你批」通知到设备（人锁屏离场也能被叫回来批）。在线程池里跑且**不等待结果**，不拖慢授权往返。**刻意不传工具入参**——通知常在锁屏可见，带命令/路径细节等于泄露。 |
 
+**会话忙碌探针**：`app.state.is_session_inflight(session_id: str) -> bool` 回答指定会话此刻
+是否正在跑一轮。插件要主动往某条会话里说话，或要用 `--resume` 接续它之前，应先调用该
+探针；同一条会话同时运行两个进程会互相争抢。老版本核心没有这个属性，插件应自行降级，
+不要直接崩溃。
+
 内置的 [`MemoryPlugin`](pando/plugins/memory.py) 是个完整示例：它的 `on_user_message` 做
 上下文/回忆注入，`register_routes` 挂一个 `/memory-admin/*` 透传代理到记忆服务的管理 API。
 

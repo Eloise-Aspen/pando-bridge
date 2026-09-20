@@ -1579,6 +1579,12 @@ def create_app(config) -> FastAPI:
 
     # 轮次注册表:键为 session_id(一个会话同时只有一个在途用户可见轮次)
     inflight_turns: dict[str, Turn] = {}
+
+    # 只读探针：插件据此判断「这条会话正在跑一轮」，避免与用户抢同一条 --resume 会话。
+    def is_session_inflight(session_id: str) -> bool:
+        return bool(session_id) and session_id in inflight_turns
+
+    app.state.is_session_inflight = is_session_inflight
     # 向后兼容:stop/断连仍需按 WS 查找轮次(一个 WS 同时只绑一个轮次)
     _ws_to_turn: dict[WebSocket, Turn] = {}
     # 已请求停止的连接:被杀轮次的 result 事件不会到达,run_claude 据此改发 stopped 结束帧而非 error
