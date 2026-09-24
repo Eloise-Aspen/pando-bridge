@@ -15,7 +15,7 @@ class BrokenOnStartupPlugin:
 class GoodPlugin:
     """全部钩子正常工作，且记录被调用过，供测试断言。"""
 
-    calls: list[str] = []
+    calls: list[object] = []
 
     def on_startup(self, app, config_dict):
         GoodPlugin.calls.append("on_startup")
@@ -23,6 +23,9 @@ class GoodPlugin:
     def on_user_message(self, session_id, text, is_new_session):
         GoodPlugin.calls.append("on_user_message")
         return ""
+
+    def on_client_timezone(self, tz_name, offset_minutes):
+        GoodPlugin.calls.append(("on_client_timezone", tz_name, offset_minutes))
 
 
 class PermissionNotifyPlugin:

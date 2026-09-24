@@ -2136,6 +2136,12 @@ function _startStopFallback(){
   }, 3000);
 }
 function _clearStopFallback(){ if(_stopFallbackTimer){ clearTimeout(_stopFallbackTimer); _stopFallbackTimer=null; } }
+// 时区名只用于日志定位，所有计算使用浏览器此刻给出的固定偏移；不依赖服务端 IANA 数据库。
+function clientTimezone(){
+  let tz='';
+  try{ tz=Intl.DateTimeFormat().resolvedOptions().timeZone||''; }catch(e){}
+  return {tz,offset_minutes:-new Date().getTimezoneOffset()};
+}
 // 重连对账窗口：true 仅表示 check_inflight 已发出、回执尚未到达。
 let _awaitingInflightCheck=false;
 function connect(){
@@ -2143,6 +2149,7 @@ function connect(){
   ws=new WebSocket(`${proto}://${location.host}/ws`);
   ws.onopen=()=>{
     setStatus(true);
+    ws.send(JSON.stringify({type:'client_timezone',...clientTimezone()}));
     if(currentSessionId){
       ws.send(JSON.stringify({switch_session:currentSessionId}));
       // 重连对账:无条件问服务端有无在途轮次——PWA 后台杀页后重载会丢内存状态,
@@ -2247,6 +2254,7 @@ const _pandoComposerActions=[], _pandoMsgActions=[], _pandoTopbarBadges=[], _pan
 function _pandoEmit(ev,data){ (_pandoEvents[ev]||[]).forEach(fn=>{ try{ fn(data); }catch(e){ console.warn('[Pando] 插件事件回调出错:',ev,e); } }); }
 window.Pando={
   apiVersion:1,
+  clientTimezone,
   on(ev,fn){ (_pandoEvents[ev]=_pandoEvents[ev]||[]).push(fn); },
   emit:(ev,data)=>_pandoEmit(ev,data),
   registerMessageRenderer(type,fn){ _pandoMsgRenderers[type]=fn; },

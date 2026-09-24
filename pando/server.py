@@ -8,14 +8,16 @@ import asyncio
 import importlib
 import json
 import logging
+import math
 import os
+import re
 import shutil
 import socket
 import sqlite3
 import time
 import uuid
 from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
@@ -47,6 +49,139 @@ _STREAM_LINE_LIMIT = 32 * 1024 * 1024  # 32MB
 # 按时间或字符数聚合后下发，防 WS 帧风暴。两个阈值满足其一即 flush。
 _STREAM_THROTTLE_MS = 100    # 毫秒:距上次 flush 超过此间隔即发送
 _STREAM_THROTTLE_CHARS = 40  # 字符:累积超过此长度即发送
+
+# 公开核心不能依赖私有 bridge/timeutil，也不能假设 Windows 安装了 IANA tzdata。
+# 客户端偏移是计算真源；IANA 名仅用于校验形状与日志定位。
+_TZ_NAME_RE = re.compile(
+    r"^(?:UTC|GMT|[A-Za-z][A-Za-z0-9._+-]*(?:/[A-Za-z0-9._+-]+)+)$"
+)
+_TZ_MAX_OFFSET_MINUTES = 14 * 60
+_TZ_CACHE_SECONDS = 60
+_TZ_CLIENT_MAX_AGE_SECONDS = 24 * 60 * 60
+_TZ_DRIFT_WARNING_MINUTES = 1
+
+
+def _process_timezone_offset() -> int:
+    offset = datetime.now().astimezone().utcoffset() or timedelta(0)
+    return int(offset.total_seconds() // 60)
+
+
+def _system_timezone_offset() -> int:
+    """绕开 Windows 进程时区缓存；非 Windows 直接重读 time.localtime。"""
+    if os.name == "nt":
+        import winreg
+
+        path = r"SYSTEM\CurrentControlSet\Control\TimeZoneInformation"
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, path) as key:
+            bias = int(winreg.QueryValueEx(key, "ActiveTimeBias")[0])
+        if bias >= 2 ** 31:
+            bias -= 2 ** 32
+        offset = -bias
+    else:
+        local = time.localtime()
+        gmtoff = getattr(local, "tm_gmtoff", None)
+        if gmtoff is not None:
+            offset = int(gmtoff // 60)
+        else:
+            now = time.time()
+            local_dt = datetime(*time.localtime(now)[:6])
+            utc_dt = datetime(*time.gmtime(now)[:6])
+            offset = int((local_dt - utc_dt).total_seconds() // 60)
+    if abs(offset) > _TZ_MAX_OFFSET_MINUTES:
+        raise ValueError(f"system timezone offset out of range: {offset}")
+    return offset
+
+
+class _TimezoneClock:
+    """连接级客户端偏移 + 系统实时偏移 + 进程缓存的三级降级时钟。"""
+
+    def __init__(self, *, system_reader=None, process_reader=None,
+                 utc_now=None, monotonic=None):
+        self._system_reader = system_reader or _system_timezone_offset
+        self._process_reader = process_reader or _process_timezone_offset
+        self._utc_now = utc_now or (lambda: datetime.now(timezone.utc))
+        self._monotonic = monotonic or time.monotonic
+        self._client: tuple[str, int, float] | None = None
+        self._system_cache: tuple[int, float] | None = None
+
+    @staticmethod
+    def _parse(tz_name, offset_minutes) -> tuple[str, int] | None:
+        # 偏移量是唯一计算真源，时区名只用于日志定位：名字缺失或形状不对只置空并记一行，
+        # 不作废合法偏移（部分浏览器环境 Intl 返回空串，作废会让客户端时区整条失效）。
+        name = tz_name.strip() if isinstance(tz_name, str) else ""
+        if name and not _TZ_NAME_RE.fullmatch(name):
+            log.warning("client timezone name ignored (bad shape): %r", tz_name)
+            name = ""
+        if isinstance(offset_minutes, bool) or not isinstance(offset_minutes, (int, float)):
+            return None
+        if not math.isfinite(float(offset_minutes)) or float(offset_minutes) % 1:
+            return None
+        offset = int(offset_minutes)
+        if abs(offset) > _TZ_MAX_OFFSET_MINUTES:
+            return None
+        return name, offset
+
+    def system_offset(self) -> int | None:
+        now_mono = self._monotonic()
+        if self._system_cache and now_mono - self._system_cache[1] < _TZ_CACHE_SECONDS:
+            return self._system_cache[0]
+        try:
+            offset = self._system_reader()
+        except Exception as exc:
+            log.warning("system timezone read failed; using process timezone: %s", exc)
+            return None
+        self._system_cache = (offset, now_mono)
+        process_offset = self._process_reader()
+        if abs(offset - process_offset) > _TZ_DRIFT_WARNING_MINUTES:
+            log.warning(
+                "process timezone stale: system=%s process=%s minutes",
+                offset,
+                process_offset,
+            )
+        return offset
+
+    def update_client(self, tz_name, offset_minutes) -> bool:
+        parsed = self._parse(tz_name, offset_minutes)
+        if parsed is None:
+            self._client = None
+            log.warning("invalid client timezone report: tz=%r offset=%r", tz_name, offset_minutes)
+            return False
+        name, offset = parsed
+        self._client = (name, offset, self._monotonic())
+        system_offset = self.system_offset()
+        if system_offset is not None and abs(offset - system_offset) > _TZ_DRIFT_WARNING_MINUTES:
+            log.info(
+                "client timezone differs from server: tz=%s client=%s server=%s minutes",
+                name,
+                offset,
+                system_offset,
+            )
+        return True
+
+    def now(self) -> datetime:
+        if self._client is not None:
+            name, offset, reported_at = self._client
+            if self._monotonic() - reported_at <= _TZ_CLIENT_MAX_AGE_SECONDS:
+                return self._utc_now().astimezone(
+                    timezone(timedelta(minutes=offset), name=name)
+                )
+            log.warning("client timezone expired after 24 hours: tz=%s offset=%s", name, offset)
+            self._client = None
+        system_offset = self.system_offset()
+        if system_offset is not None:
+            return self._utc_now().astimezone(timezone(timedelta(minutes=system_offset)))
+        return datetime.now().astimezone()
+
+    def log_banner(self) -> None:
+        process_offset = self._process_reader()
+        system_offset = self.system_offset()
+        consistent = system_offset is not None and abs(system_offset - process_offset) <= _TZ_DRIFT_WARNING_MINUTES
+        log.info(
+            "timezone startup: process=%s system=%s consistent=%s",
+            process_offset,
+            system_offset if system_offset is not None else "unavailable",
+            consistent,
+        )
 
 
 class PermissionBroker:
@@ -666,6 +801,7 @@ def create_app(config) -> FastAPI:
     )
 
     server_started_at = datetime.now(timezone.utc)
+    client_clock = _TimezoneClock()
 
     # -----------------------------------------------------------------------
     # 插件机制：五钩子 + 声明式加载（design/unify-core/core-design.md）
@@ -1217,6 +1353,7 @@ def create_app(config) -> FastAPI:
 
     @app.on_event("startup")
     async def startup():
+        client_clock.log_banner()
         _init_chat_db()
         log.info("chat DB ready: %s", chat_db)
         _cleanup_old_attachments()
@@ -2486,6 +2623,13 @@ def create_app(config) -> FastAPI:
                 msg_cwd_key = None   # 本条消息上报的工作目录 key（仅新建对话时采信）
                 try:
                     payload = json.loads(raw)
+                    if payload.get("type") == "client_timezone":
+                        tz_name = payload.get("tz")
+                        offset_minutes = payload.get("offset_minutes")
+                        client_clock.update_client(tz_name, offset_minutes)
+                        for plugin in plugin_instances:
+                            _call_hook(plugin, "on_client_timezone", tz_name, offset_minutes)
+                        continue
                     if "cwd_key" in payload:
                         msg_cwd_key = payload["cwd_key"]
                     text = payload.get("text", "").strip()
@@ -2605,7 +2749,7 @@ def create_app(config) -> FastAPI:
                              session_id, len(carryover_l0))
 
                 # 时间注入
-                local_now = datetime.now()
+                local_now = client_clock.now()
                 weekdays = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
                 time_prefix = "[当前时间: {}]\n".format(
                     local_now.strftime("%Y-%m-%d ") + weekdays[local_now.weekday()] + local_now.strftime(" %H:%M")

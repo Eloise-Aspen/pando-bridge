@@ -57,3 +57,23 @@ def test_broken_on_user_message_does_not_block_good_plugin(tmp_path):
             ws.receive_json()  # status: thinking...
 
     assert "on_user_message" in GoodPlugin.calls
+
+
+def test_client_timezone_frame_reaches_plugin_without_starting_cli(tmp_path):
+    from tests.fixtures.hook_plugins import GoodPlugin
+
+    GoodPlugin.calls.clear()
+    app = create_app(_make_config(tmp_path, [
+        "tests.fixtures.hook_plugins.GoodPlugin",
+    ]))
+    client = TestClient(app)
+    with client:
+        with client.websocket_connect("/ws") as ws:
+            ws.receive_json()
+            ws.send_json({
+                "type": "client_timezone",
+                "tz": "Asia/Shanghai",
+                "offset_minutes": 480,
+            })
+
+    assert ("on_client_timezone", "Asia/Shanghai", 480) in GoodPlugin.calls
