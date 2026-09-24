@@ -106,9 +106,12 @@ class _TimezoneClock:
 
     @staticmethod
     def _parse(tz_name, offset_minutes) -> tuple[str, int] | None:
+        # 偏移量是唯一计算真源，时区名只用于日志定位：名字缺失或形状不对只置空并记一行，
+        # 不作废合法偏移（部分浏览器环境 Intl 返回空串，作废会让客户端时区整条失效）。
         name = tz_name.strip() if isinstance(tz_name, str) else ""
-        if not name or not _TZ_NAME_RE.fullmatch(name):
-            return None
+        if name and not _TZ_NAME_RE.fullmatch(name):
+            log.warning("client timezone name ignored (bad shape): %r", tz_name)
+            name = ""
         if isinstance(offset_minutes, bool) or not isinstance(offset_minutes, (int, float)):
             return None
         if not math.isfinite(float(offset_minutes)) or float(offset_minutes) % 1:

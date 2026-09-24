@@ -79,3 +79,24 @@ def test_frontend_reports_timezone_on_every_connection_and_exposes_shared_reader
     assert "offset_minutes:-new Date().getTimezoneOffset()" in source
     assert "{type:'client_timezone',...clientTimezone()}" in source
     assert "clientTimezone," in source.split("window.Pando={", 1)[1]
+
+
+def test_blank_tz_name_keeps_valid_offset():
+    """偏移量是唯一真源：名字缺失/形状不对时只记日志，不作废合法偏移。
+
+    2026-09-24 核账补：部分浏览器环境 Intl 的 timeZone 返回空串，
+    原实现会把整条上报作废、退回服务器时区。
+    """
+    clock = _TimezoneClock(
+        system_reader=lambda: -60,
+        process_reader=lambda: -60,
+        utc_now=lambda: datetime(2026, 9, 24, 3, 0, tzinfo=timezone.utc),
+        monotonic=lambda: 1000.0,
+    )
+    for bad_name in ("", None, "Not A Zone", 123):
+        assert clock.update_client(bad_name, 480) is True
+        assert clock.now().utcoffset() == timedelta(minutes=480), bad_name
+
+    # 偏移本身不合法时仍然降级——上一条不能把这条带松
+    assert clock.update_client("Asia/Shanghai", 15 * 60) is False
+    assert clock.now().utcoffset() == timedelta(minutes=-60)
