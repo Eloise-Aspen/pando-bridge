@@ -633,3 +633,34 @@ def test_existing_session_timestamp_refreshes_before_reply_finishes(tmp_path, mo
             _drain_to(wsc, "result")
 
     assert app.state.session_last_user_ts["sess-old"] == before_reply
+
+
+def test_disconnected_forge_honours_archive_toggle(tmp_path, monkeypatch, caplog):
+    """关掉「自动记住上下文」后断连，无连接换窗不许自作主张存档。
+
+    该开关按连接下发，断连即失效；核账时发现无连接路径把 archive_enabled 硬写成 True，
+    等于用户关掉的开关在她不在时自己打开了。开关语义是「这段别记」，不能被绕过。
+    """
+    _install(monkeypatch, ["sess-old"], cache_read=5000)
+    app = create_app(_config(
+        tmp_path,
+        AUTO_CARRYOVER_SOFT_TOKENS=1000,
+        AUTO_CARRYOVER_HARD_TOKENS=1_000_000,
+        AUTO_CARRYOVER_IDLE_MINUTES=0.002,
+    ))
+    with caplog.at_level(logging.INFO, logger="pando"):
+        with TestClient(app) as client:
+            with client.websocket_connect("/ws") as wsc:
+                wsc.receive_json()
+                _seed_transcript(tmp_path, "sess-old")
+                wsc.send_json({"text": "第一句", "archive": False})
+                _drain_to(wsc, "result")
+            time.sleep(0.4)
+
+    # 换窗照常发生（换窗与存档是两件事），但存档必须被用户的开关挡下来。
+    # 断连之前也会出现同样的 skip 日志，所以只能看**顺序**：
+    # 无连接换窗那一行之后，必须还有一次 skip——那才是换窗自己发起的存档被挡住。
+    messages = [r.getMessage() for r in caplog.records]
+    forge_idx = next(i for i, m in enumerate(messages) if "active_connection=False" in m)
+    assert any("archive skipped: auto-archive disabled by user" in m
+               for m in messages[forge_idx:]), "无连接换窗绕过了用户的存档开关"

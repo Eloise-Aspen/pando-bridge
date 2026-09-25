@@ -2244,6 +2244,10 @@ def create_app(config) -> FastAPI:
     # 每连接的存档偏好（feat-auto-archive-toggle）：默认 True（开），前端通过 WS
     # 消息的 archive 字段切换。关闭后定时存档/换窗存档/断连存档全部跳过。
     conn_archive_enabled: dict[WebSocket, bool] = {}
+    # 「自动记住上下文」是按连接下发的偏好，连接一断就没了。无连接换窗（进程级空闲扫描）
+    # 那条路没有 ws 可问，硬写成「存档」会让用户关掉的开关在她不在时自己打开——
+    # 这个开关的语义是「这段别记」，不能被绕过。故按会话留一份最近一次的偏好。
+    session_archive_enabled: dict[str, bool] = {}
 
     def _get_archive_lock(session_id: str) -> asyncio.Lock:
         lock = session_archive_locks.get(session_id)
@@ -2523,7 +2527,8 @@ def create_app(config) -> FastAPI:
                 try:
                     await _execute_forge(
                         sid, get_session_cwd_key(sid), ws=None, model=None, effort=None,
-                        auto=True, clean=False, archive_enabled=True,
+                        auto=True, clean=False,
+                        archive_enabled=session_archive_enabled.get(sid, True),
                     )
                 finally:
                     auto_carryover_queued.discard(sid)
@@ -2714,6 +2719,8 @@ def create_app(config) -> FastAPI:
                     # 或连接初始化下发 archive 字段，更新本连接的存档偏好。
                     if "archive" in payload:
                         conn_archive_enabled[ws] = bool(payload["archive"])
+                        if session_id:
+                            session_archive_enabled[session_id] = conn_archive_enabled[ws]
                     voice_mode = payload.get("voice_mode", False)
                     mode = payload.get("mode", "chat")
                     attachments = payload.get("attachments") or []
@@ -2916,6 +2923,9 @@ def create_app(config) -> FastAPI:
                 # 之后跑（静默存档轮走 run_claude(silent=True)，根本到不了这里）。
                 # 已有会话的空闲计时已在消息到达时刷新；新会话拿到 id 后才补首个时间戳。
                 if effective_sid:
+                    # 存档偏好按会话留一份：无连接换窗没有 ws 可问，只能读这里
+                    # （新会话的 id 到这一刻才落定，早于此处记会漏掉首轮）。
+                    session_archive_enabled[effective_sid] = conn_archive_enabled.get(ws, True)
                     # 新会话在消息到达时还没有 id，只能在 CLI 返回 id 后建立首个时间戳；
                     # 已有会话则保留上面的到达时刻，绝不能在回复结束时重新起算。
                     session_last_user_ts.setdefault(effective_sid, time.monotonic())
