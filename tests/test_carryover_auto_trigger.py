@@ -223,6 +223,9 @@ def test_soft_threshold_waits_for_idle_then_forges(tmp_path, monkeypatch, caplog
     assert forged["carryover"] is True
     assert "carryover auto-trigger (soft)" in caplog.text
     assert "carryover auto-trigger (hard)" not in caplog.text
+    assert "idle_minutes=" in caplog.text
+    assert "active_connection=True" in caplog.text
+    assert "total_input=5001" in caplog.text
 
 
 def test_soft_pending_not_fired_while_busy(tmp_path, monkeypatch, caplog):
@@ -498,3 +501,166 @@ def test_manual_forge_frame_flags(tmp_path, monkeypatch):
 
     assert forged["auto"] is False and forged["clean"] is False
     assert forged["carryover"] is True
+
+
+# ---------------------------------------------------------------- 进程级节拍器（fix-carryover-idle-timer）
+
+def test_idle_forges_after_disconnect_without_ws_frame(tmp_path, monkeypatch, caplog):
+    """连接断开后进程级 tick 仍换窗；重连旧 id 会被带到新窗。"""
+    _install(monkeypatch, ["sess-old"], cache_read=5000)
+    app = create_app(_config(
+        tmp_path,
+        AUTO_CARRYOVER_SOFT_TOKENS=1000,
+        AUTO_CARRYOVER_HARD_TOKENS=1_000_000,
+        AUTO_CARRYOVER_IDLE_MINUTES=0.002,
+    ))
+    with caplog.at_level(logging.INFO, logger="pando"):
+        with TestClient(app) as client:
+            with client.websocket_connect("/ws") as wsc:
+                wsc.receive_json()
+                _seed_transcript(tmp_path, "sess-old")
+                wsc.send_json({"text": "第一句"})
+                _drain_to(wsc, "result")
+            time.sleep(0.4)
+            with client.websocket_connect("/ws") as wsc:
+                wsc.receive_json()
+                wsc.send_json({"switch_session": "sess-old"})
+                switched = _drain_to(wsc, "session_switched")
+                wsc.send_json({"text": "回来后的第一句"})
+                _drain_to(wsc, "result")
+
+    assert switched["session_id"] != "sess-old"
+    assert "active_connection=False" in caplog.text
+    assert "total_input=5001" in caplog.text
+    assert "carryover L0 reinjected" in caplog.text
+
+
+def test_disconnected_idle_waits_for_inflight_then_forges(tmp_path, monkeypatch, caplog):
+    """只读探针报在途时跳过；探针放行后的下一 tick 才执行。"""
+    _install(monkeypatch, ["sess-old"], cache_read=5000)
+    app = create_app(_config(
+        tmp_path,
+        AUTO_CARRYOVER_SOFT_TOKENS=1000,
+        AUTO_CARRYOVER_HARD_TOKENS=1_000_000,
+        AUTO_CARRYOVER_IDLE_MINUTES=0.002,
+    ))
+    with caplog.at_level(logging.INFO, logger="pando"):
+        with TestClient(app) as client:
+            with client.websocket_connect("/ws") as wsc:
+                wsc.receive_json()
+                _seed_transcript(tmp_path, "sess-old")
+                wsc.send_json({"text": "第一句"})
+                _drain_to(wsc, "result")
+            app.state.is_session_inflight = lambda sid: sid == "sess-old"
+            time.sleep(0.25)
+            assert "idle elapsed" not in caplog.text
+            app.state.is_session_inflight = lambda sid: False
+            time.sleep(0.3)
+            with client.websocket_connect("/ws") as wsc:
+                wsc.receive_json()
+                wsc.send_json({"switch_session": "sess-old"})
+                switched = _drain_to(wsc, "session_switched")
+
+    assert switched["session_id"] != "sess-old"
+    assert "turn in flight" in caplog.text
+
+
+def test_pending_without_timestamp_does_not_forge(tmp_path, monkeypatch, caplog):
+    """模拟进程重启后的未知时间戳：即使 pending 存在也 fail-safe 不换窗。"""
+    _install(monkeypatch, [], cache_read=0)
+    app = create_app(_config(
+        tmp_path,
+        AUTO_CARRYOVER_IDLE_MINUTES=0,
+    ))
+    app.state.auto_carryover_pending.add("sess-restarted")
+    app.state.auto_carryover_total_input["sess-restarted"] = 123456
+    with caplog.at_level(logging.INFO, logger="pando"):
+        with TestClient(app):
+            time.sleep(0.15)
+
+    assert "idle elapsed" not in caplog.text
+    assert "sess-restarted" in app.state.auto_carryover_pending
+
+
+def test_existing_session_timestamp_refreshes_before_reply_finishes(tmp_path, monkeypatch):
+    """第二条消息进入 reader 后立刻刷新时间戳，不等慢回复结束。"""
+    _install(monkeypatch, ["sess-old"], cache_read=5000)
+    app = create_app(_config(
+        tmp_path,
+        AUTO_CARRYOVER_SOFT_TOKENS=1000,
+        AUTO_CARRYOVER_HARD_TOKENS=1_000_000,
+        AUTO_CARRYOVER_IDLE_MINUTES=60,
+    ))
+
+    class _SlowStdout(_FakeStdout):
+        async def __anext__(self):
+            if self._i == 0:
+                await asyncio.sleep(0.5)
+            return await super().__anext__()
+
+    class _SlowProc(_FakeProc):
+        def __init__(self, lines):
+            super().__init__(lines)
+            self.stdout = _SlowStdout(lines)
+
+    async def slow_exec(*args, **kwargs):
+        sid = args[list(args).index("--resume") + 1]
+        return _SlowProc([
+            _enc({"type": "system", "subtype": "init", "session_id": sid, "model": "m"}),
+            _enc({"type": "assistant", "message": {"content": [{"type": "text", "text": "好"}],
+                                                   "usage": {"input_tokens": 1, "output_tokens": 1}}}),
+            _enc({"type": "result", "usage": {"input_tokens": 1, "output_tokens": 1,
+                                                 "cache_read_input_tokens": 5000}}),
+        ])
+
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as wsc:
+            wsc.receive_json()
+            _seed_transcript(tmp_path, "sess-old")
+            wsc.send_json({"text": "第一句"})
+            _drain_to(wsc, "result")
+            app.state.session_last_user_ts["sess-old"] = time.monotonic() - 3600
+            stale = app.state.session_last_user_ts["sess-old"]
+            monkeypatch.setattr(server_mod.asyncio, "create_subprocess_exec", slow_exec)
+            wsc.send_json({"text": "第二句"})
+            deadline = time.monotonic() + 0.4
+            while app.state.session_last_user_ts["sess-old"] == stale and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert app.state.session_last_user_ts["sess-old"] > stale
+            # reader 与主循环各覆盖一种客户端/重定向形态，二者都应在慢 CLI 开始前完成。
+            time.sleep(0.05)
+            before_reply = app.state.session_last_user_ts["sess-old"]
+            _drain_to(wsc, "result")
+
+    assert app.state.session_last_user_ts["sess-old"] == before_reply
+
+
+def test_disconnected_forge_honours_archive_toggle(tmp_path, monkeypatch, caplog):
+    """关掉「自动记住上下文」后断连，无连接换窗不许自作主张存档。
+
+    该开关按连接下发，断连即失效；核账时发现无连接路径把 archive_enabled 硬写成 True，
+    等于用户关掉的开关在她不在时自己打开了。开关语义是「这段别记」，不能被绕过。
+    """
+    _install(monkeypatch, ["sess-old"], cache_read=5000)
+    app = create_app(_config(
+        tmp_path,
+        AUTO_CARRYOVER_SOFT_TOKENS=1000,
+        AUTO_CARRYOVER_HARD_TOKENS=1_000_000,
+        AUTO_CARRYOVER_IDLE_MINUTES=0.002,
+    ))
+    with caplog.at_level(logging.INFO, logger="pando"):
+        with TestClient(app) as client:
+            with client.websocket_connect("/ws") as wsc:
+                wsc.receive_json()
+                _seed_transcript(tmp_path, "sess-old")
+                wsc.send_json({"text": "第一句", "archive": False})
+                _drain_to(wsc, "result")
+            time.sleep(0.4)
+
+    # 换窗照常发生（换窗与存档是两件事），但存档必须被用户的开关挡下来。
+    # 断连之前也会出现同样的 skip 日志，所以只能看**顺序**：
+    # 无连接换窗那一行之后，必须还有一次 skip——那才是换窗自己发起的存档被挡住。
+    messages = [r.getMessage() for r in caplog.records]
+    forge_idx = next(i for i, m in enumerate(messages) if "active_connection=False" in m)
+    assert any("archive skipped: auto-archive disabled by user" in m
+               for m in messages[forge_idx:]), "无连接换窗绕过了用户的存档开关"

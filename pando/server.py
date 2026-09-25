@@ -19,6 +19,7 @@ import uuid
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Callable
 
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -745,6 +746,15 @@ def create_app(config) -> FastAPI:
     # session_last_user_ts：会话最近一条**用户可见**消息的单调时刻，空闲计时的基准。
     auto_carryover_pending: set[str] = set()
     session_last_user_ts: dict[str, float] = {}
+    # pending 建立时的上下文占用，留到真正换窗时写入诊断日志。连接断开后没有本轮
+    # assistant_meta 可读，因此必须在过软线的当下保存，而不是由节拍器临时猜测。
+    auto_carryover_total_input: dict[str, int] = {}
+    # 进程级节拍器向连接主循环投递后，用此集合防止消费前重复投帧。真正执行或放弃时清除。
+    auto_carryover_queued: set[str] = set()
+    # 活跃连接只登记「当前 session getter + 主循环队列」。节拍器不直接改连接局部状态；
+    # 有连接时仍由原主循环消费 forge，无连接时才调用共享执行器。
+    active_session_loops: dict[WebSocket, tuple[Callable[[], str | None], asyncio.Queue]] = {}
+    auto_carryover_task: asyncio.Task | None = None
 
     # 权限确认透传（feat-permission-passthrough）。默认关闭——存量用户零感知（完成标准 4）。
     # 开启后 run_claude 追加 --permission-prompt-tool + --mcp-config，把 CC 的门控工具授权
@@ -793,6 +803,11 @@ def create_app(config) -> FastAPI:
     _has_memory = not isinstance(memory, NullMemoryProvider)
 
     app = FastAPI(title=app_title, version=app_version)
+    # 仅挂在应用对象上的进程内状态（不暴露 HTTP）：便于运维/单测确认重启后时间戳为空时
+    # fail-safe 地不换窗；集合与字典仍由上面的唯一实现维护。
+    app.state.auto_carryover_pending = auto_carryover_pending
+    app.state.session_last_user_ts = session_last_user_ts
+    app.state.auto_carryover_total_input = auto_carryover_total_input
     app.add_middleware(
         CORSMiddleware,
         allow_origins=cors_origins,
@@ -1353,6 +1368,7 @@ def create_app(config) -> FastAPI:
 
     @app.on_event("startup")
     async def startup():
+        nonlocal auto_carryover_task
         client_clock.log_banner()
         _init_chat_db()
         log.info("chat DB ready: %s", chat_db)
@@ -1364,6 +1380,10 @@ def create_app(config) -> FastAPI:
             _call_hook(plugin, "register_session_source", session_source_registry)
         for plugin in plugin_instances:
             _call_hook(plugin, "register_routes", app)
+
+        # 空闲扫描属于进程生命周期，不再属于任一 WebSocket。这样手机断连期间仍会计时，
+        # 且无论同时开多少连接，整个进程永远只有一个扫描任务。
+        auto_carryover_task = asyncio.create_task(_auto_carryover_loop())
 
         # 启动横幅：本机 + 局域网访问地址，附手机接入指引。
         # 端口来源：config PORT > 环境变量 BRIDGE_PORT > 默认 8765（与 README/.env.example 约定一致）——
@@ -1385,6 +1405,16 @@ def create_app(config) -> FastAPI:
                 print(f"  memory plugin enabled → {memory_service_url}", flush=True)
             print("  📱 want it on your phone? see README → Reach it from your phone\n", flush=True)
         except Exception:
+            pass
+
+    @app.on_event("shutdown")
+    async def shutdown_auto_carryover():
+        if auto_carryover_task is None:
+            return
+        auto_carryover_task.cancel()
+        try:
+            await auto_carryover_task
+        except asyncio.CancelledError:
             pass
 
     def now_iso() -> str:
@@ -2214,6 +2244,10 @@ def create_app(config) -> FastAPI:
     # 每连接的存档偏好（feat-auto-archive-toggle）：默认 True（开），前端通过 WS
     # 消息的 archive 字段切换。关闭后定时存档/换窗存档/断连存档全部跳过。
     conn_archive_enabled: dict[WebSocket, bool] = {}
+    # 「自动记住上下文」是按连接下发的偏好，连接一断就没了。无连接换窗（进程级空闲扫描）
+    # 那条路没有 ws 可问，硬写成「存档」会让用户关掉的开关在她不在时自己打开——
+    # 这个开关的语义是「这段别记」，不能被绕过。故按会话留一份最近一次的偏好。
+    session_archive_enabled: dict[str, bool] = {}
 
     def _get_archive_lock(session_id: str) -> asyncio.Lock:
         lock = session_archive_locks.get(session_id)
@@ -2359,6 +2393,7 @@ def create_app(config) -> FastAPI:
                      sid, total_input, hard)
             return "hard"
         if total_input >= soft:
+            auto_carryover_total_input[sid] = total_input
             if sid not in auto_carryover_pending:
                 auto_carryover_pending.add(sid)
                 log.info("carryover auto-trigger (soft): session=%s total_input=%d "
@@ -2366,20 +2401,137 @@ def create_app(config) -> FastAPI:
             return "soft"
         return None
 
-    def _auto_idle_due(sid: str) -> bool:
-        """pending 的会话是否已经空闲够久（裁决 2 的软档：等用户不说话了再动手）。"""
+    def _auto_idle_elapsed_minutes(sid: str) -> float | None:
+        """返回 pending 会话的空闲分钟数；未到期或时间戳未知时返回 None。"""
         if not sid or sid not in auto_carryover_pending:
-            return False
+            return None
         cfg_now = _all_settings()
         if not cfg_now["auto_carryover_enabled"]:
-            return False
+            return None
         if sid in forge_in_flight:
-            return False
+            return None
         last = session_last_user_ts.get(sid)
         if last is None:
-            return False
+            return None
         idle_seconds = float(cfg_now["auto_carryover_idle_minutes"]) * 60
-        return (time.monotonic() - last) >= idle_seconds
+        elapsed = time.monotonic() - last
+        return elapsed / 60 if elapsed >= idle_seconds else None
+
+    def _active_queue_for(sid: str) -> asyncio.Queue | None:
+        """找一条当前正绑定 sid 的连接主循环；多开时只投一条，避免重复换窗。"""
+        for get_session_id, queue in list(active_session_loops.values()):
+            try:
+                if get_session_id() == sid:
+                    return queue
+            except Exception:
+                continue
+        return None
+
+    async def _execute_forge(
+        old_session_id: str,
+        old_cwd_key: str,
+        *,
+        ws: WebSocket | None,
+        model: str | None,
+        effort: str | None,
+        auto: bool,
+        clean: bool,
+        archive_enabled: bool,
+    ) -> dict:
+        """换窗的唯一持久状态执行器，连接与无连接路径共用。
+
+        这里独占 pending/forge 闸、存档、精炼、新会话落库及 L0 待办的改写；调用方只负责
+        更新自己的连接局部变量和（若连接仍在）发送回执。这样断连换窗不会复制第二套状态机。
+        """
+        if not old_session_id:
+            return {"ignored": False, "session_id": None, "carryover": False,
+                    "message": "已存档，新对话已开始", "stats": None}
+        if old_session_id in forge_in_flight:
+            log.info("forge already in flight, ignored (session=%s)", old_session_id)
+            return {"ignored": True}
+        if old_session_id in carryover_l0_pending:
+            log.info("forge ignored: session %s untouched since last forge", old_session_id)
+            return {"ignored": True}
+        if not clean and session_successor(old_session_id):
+            tail = chain_tail(old_session_id)
+            log.info("carryover skipped: session already superseded "
+                     "(session=%s, tail=%s, auto=%s)", old_session_id, tail, auto)
+            if auto:
+                auto_carryover_pending.discard(old_session_id)
+                auto_carryover_total_input.pop(old_session_id, None)
+            return {"ignored": auto, "superseded": True, "session_id": tail}
+        if auto and app.state.is_session_inflight(old_session_id):
+            log.info("carryover auto-trigger skipped: turn in flight (session=%s)",
+                     old_session_id)
+            return {"ignored": True, "retry": True}
+
+        auto_carryover_pending.discard(old_session_id)
+        auto_carryover_total_input.pop(old_session_id, None)
+        forge_in_flight.add(old_session_id)
+        try:
+            old_cwd_key = get_session_cwd_key(old_session_id)
+            await _try_archive(old_session_id, ws, model=model, effort=effort,
+                               force=True, archive_enabled=archive_enabled)
+            carried_id = None
+            carried_stats = None
+            if carryover_enabled and not clean:
+                carried_id, carried_stats = await asyncio.to_thread(
+                    _forge_carryover, old_session_id, old_cwd_key,
+                )
+            if carried_id:
+                save_session(carried_id, model or "", old_cwd_key,
+                             parent_session_id=old_session_id)
+                carryover_notice_pending[carried_id] = _carryover_notice()
+                carryover_l0_pending.add(carried_id)
+                session_last_user_ts[carried_id] = time.monotonic()
+                message = "已换窗，上下文已接续"
+            else:
+                message = "已存档，新对话已开始"
+            log.info("forge: src=%s new=%s carryover=%s auto=%s clean=%s",
+                     old_session_id, carried_id or "-", bool(carried_id), auto, clean)
+            return {
+                "ignored": False,
+                "session_id": carried_id,
+                "carryover": bool(carried_id),
+                "message": message,
+                "stats": carried_stats,
+            }
+        finally:
+            forge_in_flight.discard(old_session_id)
+
+    async def _auto_carryover_loop():
+        """进程级空闲扫描：有连接投主循环，无连接直接走同一个持久状态执行器。"""
+        while True:
+            await asyncio.sleep(AUTO_CARRYOVER_TICK_SECONDS)
+            for sid in list(auto_carryover_pending):
+                idle_minutes = _auto_idle_elapsed_minutes(sid)
+                if idle_minutes is None or sid in auto_carryover_queued:
+                    continue
+                if app.state.is_session_inflight(sid):
+                    log.info("carryover auto-trigger skipped: turn in flight (session=%s)", sid)
+                    continue
+                queue = _active_queue_for(sid)
+                has_connection = queue is not None
+                total_input = auto_carryover_total_input.get(sid, 0)
+                log.info(
+                    "carryover auto-trigger (soft): idle elapsed, forging session=%s "
+                    "idle_minutes=%.2f active_connection=%s total_input=%d",
+                    sid, idle_minutes, has_connection, total_input,
+                )
+                auto_carryover_queued.add(sid)
+                if queue is not None:
+                    await queue.put(json.dumps({
+                        "forge": True, "auto": True, "source_session": sid,
+                    }))
+                    continue
+                try:
+                    await _execute_forge(
+                        sid, get_session_cwd_key(sid), ws=None, model=None, effort=None,
+                        auto=True, clean=False,
+                        archive_enabled=session_archive_enabled.get(sid, True),
+                    )
+                finally:
+                    auto_carryover_queued.discard(sid)
 
     async def _auto_archive_loop(ws: WebSocket, get_session_id, get_model, get_effort):
         """Background task: auto-archive every ARCHIVE_INTERVAL seconds while session is alive."""
@@ -2419,129 +2571,51 @@ def create_app(config) -> FastAPI:
             _auto_archive_loop(ws, lambda: session_id, lambda: model, lambda: effort)
         )
 
-        async def _handle_forge(auto: bool = False, clean: bool = False) -> None:
-            """换窗的唯一入口。三条路径共用：手动「压缩上下文」、自动触发（软/硬档）、
-            「开新对话」的干净重开（clean=True：照样存档，但不做 carryover，裁决 4）。
-
-            会话状态（session_id / session_resumed / system_prompt / session_cwd_key）
-            只在这里改写——自动触发也走主循环，不让后台任务并发动这几个变量。
-            """
+        async def _handle_forge(auto: bool = False, clean: bool = False,
+                                source_session: str | None = None) -> None:
+            """连接入口只维护局部状态与回执；持久状态统一交给 _execute_forge。"""
             nonlocal session_id, session_resumed, system_prompt, session_cwd_key
             old_session_id = session_id
-            old_cwd_key = session_cwd_key
-            # 在途防重入：同一源会话的第二个 forge 帧直接忽略，
-            # 不重复归档、不重复精炼（否则先落地的那份新 JSONL 变孤儿）
-            if old_session_id and old_session_id in forge_in_flight:
-                log.info("forge already in flight, ignored (session=%s)", old_session_id)
+            if source_session and source_session != old_session_id:
                 return
-            # 连点的另一种形态：上一次 forge 刚产出的接续会话还没被任何真实
-            # 消息碰过（L0 仍待注入 = 一句话都没说）。此时再 forge，源换成了
-            # 新会话、在途闸对不上号，但语义上仍是重复——没有新内容可存档，
-            # 只会再生成一份没人 resume 的孤儿 JSONL。同样直接忽略。
-            if old_session_id and old_session_id in carryover_l0_pending:
-                log.info("forge ignored: session %s untouched since last forge",
-                         old_session_id)
+            if (auto and source_session and old_session_id
+                    and _auto_idle_elapsed_minutes(old_session_id) is None):
                 return
-            # Fix E 裁决 1：源会话已有后继 → 精炼路径不许再造第二个孩子。
-            # 自动路径静默跳过；手动路径不重置、把连接跟到链尾并让前端 toast 提示。
-            # clean（干净重开）不写 parent、不分叉，照常放行。
-            if old_session_id and not clean and session_successor(old_session_id):
-                tail = chain_tail(old_session_id)
-                log.info("carryover skipped: session already superseded "
-                         "(session=%s, tail=%s, auto=%s)", old_session_id, tail, auto)
-                if auto:
-                    return
-                session_id = tail
+            result = await _execute_forge(
+                old_session_id or "", session_cwd_key, ws=ws, model=model, effort=effort,
+                auto=auto, clean=clean,
+                archive_enabled=conn_archive_enabled.get(ws, True),
+            )
+            if result.get("ignored"):
+                return
+            if result.get("superseded"):
+                session_id = result["session_id"]
                 session_resumed = True
                 system_prompt = None
-                session_cwd_key = get_session_cwd_key(tail)
+                session_cwd_key = get_session_cwd_key(session_id)
                 await ws.send_text(json.dumps({
-                    "type": "forged",
-                    "superseded": True,
-                    "session_id": tail,
-                    "carryover": False,
-                    "message": "这个对话已接续到新窗，请刷新",
-                    "stats": None,
-                    "source_session": old_session_id,
-                    "auto": False,
-                    "clean": False,
+                    "type": "forged", "superseded": True, "session_id": session_id,
+                    "carryover": False, "message": "这个对话已接续到新窗，请刷新",
+                    "stats": None, "source_session": old_session_id,
+                    "auto": False, "clean": False,
                 }, ensure_ascii=False))
                 return
-            # 用户自己动了手（手动精炼/干净重开）→ pending 作废：活已经干完（裁决 7）
-            if old_session_id:
-                auto_carryover_pending.discard(old_session_id)
-                forge_in_flight.add(old_session_id)
-            try:
-                if session_id:
-                    old_cwd_key = get_session_cwd_key(session_id)
-                    await _try_archive(session_id, ws, model=model, effort=effort,
-                                       force=True,
-                                       archive_enabled=conn_archive_enabled.get(ws, True))
-                # 精炼续窗（裁决 4）：归档落定后再做，纯本地秒级。成功则新会话
-                # 带着精炼上下文 --resume 起来；失败一律降级为下面的纯重置三连。
-                # clean=True 时刻意跳过精炼——「开新对话」要的就是从头开始。
-                carried_id = None
-                carried_stats = None
-                if carryover_enabled and old_session_id and not clean:
-                    carried_id, carried_stats = await asyncio.to_thread(
-                        _forge_carryover, old_session_id, old_cwd_key,
-                    )
-                if carried_id:
-                    session_id = carried_id
-                    session_resumed = True   # 身份层改在首条消息重建（裁决 2 修正案）
-                    system_prompt = None
-                    session_cwd_key = old_cwd_key
-                    # 新会话继承工作目录绑定，否则下一轮会落回默认 cwd；
-                    # parent 写入让刷新后的历史沿链拼得回去（裁决 5）
-                    save_session(carried_id, model or "", old_cwd_key,
-                                 parent_session_id=old_session_id or "")
-                    carryover_notice_pending[carried_id] = _carryover_notice()
-                    carryover_l0_pending.add(carried_id)
-                    session_last_user_ts[carried_id] = time.monotonic()
-                    forged_message = "已换窗，上下文已接续"
-                else:
-                    session_id = None
-                    system_prompt = None
-                    session_resumed = False
-                    forged_message = "已存档，新对话已开始"
-                log.info("forge: src=%s new=%s carryover=%s auto=%s clean=%s",
-                         old_session_id or "-", carried_id or "-",
-                         bool(carried_id), auto, clean)
-                await ws.send_text(json.dumps({
-                    "type": "forged",
-                    "session_id": carried_id,
-                    "carryover": bool(carried_id),
-                    "message": forged_message,
-                    # 回执数据（feat-forge-receipt）：精炼统计（降级为 null）
-                    # 与源会话 id（撤销=切回旧会话要用，裁决 10）
-                    "stats": carried_stats,
-                    "source_session": old_session_id,
-                    # 路径标记（feat-carryover-auto-trigger 裁决 4/9）：前端据此决定
-                    # 无缝（精炼）还是清屏+toast（干净重开），以及自动降级时的告知文案。
-                    "auto": auto,
-                    "clean": clean,
-                }, ensure_ascii=False))
-            finally:
-                # 异常路径也必须放闸，否则这个会话此后再也 forge 不了
-                if old_session_id:
-                    forge_in_flight.discard(old_session_id)
-
-        async def _auto_carryover_loop():
-            """空闲换窗的节拍器（裁决 2 软档）。到点不自己动手换窗——往主循环队列里投一帧
-            合成的 forge，让状态改写仍然只发生在主循环那一处，避免与在途轮次抢会话变量。"""
-            while True:
-                await asyncio.sleep(AUTO_CARRYOVER_TICK_SECONDS)
-                sid = session_id
-                if sid and _auto_idle_due(sid):
-                    # 先划掉 pending：投递到消费之间还会再走一个 tick，不能投第二帧
-                    auto_carryover_pending.discard(sid)
-                    log.info("carryover auto-trigger (soft): idle elapsed, forging session=%s", sid)
-                    await msg_queue.put(json.dumps({"forge": True, "auto": True}))
+            session_id = result["session_id"]
+            session_resumed = bool(session_id)
+            system_prompt = None
+            session_cwd_key = get_session_cwd_key(session_id) if session_id else ""
+            await ws.send_text(json.dumps({
+                "type": "forged", "session_id": session_id,
+                "carryover": result["carryover"], "message": result["message"],
+                "stats": result["stats"], "source_session": old_session_id,
+                "auto": auto, "clean": clean,
+            }, ensure_ascii=False))
 
         # 独立读协程:主循环在 run_claude 流式期间阻塞在 await,自己收不到 stop。
         # 由它专职收帧——stop 帧即时终止在途子进程,其余帧原样入队交给主循环顺序消费,
         # 保持 switch_session/forge/普通消息的既有处理顺序不变。断连时投哨兵唤醒主循环退出。
         msg_queue: asyncio.Queue = asyncio.Queue()
+        active_session_loops[ws] = (lambda: session_id, msg_queue)
 
         async def _reader():
             try:
@@ -2603,13 +2677,17 @@ def create_app(config) -> FastAPI:
                                 asyncio.create_task(tool_policy.set({group: "allow"}))
                         permission_broker.resolve(rid, allow, peek.get("message") or "")
                         continue
+                    # 用户消息一到 reader 就刷新空闲起点，不能等 Claude 回复跑完。即使节拍器
+                    # 已投了 forge，主循环执行前也会复判 idle，并因这个新时间戳放弃本 tick。
+                    if (isinstance(peek, dict) and session_id
+                            and (str(peek.get("text", "")).strip()
+                                 or peek.get("attachments"))):
+                        session_last_user_ts[session_id] = time.monotonic()
                     await msg_queue.put(raw)
             except WebSocketDisconnect:
                 await msg_queue.put(None)  # 哨兵:通知主循环连接已断
 
         reader_task = asyncio.create_task(_reader())
-        # 节拍器在 msg_queue 就绪后才起，它投递的合成 forge 帧要有队列可进
-        auto_carryover_task = asyncio.create_task(_auto_carryover_loop())
 
         try:
             while True:
@@ -2641,6 +2719,8 @@ def create_app(config) -> FastAPI:
                     # 或连接初始化下发 archive 字段，更新本连接的存档偏好。
                     if "archive" in payload:
                         conn_archive_enabled[ws] = bool(payload["archive"])
+                        if session_id:
+                            session_archive_enabled[session_id] = conn_archive_enabled[ws]
                     voice_mode = payload.get("voice_mode", False)
                     mode = payload.get("mode", "chat")
                     attachments = payload.get("attachments") or []
@@ -2677,8 +2757,14 @@ def create_app(config) -> FastAPI:
                     # 主动换窗：先存档当前会话（跳过条数门槛），再重置状态。
                     # auto=自动触发（裁决 2），clean=干净重开（裁决 4，只存档不接续）。
                     if payload.get("forge"):
-                        await _handle_forge(auto=bool(payload.get("auto")),
-                                            clean=bool(payload.get("clean")))
+                        queued_sid = payload.get("source_session")
+                        try:
+                            await _handle_forge(auto=bool(payload.get("auto")),
+                                                clean=bool(payload.get("clean")),
+                                                source_session=queued_sid)
+                        finally:
+                            if queued_sid:
+                                auto_carryover_queued.discard(queued_sid)
                         continue
                 except (json.JSONDecodeError, AttributeError):
                     text = raw.strip()
@@ -2706,6 +2792,11 @@ def create_app(config) -> FastAPI:
                     session_cwd_key = get_session_cwd_key(session_id)
                 elif msg_cwd_key is not None:
                     session_cwd_key = normalize_cwd_key(msg_cwd_key, workspaces)
+
+                # JSON 消息通常已在 reader 到达时刷新；这里同时覆盖纯文本旧客户端、
+                # 以及 chain_tail 重定向后的真实会话 id。必须位于记忆检索与 CLI 调用之前。
+                if session_id:
+                    session_last_user_ts[session_id] = time.monotonic()
 
                 log.info("mode=%s session=%s cwd_key=%s", mode, session_id or "new",
                          session_cwd_key or "default")
@@ -2830,9 +2921,14 @@ def create_app(config) -> FastAPI:
 
                 # 自动换窗判定（feat-carryover-auto-trigger 裁决 1/2）：只在用户可见轮次
                 # 之后跑（静默存档轮走 run_claude(silent=True)，根本到不了这里）。
-                # 空闲计时从「这一轮结束」起算——用户下一条消息会把它顶新。
+                # 已有会话的空闲计时已在消息到达时刷新；新会话拿到 id 后才补首个时间戳。
                 if effective_sid:
-                    session_last_user_ts[effective_sid] = time.monotonic()
+                    # 存档偏好按会话留一份：无连接换窗没有 ws 可问，只能读这里
+                    # （新会话的 id 到这一刻才落定，早于此处记会漏掉首轮）。
+                    session_archive_enabled[effective_sid] = conn_archive_enabled.get(ws, True)
+                    # 新会话在消息到达时还没有 id，只能在 CLI 返回 id 后建立首个时间戳；
+                    # 已有会话则保留上面的到达时刻，绝不能在回复结束时重新起算。
+                    session_last_user_ts.setdefault(effective_sid, time.monotonic())
                     total_input = ((assistant_meta or {}).get("usage") or {}).get("total_input", 0)
                     decision = _auto_trigger_decision(effective_sid, int(total_input or 0))
                     # session_id != effective_sid 只可能出现在本轮没拿到新 id 的异常收尾上，
@@ -2847,7 +2943,9 @@ def create_app(config) -> FastAPI:
             log.error("ws connection error (session=%s): %s", session_id, e)
         finally:
             reader_task.cancel()
-            auto_carryover_task.cancel()
+            active_session_loops.pop(ws, None)
+            if session_id:
+                auto_carryover_queued.discard(session_id)
             # 断连时处理在途轮次:不立刻杀 proc,改启宽限期(feat-reconnect-resume)
             turn = _ws_to_turn.pop(ws, None)
             if turn is not None and not turn.finished and turn.proc.returncode is None:
