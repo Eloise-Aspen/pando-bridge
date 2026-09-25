@@ -100,3 +100,17 @@ def test_blank_tz_name_keeps_valid_offset():
     # 偏移本身不合法时仍然降级——上一条不能把这条带松
     assert clock.update_client("Asia/Shanghai", 15 * 60) is False
     assert clock.now().utcoffset() == timedelta(minutes=-60)
+
+
+def test_frontend_reports_timezone_again_when_page_returns_to_foreground():
+    """应用一直开着时改系统时区不会重连——回到前台要比一次偏移并补报。
+
+    2026-09-25 真机发现：改完手机时区必须重启 PWA 才生效，因为上报只发生在建连那一刻。
+    """
+    source = (Path(__file__).resolve().parents[1] / "static" / "index.html").read_text(
+        encoding="utf-8"
+    )
+    assert "function reportTimezoneIfChanged()" in source
+    assert "document.addEventListener('visibilitychange'" in source
+    # 只在偏移真的变了时才发，避免每次切前台都打一帧
+    assert "if(zone.offset_minutes===_lastReportedTzOffset) return;" in source
