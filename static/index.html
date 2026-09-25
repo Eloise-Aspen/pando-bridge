@@ -2137,6 +2137,17 @@ function _startStopFallback(){
 }
 function _clearStopFallback(){ if(_stopFallbackTimer){ clearTimeout(_stopFallbackTimer); _stopFallbackTimer=null; } }
 // 时区名只用于日志定位，所有计算使用浏览器此刻给出的固定偏移；不依赖服务端 IANA 数据库。
+// 应用一直开着时改系统时区不会重连,建连时报的那一次就过期了(2026-09-25 真机发现:
+// 改完时区要重启 PWA 才生效)。页面回到前台时比一次偏移,变了就补报——夏令时切换同理。
+let _lastReportedTzOffset=null;
+function reportTimezoneIfChanged(){
+  if(!ws||ws.readyState!==WebSocket.OPEN) return;
+  const zone=clientTimezone();
+  if(zone.offset_minutes===_lastReportedTzOffset) return;
+  _lastReportedTzOffset=zone.offset_minutes;
+  ws.send(JSON.stringify({type:'client_timezone',...zone}));
+}
+document.addEventListener('visibilitychange',()=>{ if(!document.hidden) reportTimezoneIfChanged(); });
 function clientTimezone(){
   let tz='';
   try{ tz=Intl.DateTimeFormat().resolvedOptions().timeZone||''; }catch(e){}
@@ -2149,6 +2160,7 @@ function connect(){
   ws=new WebSocket(`${proto}://${location.host}/ws`);
   ws.onopen=()=>{
     setStatus(true);
+    _lastReportedTzOffset=clientTimezone().offset_minutes;
     ws.send(JSON.stringify({type:'client_timezone',...clientTimezone()}));
     if(currentSessionId){
       ws.send(JSON.stringify({switch_session:currentSessionId}));
