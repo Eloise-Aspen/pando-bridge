@@ -759,7 +759,7 @@ def create_app(config) -> FastAPI:
     session_last_user_ts: dict[str, float] = {}
     # pending 建立时的上下文占用，留到真正换窗时写入诊断日志。连接断开后没有本轮
     # assistant_meta 可读，因此必须在过软线的当下保存，而不是由节拍器临时猜测。
-    auto_carryover_total_input: dict[str, int] = {}
+    auto_carryover_context_used: dict[str, int] = {}
     # 进程级节拍器向连接主循环投递后，用此集合防止消费前重复投帧。真正执行或放弃时清除。
     auto_carryover_queued: set[str] = set()
     # 活跃连接只登记「当前 session getter + 主循环队列」。节拍器不直接改连接局部状态；
@@ -818,7 +818,7 @@ def create_app(config) -> FastAPI:
     # fail-safe 地不换窗；集合与字典仍由上面的唯一实现维护。
     app.state.auto_carryover_pending = auto_carryover_pending
     app.state.session_last_user_ts = session_last_user_ts
-    app.state.auto_carryover_total_input = auto_carryover_total_input
+    app.state.auto_carryover_context_used = auto_carryover_context_used
     app.add_middleware(
         CORSMiddleware,
         allow_origins=cors_origins,
@@ -2371,7 +2371,7 @@ def create_app(config) -> FastAPI:
             log.warning("carryover error, degrading to plain reset: %s", e)
             return None, None
 
-    def _auto_trigger_decision(sid: str, total_input: int) -> str | None:
+    def _auto_trigger_decision(sid: str, context_used: int) -> str | None:
         """一轮 result 结束后判定是否要自动换窗（裁决 1/2/3/7/9）。
 
         返回 "hard"（立即换窗）/"soft"（置 pending，等空闲）/None（不动）。
@@ -2382,7 +2382,7 @@ def create_app(config) -> FastAPI:
           与空串都解析到 CLAUDE_CWD，同判客厅）；
         - forge 在途 → 跳过本次，等下一轮 result 重新判（裁决 7），不排队不补偿；
         - 硬顶优先于软阈值——过了硬顶就别再等空闲了。
-        日志只记 session/档位/当时 total_input，不落正文（裁决 9）。
+        日志只记 session/档位/当时 context_used，不落正文（裁决 9）。
         """
         if not sid:
             return None
@@ -2394,24 +2394,24 @@ def create_app(config) -> FastAPI:
         # Fix E 裁决 1：已被接续的会话不许再换窗——再换就是第二个孩子、列表分叉
         if session_successor(sid):
             log.info("carryover skipped: session already superseded "
-                     "(session=%s, total_input=%d)", sid, total_input)
+                     "(session=%s, context_used=%d)", sid, context_used)
             return None
         if sid in forge_in_flight:
             log.info("carryover auto-trigger skipped: forge in flight "
-                     "(session=%s, total_input=%d)", sid, total_input)
+                     "(session=%s, context_used=%d)", sid, context_used)
             return None
         hard = int(cfg_now["auto_carryover_hard_tokens"])
         soft = int(cfg_now["auto_carryover_soft_tokens"])
-        if total_input >= hard:
-            log.info("carryover auto-trigger (hard): session=%s total_input=%d threshold=%d",
-                     sid, total_input, hard)
+        if context_used >= hard:
+            log.info("carryover auto-trigger (hard): session=%s context_used=%d threshold=%d",
+                     sid, context_used, hard)
             return "hard"
-        if total_input >= soft:
-            auto_carryover_total_input[sid] = total_input
+        if context_used >= soft:
+            auto_carryover_context_used[sid] = context_used
             if sid not in auto_carryover_pending:
                 auto_carryover_pending.add(sid)
-                log.info("carryover auto-trigger (soft): session=%s total_input=%d "
-                         "threshold=%d, pending until idle", sid, total_input, soft)
+                log.info("carryover auto-trigger (soft): session=%s context_used=%d "
+                         "threshold=%d, pending until idle", sid, context_used, soft)
             return "soft"
         return None
 
@@ -2472,7 +2472,7 @@ def create_app(config) -> FastAPI:
                      "(session=%s, tail=%s, auto=%s)", old_session_id, tail, auto)
             if auto:
                 auto_carryover_pending.discard(old_session_id)
-                auto_carryover_total_input.pop(old_session_id, None)
+                auto_carryover_context_used.pop(old_session_id, None)
             return {"ignored": auto, "superseded": True, "session_id": tail}
         if auto and app.state.is_session_inflight(old_session_id):
             log.info("carryover auto-trigger skipped: turn in flight (session=%s)",
@@ -2480,7 +2480,7 @@ def create_app(config) -> FastAPI:
             return {"ignored": True, "retry": True}
 
         auto_carryover_pending.discard(old_session_id)
-        auto_carryover_total_input.pop(old_session_id, None)
+        auto_carryover_context_used.pop(old_session_id, None)
         forge_in_flight.add(old_session_id)
         try:
             old_cwd_key = get_session_cwd_key(old_session_id)
@@ -2526,11 +2526,11 @@ def create_app(config) -> FastAPI:
                     continue
                 queue = _active_queue_for(sid)
                 has_connection = queue is not None
-                total_input = auto_carryover_total_input.get(sid, 0)
+                context_used = auto_carryover_context_used.get(sid, 0)
                 log.info(
                     "carryover auto-trigger (soft): idle elapsed, forging session=%s "
-                    "idle_minutes=%.2f active_connection=%s total_input=%d",
-                    sid, idle_minutes, has_connection, total_input,
+                    "idle_minutes=%.2f active_connection=%s context_used=%d",
+                    sid, idle_minutes, has_connection, context_used,
                 )
                 auto_carryover_queued.add(sid)
                 if queue is not None:
@@ -2943,8 +2943,18 @@ def create_app(config) -> FastAPI:
                     # 新会话在消息到达时还没有 id，只能在 CLI 返回 id 后建立首个时间戳；
                     # 已有会话则保留上面的到达时刻，绝不能在回复结束时重新起算。
                     session_last_user_ts.setdefault(effective_sid, time.monotonic())
-                    total_input = ((assistant_meta or {}).get("usage") or {}).get("total_input", 0)
-                    decision = _auto_trigger_decision(effective_sid, int(total_input or 0))
+                    # 与前端同用最后一次调用的上下文占用；账单累计输入不参与换窗。
+                    # 异常轮缺 context 时跳过，不置 pending，也不回退到 usage。
+                    context = (assistant_meta or {}).get("context")
+                    decision = None
+                    if context is None:
+                        log.debug("carryover auto-trigger skipped: missing context (session=%s)",
+                                  effective_sid)
+                    else:
+                        context_used = int(context["used"])
+                        log.info("carryover context usage: session=%s context_used=%d",
+                                 effective_sid, context_used)
+                        decision = _auto_trigger_decision(effective_sid, context_used)
                     # session_id != effective_sid 只可能出现在本轮没拿到新 id 的异常收尾上，
                     # 那时换窗的源对不上号，宁可等下一轮重判
                     if decision == "hard" and session_id == effective_sid:
