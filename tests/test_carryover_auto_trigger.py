@@ -1,7 +1,7 @@
 """自动换窗触发层（feat-carryover-auto-trigger Task 2，裁决 1/2/3/7/9）。
 
 用假 claude 子进程驱动真实 WS 回合，断言：
-1. 硬顶：单轮 total_input 过硬顶 → 本轮 result 之后立即换窗，日志见 (hard)
+1. 硬顶：单轮 context.used 过硬顶 → 本轮 result 之后立即换窗，日志见 (hard)
 2. 软阈值：过软线只置 pending 不换窗；空闲到点后由节拍器投帧换窗，日志见 (soft)
 3. 范围：工位会话（cwd_key 非空）同样超线也不触发
 4. 开关：auto_carryover_enabled=false 时超线不触发（走 /settings，无需重启）
@@ -14,6 +14,8 @@ import json
 import logging
 import time
 import uuid
+
+import pytest
 
 from fastapi.testclient import TestClient
 
@@ -86,7 +88,8 @@ class _Spy:
             _enc({"type": "system", "subtype": "init", "session_id": sid, "model": "m"}),
             _enc({"type": "assistant",
                   "message": {"content": [{"type": "text", "text": "好的"}],
-                              "usage": {"input_tokens": 1, "output_tokens": 1}}}),
+                              "usage": {"input_tokens": 1, "output_tokens": 1,
+                                        "cache_read_input_tokens": self.cache_read}}}),
             _enc({"type": "result", "total_cost_usd": 0.0, "duration_ms": 1,
                   "usage": {"input_tokens": 1, "output_tokens": 1,
                             "cache_read_input_tokens": self.cache_read}}),
@@ -225,7 +228,7 @@ def test_soft_threshold_waits_for_idle_then_forges(tmp_path, monkeypatch, caplog
     assert "carryover auto-trigger (hard)" not in caplog.text
     assert "idle_minutes=" in caplog.text
     assert "active_connection=True" in caplog.text
-    assert "total_input=5001" in caplog.text
+    assert "context_used=5002" in caplog.text
 
 
 def test_soft_pending_not_fired_while_busy(tmp_path, monkeypatch, caplog):
@@ -359,7 +362,7 @@ def test_threshold_change_takes_effect_next_turn(tmp_path, monkeypatch):
             wsc.send_json({"text": "第一句"})
             types = [f.get("type") for f in _collect_to(wsc, "result")]
             assert "forged" not in types            # 阈值高，第一轮不该触发
-            # 把硬顶调到本轮 total_input 之下，下一轮即触发
+            # 把硬顶调到本轮 context.used 之下，下一轮即触发
             client.post("/settings", json={"auto_carryover_hard_tokens": 1000})
             wsc.send_json({"text": "第二句"})
             _drain_to(wsc, "result")
@@ -531,7 +534,7 @@ def test_idle_forges_after_disconnect_without_ws_frame(tmp_path, monkeypatch, ca
 
     assert switched["session_id"] != "sess-old"
     assert "active_connection=False" in caplog.text
-    assert "total_input=5001" in caplog.text
+    assert "context_used=5002" in caplog.text
     assert "carryover L0 reinjected" in caplog.text
 
 
@@ -573,7 +576,7 @@ def test_pending_without_timestamp_does_not_forge(tmp_path, monkeypatch, caplog)
         AUTO_CARRYOVER_IDLE_MINUTES=0,
     ))
     app.state.auto_carryover_pending.add("sess-restarted")
-    app.state.auto_carryover_total_input["sess-restarted"] = 123456
+    app.state.auto_carryover_context_used["sess-restarted"] = 123456
     with caplog.at_level(logging.INFO, logger="pando"):
         with TestClient(app):
             time.sleep(0.15)
@@ -608,7 +611,8 @@ def test_existing_session_timestamp_refreshes_before_reply_finishes(tmp_path, mo
         return _SlowProc([
             _enc({"type": "system", "subtype": "init", "session_id": sid, "model": "m"}),
             _enc({"type": "assistant", "message": {"content": [{"type": "text", "text": "好"}],
-                                                   "usage": {"input_tokens": 1, "output_tokens": 1}}}),
+                                                   "usage": {"input_tokens": 1, "output_tokens": 1,
+                                                             "cache_read_input_tokens": 5000}}}),
             _enc({"type": "result", "usage": {"input_tokens": 1, "output_tokens": 1,
                                                  "cache_read_input_tokens": 5000}}),
         ])
@@ -664,3 +668,94 @@ def test_disconnected_forge_honours_archive_toggle(tmp_path, monkeypatch, caplog
     forge_idx = next(i for i, m in enumerate(messages) if "active_connection=False" in m)
     assert any("archive skipped: auto-archive disabled by user" in m
                for m in messages[forge_idx:]), "无连接换窗绕过了用户的存档开关"
+
+
+# ---------------------------------------------------------------- 度量回归（fix-carryover-trigger-metric）
+
+class _MetricSpy(_Spy):
+    """模拟工具往返后的两次模型调用；账单累计与最后输入快照分开控制。"""
+
+    def __init__(self, total_input, context_used=None):
+        super().__init__(["sess-metric"])
+        self.total_input = total_input
+        self.context_used = context_used
+
+    async def __call__(self, *args, **kwargs):
+        self.calls.append({"argv": list(args), "cwd": kwargs.get("cwd")})
+        lines = [_enc({"type": "system", "subtype": "init",
+                       "session_id": "sess-metric", "model": "m"})]
+        if self.context_used is not None:
+            # 第一调用请求工具，第二调用给最终回复；context 只取第二调用输入快照。
+            lines.extend([
+                _enc({"type": "assistant", "message": {
+                    "content": [{"type": "tool_use", "id": "tool-1", "name": "Read",
+                                 "input": {"file_path": "sample.png"}}],
+                    "usage": {"input_tokens": 1, "output_tokens": 1,
+                              "cache_read_input_tokens": 60000}}}),
+                _enc({"type": "assistant", "message": {
+                    "content": [{"type": "text", "text": "Done"}],
+                    "usage": {"input_tokens": 1, "output_tokens": 1,
+                              "cache_read_input_tokens": self.context_used - 2}}}),
+            ])
+        lines.append(_enc({"type": "result", "is_error": self.context_used is None,
+                           "usage": {"input_tokens": 1, "output_tokens": 1,
+                                     "cache_read_input_tokens": self.total_input - 1}}))
+        return _FakeProc(lines)
+
+
+@pytest.mark.parametrize("context_used, expected", [
+    (80000, None), (120000, "soft"), (160000, "hard"),
+])
+def test_trigger_uses_last_call_context_not_billing_sum(
+        tmp_path, monkeypatch, caplog, context_used, expected):
+    """累计账单超硬线仍可不触发；反向输入分别验证软线、硬线的闭区间。"""
+    total_input = 400000 if expected is None else 100
+    spy = _MetricSpy(total_input, context_used)
+    monkeypatch.setattr(server_mod.asyncio, "create_subprocess_exec", spy)
+    app = create_app(_config(tmp_path, AUTO_CARRYOVER_SOFT_TOKENS=120000,
+                             AUTO_CARRYOVER_HARD_TOKENS=160000,
+                             AUTO_CARRYOVER_IDLE_MINUTES=60))
+    with caplog.at_level(logging.INFO, logger="pando"):
+        with TestClient(app) as client:
+            with client.websocket_connect("/ws") as wsc:
+                wsc.receive_json()
+                _seed_transcript(tmp_path, "sess-metric")
+                wsc.send_json({"text": "Check sample"})
+                result = _drain_to(wsc, "result")
+                assert result["context"]["used"] == context_used
+                assert result["usage"]["total_input"] == total_input
+                if expected == "hard":
+                    assert _drain_to(wsc, "forged")["auto"] is True
+                else:
+                    _assert_no_forge_next_turn(wsc, "Check again")
+                    assert ("sess-metric" in app.state.auto_carryover_pending) == (expected == "soft")
+                    if expected == "soft":
+                        assert app.state.auto_carryover_context_used["sess-metric"] == context_used
+    assert f"context_used={context_used}" in caplog.text
+    assert "total_input=" not in caplog.text
+    if expected is None:
+        assert "carryover auto-trigger" not in caplog.text
+    else:
+        assert f"carryover auto-trigger ({expected})" in caplog.text
+    assert spy.calls  # 所有生成路径均由假子进程接管，真实 CLI 调用为零。
+
+
+def test_missing_context_skips_without_pending(tmp_path, monkeypatch, caplog):
+    """缺 assistant 事件的错误轮即使账单超硬线也不回退，并记录 debug。"""
+    spy = _MetricSpy(400000)
+    monkeypatch.setattr(server_mod.asyncio, "create_subprocess_exec", spy)
+    app = create_app(_config(tmp_path, AUTO_CARRYOVER_SOFT_TOKENS=120000,
+                             AUTO_CARRYOVER_HARD_TOKENS=160000))
+    with caplog.at_level(logging.DEBUG, logger="pando"):
+        with TestClient(app) as client:
+            with client.websocket_connect("/ws") as wsc:
+                wsc.receive_json()
+                wsc.send_json({"text": "Error case"})
+                result = _drain_to(wsc, "result")
+                assert "context" not in result
+                assert result["usage"]["total_input"] == 400000
+                _assert_no_forge_next_turn(wsc, "Error again")
+                assert not app.state.auto_carryover_pending
+                assert not app.state.auto_carryover_context_used
+    assert "carryover auto-trigger skipped: missing context" in caplog.text
+    assert "carryover auto-trigger (hard)" not in caplog.text
