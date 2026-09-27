@@ -188,7 +188,7 @@ def test_duty_prompt_is_compressed_without_replaying_protocol(src, dst):
         "输出契约：第一行只能写 SPEAK 或 SKIP"
     )
     frames = _turn("开场", "开场回应")
-    frames += _turn(duty, "SPEAK\n今天跑团，玩开心。💙")
+    frames += _turn(duty, "SPEAK\n主动说的一句话。")
     _write(src, frames)
 
     sid, _ = carryover.refine_detailed(src, dst, tail_turns=12, max_chars=100_000)
@@ -196,7 +196,7 @@ def test_duty_prompt_is_compressed_without_replaying_protocol(src, dst):
     dumped = json.dumps(out, ensure_ascii=False)
     assert "[值班 · 2026-09-25 周五 09:00]" in dumped
     assert "SPEAK 或 SKIP" not in dumped
-    assert "SPEAK\n今天跑团，玩开心。💙" in _text_contents(out)
+    assert "SPEAK\n主动说的一句话。" in _text_contents(out)
 
 
 def test_consecutive_duty_turns_keep_separate_timestamps(src, dst):
