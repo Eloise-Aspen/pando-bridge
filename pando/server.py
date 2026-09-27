@@ -21,7 +21,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
 
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, HTTPException, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -657,6 +657,8 @@ def create_app(config) -> FastAPI:
     data_dir: Path = Path(_cfg(config, "DATA_DIR", "./data"))
     memory_service_url = _cfg(config, "MEMORY_SERVICE_URL", "") or ""
     memory_service_timeout = _cfg(config, "MEMORY_SERVICE_TIMEOUT", 10.0)
+    # 会话补查与通知共用可注入超时；默认沿用既有网络超时，不写部署环境常量。
+    session_update_timeout = float(_cfg(config, "SESSION_UPDATE_TIMEOUT", memory_service_timeout))
     # 记忆服务要求鉴权时，调用方在此传固定请求头（如 {"X-Memory-Token": "..."}）。
     # 核心不解释其含义、不落盘、不打日志值；契约四端点与 /memory-admin 代理共用这一份。
     memory_service_headers = _cfg(config, "MEMORY_SERVICE_HEADERS", None) or None
@@ -1287,7 +1289,7 @@ def create_app(config) -> FastAPI:
         conn = _chat_conn()
         msgs = []
         for row in conn.execute(
-            "SELECT role, content, metadata, created_at FROM messages "
+            "SELECT role, content, metadata, created_at, id FROM messages "
             "WHERE session_id = ? ORDER BY id",
             (session_id,),
         ).fetchall():
@@ -1297,6 +1299,7 @@ def create_app(config) -> FastAPI:
             except json.JSONDecodeError:
                 pass
             msgs.append({
+                "id": row[4],
                 "role": row[0],
                 "content": row[1],
                 "metadata": meta,
@@ -1452,6 +1455,7 @@ def create_app(config) -> FastAPI:
             # 工作目录白名单：只给 key + label，绝对路径不出服务端（前端按 key 回传，
             # 服务端再按白名单解析路径）。前端启动必拉 /health，故复用此口不新开端点。
             "workspaces": [{"key": k, "label": v["label"]} for k, v in workspaces.items()],
+            "session_update_timeout_ms": session_update_timeout * 1000,
         }
         if since_date is not None:
             body["since_date"] = since_date
@@ -1518,7 +1522,16 @@ def create_app(config) -> FastAPI:
         return {"ok": True}
 
     @app.get("/sessions/{session_id}/messages")
-    async def api_session_messages(session_id: str):
+    async def api_session_messages(session_id: str, response: Response, resolve_tail: bool = False):
+        # 历史翻页默认仍按段读；前台补查可显式跟到链尾，覆盖后台漏掉换窗帧的情形。
+        if resolve_tail:
+            tail = chain_tail(session_id)
+            chain = session_chain(tail)
+            # 从屏上所在段开始，只收该段及后继；A->B->C不能跳过中间B，也不拉整根。
+            segments = chain[chain.index(session_id):] if session_id in chain else [session_id]
+            response.headers["X-Session-Id"] = tail
+            return [message for segment in segments for message in get_session_messages(segment)]
+        response.headers["X-Session-Id"] = session_id
         return get_session_messages(session_id)
 
     @app.get("/usage/stats")
@@ -1766,6 +1779,43 @@ def create_app(config) -> FastAPI:
         return bool(session_id) and session_id in inflight_turns
 
     app.state.is_session_inflight = is_session_inflight
+    app.state.is_chat_session = _is_chat_session
+    app.state.chain_tail = chain_tail
+
+    # 登记读取函数而非会话快照：切窗、新会话和换窗路径共用同一个实时值，避免漏更新。
+    connected_sessions = {}
+    notification_loop = None
+
+    async def _send_session_updated(session_id):
+        tail = chain_tail(session_id)
+        async def send_one(connection, get_session):
+            # 各连接独立发送并有界等待，一条慢连接不能挡住其它页面。
+            current = get_session()
+            if not current or chain_tail(current) != tail:
+                return
+            try:
+                frame = json.dumps({"type": "session_updated", "session_id": tail,
+                                    "viewed_session_id": current})
+                await asyncio.wait_for(connection.send_text(frame), timeout=session_update_timeout)
+            except Exception:
+                log.debug("session update skipped for slow or disconnected client")
+
+        await asyncio.gather(*(send_one(connection, get_session)
+                              for connection, get_session in list(connected_sessions.items())),
+                             return_exceptions=True)
+
+    def notify_session_updated(session_id):
+        # 插件可能在工作线程调用；连接登记与发送始终投回 WS 所属事件循环执行。
+        loop = notification_loop
+        if loop is None or loop.is_closed():
+            return
+        try:
+            loop.call_soon_threadsafe(
+                lambda: asyncio.create_task(_send_session_updated(session_id)))
+        except RuntimeError:
+            log.debug("session update skipped during loop shutdown")
+
+    app.state.notify_session_updated = notify_session_updated
     # 向后兼容:stop/断连仍需按 WS 查找轮次(一个 WS 同时只绑一个轮次)
     _ws_to_turn: dict[WebSocket, Turn] = {}
     # 已请求停止的连接:被杀轮次的 result 事件不会到达,run_claude 据此改发 stopped 结束帧而非 error
@@ -2559,8 +2609,11 @@ def create_app(config) -> FastAPI:
 
     @app.websocket("/ws")
     async def ws_claude(ws: WebSocket):
+        nonlocal notification_loop
         await ws.accept()
         session_id = None
+        notification_loop = asyncio.get_running_loop()
+        connected_sessions[ws] = lambda: session_id
         system_prompt = None
         session_resumed = False  # True 表示恢复已有会话，跳过 L0+L1 重建
         # 本连接当前会话的工作目录 key（feat-bridge-workstation）：新建对话时由前端下发并
@@ -2998,6 +3051,7 @@ def create_app(config) -> FastAPI:
                 # 轮次已结束,无需宽限
                 pass
             stopped_conns.discard(ws)
+            connected_sessions.pop(ws, None)
             # 权限透传:挂起的授权请求全部默拒并清表,注销 token(完成标准 2:断连清队默拒)
             permission_broker.deny_all(ws)
             permission_broker.unregister(ws)
