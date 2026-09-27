@@ -2137,8 +2137,8 @@ def create_app(config) -> FastAPI:
                                 "cache_create": cache_create,
                                 "cache_hit_pct": cache_hit_pct,
                                 # total_input = 本轮送进模型的全部输入（含缓存读写）。
-                                # 自动换窗的触发度量（feat-carryover-auto-trigger 裁决 1）——
-                                # 这里只是把已算好的值随 result_meta 带出去，零新埋点。
+                                # 这是多次调用的计费累计；自动换窗另用 context.used。
+                                # 保留已算好的值随 result_meta 下发，不改变计费口径。
                                 "total_input": total_input,
                             },
                         }
