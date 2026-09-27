@@ -1287,7 +1287,7 @@ def create_app(config) -> FastAPI:
         conn = _chat_conn()
         msgs = []
         for row in conn.execute(
-            "SELECT role, content, metadata, created_at FROM messages "
+            "SELECT role, content, metadata, created_at, id FROM messages "
             "WHERE session_id = ? ORDER BY id",
             (session_id,),
         ).fetchall():
@@ -1297,6 +1297,7 @@ def create_app(config) -> FastAPI:
             except json.JSONDecodeError:
                 pass
             msgs.append({
+                "id": row[4],
                 "role": row[0],
                 "content": row[1],
                 "metadata": meta,
@@ -1766,6 +1767,37 @@ def create_app(config) -> FastAPI:
         return bool(session_id) and session_id in inflight_turns
 
     app.state.is_session_inflight = is_session_inflight
+    app.state.is_chat_session = _is_chat_session
+    app.state.chain_tail = chain_tail
+
+    # 登记读取函数而非会话快照：切窗、新会话和换窗路径共用同一个实时值，避免漏更新。
+    connected_sessions = {}
+    notification_loop = None
+
+    async def _send_session_updated(session_id):
+        tail = chain_tail(session_id)
+        for connection, get_session in list(connected_sessions.items()):
+            current = get_session()
+            if current and chain_tail(current) == tail:
+                try:
+                    frame = json.dumps({"type": "session_updated", "session_id": tail,
+                                        "viewed_session_id": current})
+                    await connection.send_text(frame)
+                except Exception:
+                    log.debug("session update skipped for disconnected client")
+
+    def notify_session_updated(session_id):
+        # 插件可能在工作线程调用；连接登记与发送始终投回 WS 所属事件循环执行。
+        loop = notification_loop
+        if loop is None or loop.is_closed():
+            return
+        try:
+            loop.call_soon_threadsafe(
+                lambda: asyncio.create_task(_send_session_updated(session_id)))
+        except RuntimeError:
+            log.debug("session update skipped during loop shutdown")
+
+    app.state.notify_session_updated = notify_session_updated
     # 向后兼容:stop/断连仍需按 WS 查找轮次(一个 WS 同时只绑一个轮次)
     _ws_to_turn: dict[WebSocket, Turn] = {}
     # 已请求停止的连接:被杀轮次的 result 事件不会到达,run_claude 据此改发 stopped 结束帧而非 error
@@ -2559,8 +2591,11 @@ def create_app(config) -> FastAPI:
 
     @app.websocket("/ws")
     async def ws_claude(ws: WebSocket):
+        nonlocal notification_loop
         await ws.accept()
         session_id = None
+        notification_loop = asyncio.get_running_loop()
+        connected_sessions[ws] = lambda: session_id
         system_prompt = None
         session_resumed = False  # True 表示恢复已有会话，跳过 L0+L1 重建
         # 本连接当前会话的工作目录 key（feat-bridge-workstation）：新建对话时由前端下发并
@@ -2998,6 +3033,7 @@ def create_app(config) -> FastAPI:
                 # 轮次已结束,无需宽限
                 pass
             stopped_conns.discard(ws)
+            connected_sessions.pop(ws, None)
             # 权限透传:挂起的授权请求全部默拒并清表,注销 token(完成标准 2:断连清队默拒)
             permission_broker.deny_all(ws)
             permission_broker.unregister(ws)
