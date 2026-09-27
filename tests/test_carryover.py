@@ -59,6 +59,17 @@ def _read(path):
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
+def _text_contents(frames):
+    texts = []
+    for frame in frames:
+        content = frame["message"]["content"]
+        if isinstance(content, str):
+            texts.append(content)
+        else:
+            texts.extend(block["text"] for block in content if block.get("type") == "text")
+    return texts
+
+
 @pytest.fixture
 def src(tmp_path):
     return tmp_path / "src-session.jsonl"
@@ -168,6 +179,79 @@ def test_mixed_text_and_injection_keeps_text(src, dst):
     dumped = json.dumps(_read(dst / f"{sid}.jsonl"), ensure_ascii=False)
     assert "我想问个问题" in dumped
     assert "忽略我" not in dumped
+
+
+def test_duty_prompt_is_compressed_without_replaying_protocol(src, dst):
+    duty = (
+        "[当前时间: 2026-09-25 周五 09:00]\n"
+        "[值班提示：这是内部提示，不是用户消息。]\n"
+        "输出契约：第一行只能写 SPEAK 或 SKIP"
+    )
+    frames = _turn("开场", "开场回应")
+    frames += _turn(duty, "SPEAK\n今天跑团，玩开心。💙")
+    _write(src, frames)
+
+    sid, _ = carryover.refine_detailed(src, dst, tail_turns=12, max_chars=100_000)
+    out = _read(dst / f"{sid}.jsonl")
+    dumped = json.dumps(out, ensure_ascii=False)
+    assert "[值班 · 2026-09-25 周五 09:00]" in dumped
+    assert "SPEAK 或 SKIP" not in dumped
+    assert "SPEAK\n今天跑团，玩开心。💙" in _text_contents(out)
+
+
+def test_consecutive_duty_turns_keep_separate_timestamps(src, dst):
+    frames = _turn("开场", "开场回应")
+    frames += _turn(
+        "[当前时间: 2026-09-25 周五 09:00]\n[值班提示：第一次]",
+        "SPEAK\n第一句",
+    )
+    frames += _turn(
+        "[当前时间: 2026-09-26 周六 10:30]\n[值班提示：第二次]",
+        "SPEAK\n第二句",
+    )
+    _write(src, frames)
+
+    sid, _ = carryover.refine_detailed(src, dst, tail_turns=12, max_chars=100_000)
+    texts = _text_contents(_read(dst / f"{sid}.jsonl"))
+    assert "[值班 · 2026-09-25 周五 09:00]" in texts
+    assert "[值班 · 2026-09-26 周六 10:30]" in texts
+    assert texts.index("SPEAK\n第一句") < texts.index("SPEAK\n第二句")
+
+
+def test_latest_duty_turn_is_extra_anchor_outside_tail(src, dst):
+    frames = _turn("开场", "开场回应")
+    frames += _turn(
+        "[当前时间: 2026-09-25 周五 09:00]\n[值班提示：内部提示]\n旧协议",
+        "SPEAK\n主动正文逐字保留",
+    )
+    for i in range(5):
+        frames += _turn(f"普通问{i}", f"普通答{i}")
+    _write(src, frames)
+
+    sid, stats = carryover.refine_detailed(src, dst, tail_turns=2, max_chars=100_000)
+    out = _read(dst / f"{sid}.jsonl")
+    dumped = json.dumps(out, ensure_ascii=False)
+    assert stats.kept_turns == 4  # 首回合 + 附加锚点 + 正常尾巴 2 回合
+    assert "[值班 · 2026-09-25 周五 09:00]" in dumped
+    assert "SPEAK\n主动正文逐字保留" in _text_contents(out)
+    assert "普通问3" in dumped and "普通问4" in dumped
+
+
+def test_extra_duty_anchor_is_first_dropped_on_budget(src, dst):
+    frames = _turn("开场", "开场回应")
+    frames += _turn(
+        "[当前时间: 2026-09-25 周五 09:00]\n[值班提示：内部提示]" + "值" * 300,
+        "SPEAK\n" + "主" * 300,
+    )
+    frames += _turn("尾问A" + "问" * 100, "尾答A" + "答" * 100)
+    frames += _turn("尾问B" + "问" * 100, "尾答B" + "答" * 100)
+    _write(src, frames)
+
+    sid, stats = carryover.refine_detailed(src, dst, tail_turns=2, max_chars=500)
+    dumped = json.dumps(_read(dst / f"{sid}.jsonl"), ensure_ascii=False)
+    assert stats.dropped_turns_budget == 1
+    assert "[值班 ·" not in dumped
+    assert "尾问A" in dumped and "尾问B" in dumped
 
 
 # ---------------------------------------------------------------- 配对完整性

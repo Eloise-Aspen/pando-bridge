@@ -29,6 +29,10 @@ log = logging.getLogger("pando.carryover")
 # agent-name / mode / permission-mode / system / file-history-snapshot ...）一律不进新会话。
 DIALOGUE_TYPES = ("user", "assistant")
 
+# 插件内部提示的可配置识别前缀。公开仓只认识帧形状，不依赖私有插件实现。
+DUTY_PROMPT_PREFIX = "[值班提示："
+_CURRENT_TIME_RE = re.compile(r"^\[当前时间: ([^\]\r\n]+)\]\r?\n")
+
 # 运行时注入包裹块：hook 追加上下文、系统提醒、任务通知、本地命令回显。
 # 这些是上一个会话的运行时产物，续窗时重放只会污染新窗，整块剥掉。
 _INJECTION_BLOCK_RE = re.compile(
@@ -78,6 +82,7 @@ class _Turn:
     has_user_text: bool = False
     has_assistant_text: bool = False
     chars: int = 0
+    is_duty: bool = False
 
     @property
     def complete(self) -> bool:
@@ -111,6 +116,15 @@ def _strip_injections(text: str) -> str:
     return cleaned.strip()
 
 
+def _compress_duty_prompt(text: str) -> str:
+    """把旧窗里的值班协议压成中性事实，避免在新窗重放输出契约。"""
+    match = _CURRENT_TIME_RE.match(text)
+    remainder = text[match.end():] if match else text
+    if not remainder.startswith(DUTY_PROMPT_PREFIX):
+        return text
+    return f"[值班 · {match.group(1)}]" if match else "[值班]"
+
+
 def _clean_content(content):
     """返回 (清洗后的 content, 纯文本, tool_use ids, tool_result ids)。
 
@@ -120,7 +134,7 @@ def _clean_content(content):
     tool_uses, tool_results = set(), set()
 
     if isinstance(content, str):
-        text = _strip_injections(content)
+        text = _strip_injections(_compress_duty_prompt(content))
         return (text, text, tool_uses, tool_results) if text else (None, "", tool_uses, tool_results)
 
     if not isinstance(content, list):
@@ -138,7 +152,7 @@ def _clean_content(content):
             if block.get("tool_use_id"):
                 tool_results.add(block["tool_use_id"])
         elif btype == "text":
-            text = _strip_injections(block.get("text") or "")
+            text = _strip_injections(_compress_duty_prompt(block.get("text") or ""))
             if text:
                 kept_blocks.append({"type": "text", "text": text})
                 texts.append(text)
@@ -190,6 +204,7 @@ def _build_turns(events, stats: RefineStats):
         if etype == "user" and cleaned is not None:
             current = _Turn()
             turns.append(current)
+            current.is_duty = text.startswith("[值班")
 
         if current is None:
             # 会话以 assistant 开头（异常/截断），无所属回合，直接忽略
@@ -217,7 +232,7 @@ def _build_turns(events, stats: RefineStats):
 
 
 def _select(turns, tail_turns: int, max_chars: int, stats: RefineStats):
-    """裁决 2 的配方：首个干净回合 + 最近 N 个干净回合，超预算从中段往回削。"""
+    """首回合 + 最近 N 回合，并附加最近一次值班交流；预算不足先丢锚点。"""
     clean = []
     for turn in turns:
         if turn.complete:
@@ -230,11 +245,19 @@ def _select(turns, tail_turns: int, max_chars: int, stats: RefineStats):
 
     # 用下标而非对象做选取——_Turn 是 dataclass（值相等），对象比较会错配重复回合
     tail_start = max(0, len(clean) - tail_turns) if tail_turns > 0 else len(clean)
-    indices = sorted({0, *range(tail_start, len(clean))})
+    base_indices = {0, *range(tail_start, len(clean))}
+    duty_indices = [i for i, turn in enumerate(clean) if turn.is_duty]
+    anchor_index = duty_indices[-1] if duty_indices and duty_indices[-1] not in base_indices else None
+    indices = sorted(base_indices | ({anchor_index} if anchor_index is not None else set()))
     selected = [clean[i] for i in indices]
 
-    # 预算裁剪：首回合是身份层（L0+L1 注入原文）不可动，从最老的尾部回合开始削
+    # 附加锚点不挤占正常尾巴：预算不足时先牺牲它，再沿用既有中段裁剪规则。
     total = sum(t.chars for t in selected)
+    if total > max_chars and anchor_index is not None:
+        anchor = clean[anchor_index]
+        selected.remove(anchor)
+        total -= anchor.chars
+        stats.dropped_turns_budget += 1
     while total > max_chars and len(selected) > 1:
         removed = selected.pop(1)
         total -= removed.chars
