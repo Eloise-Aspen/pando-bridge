@@ -2354,6 +2354,16 @@ async function loadFrontendPlugins(){
 let toastTimer=null;
 function toast(msg){ const el=$('toast'); el.textContent=msg; el.classList.add('show'); clearTimeout(toastTimer); toastTimer=setTimeout(()=>el.classList.remove('show'),2200); }
 
+function daysSince(sinceDate,now=new Date()){
+  const m=/^(\d{4})-(\d{2})-(\d{2})$/.exec(sinceDate||'');
+  if(!m) return null;
+  const anchor=new Date(Number(m[1]),Number(m[2])-1,Number(m[3]));
+  if(anchor.getFullYear()!==Number(m[1])||anchor.getMonth()!==Number(m[2])-1||anchor.getDate()!==Number(m[3])) return null;
+  const today=new Date(now.getFullYear(),now.getMonth(),now.getDate());
+  const days=Math.round((today-anchor)/864e5)+1;
+  return days>0?days:null;
+}
+
 /* ===== boot ===== */
 async function boot(){
   applyTheme(localStorage.getItem('theme')||'');   // 复原上次主题(默认简洁则零 themes/ 请求)
@@ -2370,6 +2380,8 @@ async function boot(){
   // 旧版这里去拉一个 config 端点取 assistant_name——那个端点**从来就不存在**(全仓无此路由),
   // 一直是 404 后静默回落 localStorage;现改为读 /settings,不新增端点。
   await syncUiPrefs(settingsResponse);
+  let health=null;
+  try{ health=healthResponse ? await healthResponse.json() : null; }catch(e){}
   ASST=localStorage.getItem('assistantName')||'Claude';
   const nick=localStorage.getItem('userNickname');
   $('hero-name').textContent = nick? `${nick},你好` : '你好';
@@ -2378,16 +2390,13 @@ async function boot(){
   fetch('/memory-admin/memory/stats').then(r=>r.ok?r.json():null).catch(()=>null).then(s=>{
     const parts=[new Date().toLocaleDateString('zh-CN',{year:'numeric',month:'2-digit',day:'2-digit'})];
     if(s&&s.count!=null) parts.push(`${s.count} 条记忆`);
-    // 「在线 N 天」锚到关系起点写死常量 2026-05-04（须与 bridge/config.py 的
-    // RELATIONSHIP_ANCHOR_DATE 一致），不再用被脏数据带偏的 earliest_date。用本地日历日
-    // 相减（非 UTC），与后端 days_together 同口径，保证同一天欢迎屏与注入不出现两个数。
-    { const A=new Date(2026,4,4), N=new Date();
-      const days=Math.round((new Date(N.getFullYear(),N.getMonth(),N.getDate())-A)/864e5)+1;
-      if(days>0) parts.push(`在线 ${days} 天`); }
+    // 可选起点随 /health 下发；按本地日历日相减（非 UTC），与后端口径保持一致。
+    const days=daysSince(health&&health.since_date);
+    if(days) parts.push(`在线 ${days} 天`);
     $('hero-sub').textContent=parts.join(' · ');
   });
   ['home-asst','chat-asst'].forEach(id=>$(id).textContent=ASST);
-  try{ const h=healthResponse ? await healthResponse.json() : null;
+  try{ const h=health;
     if(h&&h.version) $('side-ver').textContent='Pando v'+h.version;
     // 工作目录白名单(feat-bridge-workstation):只有 key+label;未下发/单席则选择器不出现
     WORKSPACES=Array.isArray(h&&h.workspaces)?h.workspaces.filter(w=>w&&typeof w.key==='string'):[];

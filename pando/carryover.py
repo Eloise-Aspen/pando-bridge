@@ -98,7 +98,7 @@ def encode_project_dir(cwd: str) -> str:
     """把工作目录路径编码成 Claude CLI 的 transcript 目录名。
 
     CLI 的规则是「非字母数字一律换成连字符」：
-    `C:\\_Projects\\Aspen\\dev` -> `C---Projects-Aspen-dev`。
+    `C:\\workspace\\demo` -> `C--workspace-demo`。
     """
     return re.sub(r"[^A-Za-z0-9]", "-", str(cwd))
 

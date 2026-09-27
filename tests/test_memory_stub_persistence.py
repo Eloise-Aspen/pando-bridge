@@ -29,7 +29,7 @@ def stub(tmp_path):
 def test_import_batch_stored_skipped_and_recallable(stub):
     resp = stub.post("/memory/import", json=[
         {"content": "喜欢在下雨天写代码"},
-        {"content": "养了一只叫麻薯的猫", "klass": "fact", "origin_date": "2025-01-01T00:00:00+00:00"},
+        {"content": "代号 A17 的宠物是一只猫", "klass": "fact", "origin_date": "2025-01-01T00:00:00+00:00"},
         {"content": "x"},  # 太短，应跳过
     ])
     body = resp.json()
@@ -37,12 +37,12 @@ def test_import_batch_stored_skipped_and_recallable(stub):
     assert body["skipped"] == 1
     assert body["total"] == 2
 
-    hit = stub.post("/recall", json={"query": "麻薯"})
-    assert "养了一只叫麻薯的猫" in hit.json()["context"]
+    hit = stub.post("/recall", json={"query": "A17"})
+    assert "代号 A17 的宠物是一只猫" in hit.json()["context"]
 
     # origin_date 应作为 created_at 保留
     listed = stub.get("/memory/list").json()["items"]
-    cat = next(m for m in listed if "麻薯" in m["content"])
+    cat = next(m for m in listed if "A17" in m["content"])
     assert cat["created_at"] == "2025-01-01T00:00:00+00:00"
     assert cat["klass"] == "fact"
 
