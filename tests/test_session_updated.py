@@ -28,6 +28,8 @@ def test_session_update_routes_tail_and_worker_thread(tmp_path, monkeypatch):
         assert app.state.is_chat_session("tail")
         assert not app.state.is_chat_session("work")
         assert app.state.chain_tail("old") == "tail"
+        assert client.get("/sessions/old/messages").headers["x-session-id"] == "old"
+        assert client.get("/sessions/old/messages?resolve_tail=true").headers["x-session-id"] == "tail"
         with client.websocket_connect("/ws") as target, client.websocket_connect("/ws") as other:
             target.receive_json(); other.receive_json()
             target.send_json({"switch_session": "old"})

@@ -21,7 +21,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
 
-from fastapi import FastAPI, File, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, File, HTTPException, Request, Response, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -1519,7 +1519,11 @@ def create_app(config) -> FastAPI:
         return {"ok": True}
 
     @app.get("/sessions/{session_id}/messages")
-    async def api_session_messages(session_id: str):
+    async def api_session_messages(session_id: str, response: Response, resolve_tail: bool = False):
+        # 历史翻页默认仍按段读；前台补查可显式跟到链尾，覆盖后台漏掉换窗帧的情形。
+        if resolve_tail:
+            session_id = chain_tail(session_id)
+        response.headers["X-Session-Id"] = session_id
         return get_session_messages(session_id)
 
     @app.get("/usage/stats")
