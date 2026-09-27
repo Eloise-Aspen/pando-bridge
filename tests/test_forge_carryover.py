@@ -436,8 +436,8 @@ def test_double_forge_same_connection_ignored(tmp_path, spy):
 
 
 def test_concurrent_forge_across_connections_gated(tmp_path, spy, monkeypatch, caplog):
-    """两条 WS 连接对**同一源会话**并发 forge——真机孤儿事故的原始形态
-    （11:52:52 两次 carryover 源同为 4a8d6586，前者当场变孤儿）。
+    """两条 WS 连接对**同一源会话**并发 forge——孤儿事故的原始形态：
+    两次 carryover 使用同一个中性源会话，先生成的后继随即失去入口。
     把精炼拖慢制造真实的在途窗口，第二条必须被在途闸挡下。"""
     spy(["sess-shared"])
     app = create_app(_config(tmp_path))

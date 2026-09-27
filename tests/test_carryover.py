@@ -85,7 +85,7 @@ def dst(tmp_path):
 # ---------------------------------------------------------------- 路径编码
 
 def test_encode_project_dir():
-    assert carryover.encode_project_dir("C:\\_Projects\\Aspen\\dev") == "C---Projects-Aspen-dev"
+    assert carryover.encode_project_dir("C:\\workspace\\demo") == "C--workspace-demo"
     assert carryover.encode_project_dir("C:\\Users\\testuser") == "C--Users-testuser"
 
 

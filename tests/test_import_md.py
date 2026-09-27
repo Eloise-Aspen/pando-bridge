@@ -47,7 +47,7 @@ def test_split_sections_chunks_by_h2(tmp_path):
 def test_mixed_folder_imports_and_recalls(tmp_path):
     _write(tmp_path, "identity.md",
            "---\nklass: fact\n---\n我叫 Alex，是个后端工程师，主力语言 Go。")
-    _write(tmp_path, "pets.md", "养了一只叫麻薯的橘猫。")  # 无 frontmatter
+    _write(tmp_path, "pets.md", "代号 A17 的宠物是一只橘猫。")  # 无 frontmatter
     sub = tmp_path / "notes"
     sub.mkdir()
     _write(sub, "pref.md", "偏好简洁直接的回答，不要寒暄。")  # 递归子目录
@@ -68,7 +68,7 @@ def test_mixed_folder_imports_and_recalls(tmp_path):
         assert resp.json()["stored"] == 3
 
         assert "Alex" in client.post("/recall", json={"query": "Go"}).json()["context"]
-        assert "麻薯" in client.post("/recall", json={"query": "橘猫"}).json()["context"]
+        assert "A17" in client.post("/recall", json={"query": "橘猫"}).json()["context"]
         assert "寒暄" in client.post("/recall", json={"query": "简洁"}).json()["context"]
     finally:
         memory_stub._MEMORIES.clear()

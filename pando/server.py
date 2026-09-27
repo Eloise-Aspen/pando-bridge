@@ -17,7 +17,7 @@ import sqlite3
 import time
 import uuid
 from dataclasses import asdict
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
 
@@ -643,6 +643,7 @@ def create_app(config) -> FastAPI:
         CORS_ORIGINS (默认 ["*"])
         APP_TITLE (默认 "Pando"), APP_VERSION (默认与 pando.__version__ 一致)
         SERVICE_NAME (默认 "pando")                        —— /health 的 "service" 字段
+        SINCE_DATE (默认 None)                              —— ISO 日期，欢迎屏可选天数起点
     """
     from . import __version__
 
@@ -679,6 +680,16 @@ def create_app(config) -> FastAPI:
     app_title = _cfg(config, "APP_TITLE", "Pando")
     app_version = _cfg(config, "APP_VERSION", __version__)
     service_name = _cfg(config, "SERVICE_NAME", "pando")
+    raw_since_date = _cfg(config, "SINCE_DATE", None)
+    since_date = None
+    if raw_since_date is not None:
+        try:
+            if not isinstance(raw_since_date, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", raw_since_date):
+                raise ValueError("expected YYYY-MM-DD")
+            date.fromisoformat(raw_since_date)
+            since_date = raw_since_date
+        except ValueError:
+            log.warning("忽略无效的 SINCE_DATE 配置：应为 YYYY-MM-DD 格式的有效日期")
     # 语音/聊天模式的提示词文本留给调用方注入（persona 相关内容不属于公开核心）；
     # 留空则该模式不追加任何提示词，行为等同"无此功能"。
     voice_inline_hint = _cfg(config, "VOICE_INLINE_HINT", "") or ""
@@ -726,15 +737,15 @@ def create_app(config) -> FastAPI:
     # 边界声明（裁决 5）：携带精炼上下文的新会话，第一条真实消息追加一次性附注，
     # 提醒模型「精炼尾部之外的近况你不知道」。key=新 session_id，消费即删。
     carryover_notice_pending: dict[str, str] = {}
-    # L0 重注入待办（2026-08-20 真机推翻裁决 2 的假设后新增）：
+    # L0 重注入待办（真机推翻裁决 2 的假设后新增）：
     # 裁决 2 原以为 L0+L1 在 transcript 首轮 user 消息正文里，精炼头能零成本延续身份层。
     # 真机实证不成立——bridge 的 L0+L1 走 `--system-prompt` CLI 参数，是运行时入参，
     # 根本不落 JSONL（实测首轮 user 帧只有「[当前时间…] 正文」，全文件无任何 system 帧）。
     # 且 `--resume` 与 `--system-prompt` 互斥，接续会话拿不到身份层 → 走插件冷启动仪式。
     # 修正案：接续会话的第一条真实消息重建一次 L0+L1，以文本前缀拼进消息最前。
     carryover_l0_pending: set[str] = set()
-    # forge 在途闸（2026-08-20 日志实证：11:52:52 同一秒对同一源会话 4a8d6586 跑了两次
-    # carryover，89c24679 与 a2062fcd 各生成一份新 JSONL，前者当场变孤儿）。
+    # forge 在途闸（日志实证：同一时刻对同一中性源会话跑了两次 carryover，
+    # 各生成一份新 JSONL，先生成的后继当场变孤儿）。
     # 闸按**源 session_id** 建在 create_app 作用域，而不是连接级布尔——主循环对单条连接
     # 是顺序消费的，同连接的第二个 forge 帧只会在第一个跑完后处理（那时源已换成新会话，
     # 对不上号）。两条日志的源相同，说明重复来自另一条 WS 连接（重连/多开），
@@ -1430,7 +1441,7 @@ def create_app(config) -> FastAPI:
         # which 兜命令名（在 PATH 里找得到即算装好），exists 兜显式路径，两者其一即 found，
         # 否则旧写法对命令名恒 missing（Path("claude").exists() 永远 False）。
         claude_ok = shutil.which(claude_exe) is not None or Path(claude_exe).exists()
-        return {
+        body = {
             "status": "ok",
             "service": service_name,
             "version": app_version,
@@ -1442,6 +1453,9 @@ def create_app(config) -> FastAPI:
             # 服务端再按白名单解析路径）。前端启动必拉 /health，故复用此口不新开端点。
             "workspaces": [{"key": k, "label": v["label"]} for k, v in workspaces.items()],
         }
+        if since_date is not None:
+            body["since_date"] = since_date
+        return body
 
     @app.get("/models")
     async def api_list_models():

@@ -20,6 +20,14 @@
 插件通过[文档化的钩子](#插件钩子-api)扩展行为。开箱即用、不配记忆服务时，Pando 就是一个
 干净的 Claude Code 远程终端。
 
+**v0.2 能做什么：**
+
+- 精炼续窗：压缩工具噪音、保留最近原话，在新 Claude CLI 会话里继续上下文；也支持自动触发与安全降级。
+- 多工作目录与会话管理：新对话绑定白名单目录，会话可分页、改名、删除，并在续窗链上连续浏览历史。
+- 更完整的移动聊天体验：流式 thinking/工具状态、Markdown 子集、图片与 PDF 附件、剪贴板图片粘贴。
+- 可配置的模型与界面：实时模型候选、会话级模型/推理强度、跨设备界面偏好、动态主题与前端插件。
+- 更稳的移动连接：断线重连补齐半截回复，客户端时区变化与回前台场景自动校正。
+
 <p align="center">
   <img src="docs/screenshots/welcome.png" alt="欢迎屏——在线天数与记忆条数 / Welcome screen with day counter and memory count" width="320">
   &nbsp;&nbsp;
@@ -467,6 +475,14 @@ The core ships **zero memory logic**. Memory is an optional, pluggable external
 service (see the [4-endpoint contract](#memory-contract)); plugins extend behavior
 through [documented hooks](#plugin-hook-api). Out of the box, with no memory service
 configured, Pando is simply a clean remote terminal for Claude Code.
+
+**What v0.2 brings:**
+
+- Refined Session Carryover trims tool noise, preserves recent verbatim turns, and resumes them in a new Claude CLI session, with automatic triggers and safe fallback.
+- Multi-workspace and session management binds new chats to allowlisted directories, with pagination, rename/delete actions, and continuous history across carryover chains.
+- A fuller mobile chat experience includes streamed thinking/tool activity, safe Markdown rendering, image/PDF attachments, and clipboard image paste.
+- Configurable models and UI include live model choices, per-session model/effort, cross-device UI preferences, dynamic themes, and frontend plugins.
+- More resilient mobile connections reconcile partial replies after reconnects and track client timezone changes and foreground returns.
 
 ---
 

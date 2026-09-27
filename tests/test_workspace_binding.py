@@ -124,9 +124,9 @@ def test_normalize_workspaces_drops_bad_entries():
 
 
 def test_normalize_workspaces_degrades_to_single_seat():
-    out = normalize_workspaces(None, "C:/_Projects/Aspen/chat")
+    out = normalize_workspaces(None, "C:/workspace/chat")
     assert list(out) == [""]
-    assert out[""]["path"] == "C:/_Projects/Aspen/chat"
+    assert out[""]["path"] == "C:/workspace/chat"
 
 
 def test_normalize_cwd_key_whitelist():
@@ -158,6 +158,26 @@ def test_health_without_workspaces_config_degrades(tmp_path):
         body = client.get("/health").json()
     assert len(body["workspaces"]) == 1
     assert body["workspaces"][0]["key"] == ""
+
+
+def test_health_since_date_is_optional(tmp_path):
+    app = create_app(_config(tmp_path))
+    with TestClient(app) as client:
+        assert "since_date" not in client.get("/health").json()
+
+
+def test_health_exposes_valid_since_date(tmp_path):
+    app = create_app(_config(tmp_path, SINCE_DATE="2020-01-01"))
+    with TestClient(app) as client:
+        assert client.get("/health").json()["since_date"] == "2020-01-01"
+
+
+def test_health_ignores_invalid_since_date_with_warning(tmp_path, caplog):
+    with caplog.at_level("WARNING", logger="pando"):
+        app = create_app(_config(tmp_path, SINCE_DATE="2020-02-30"))
+    with TestClient(app) as client:
+        assert "since_date" not in client.get("/health").json()
+    assert "SINCE_DATE" in caplog.text
 
 
 # ---------------------------------------------------------------------------
