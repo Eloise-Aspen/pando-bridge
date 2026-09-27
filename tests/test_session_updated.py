@@ -1,10 +1,13 @@
 """会话更新通知走真实 WS，生成子进程一律禁止。"""
 import asyncio
+import json
 import sqlite3
+import threading
 from concurrent.futures import ThreadPoolExecutor
 
 from fastapi.testclient import TestClient
 from pando import create_app
+from starlette.websockets import WebSocket
 
 
 def test_session_update_routes_tail_and_worker_thread(tmp_path, monkeypatch):
@@ -48,3 +51,52 @@ def test_session_update_routes_tail_and_worker_thread(tmp_path, monkeypatch):
             assert target.receive_json()["type"] == "session_switched"
         app.state.notify_session_updated("tail")
     assert True  # 断开后通知不报错，不启动任何生成路径。
+
+
+def test_resolved_history_includes_all_successors_but_not_root(tmp_path):
+    app = create_app({"DATA_DIR": tmp_path, "PLUGINS": [], "PORT": 8767})
+    with TestClient(app) as client:
+        conn = sqlite3.connect(tmp_path / "chat.db")
+        # root->A->B->C：从A补查必须收A/B/C，不能重拉root，也不能只取C。
+        for sid, parent in [("root", None), ("a", "root"), ("b", "a"), ("c", "b")]:
+            conn.execute("INSERT INTO sessions (id, parent_session_id, created_at, updated_at) "
+                         "VALUES (?, ?, '2026-01-01', '2026-01-01')", (sid, parent))
+            conn.execute("INSERT INTO messages (session_id, role, content, created_at) "
+                         "VALUES (?, 'assistant', ?, '2026-01-01')", (sid, sid))
+        conn.commit(); conn.close()
+        original = client.get("/sessions/a/messages").json()
+        assert [x["content"] for x in original if x["role"] == "assistant"] == ["a"]
+        response = client.get("/sessions/a/messages?resolve_tail=true")
+        assert response.headers["x-session-id"] == "c"
+        messages = response.json()
+        assert [x["session_id"] for x in messages if x["role"] == "assistant"] == ["a", "b", "c"]
+        assert [x["parent_session_id"] for x in messages if x["role"] == "carryover_boundary"] == ["root", "a", "b"]
+
+
+def test_slow_connection_times_out_without_blocking_other_client(tmp_path, monkeypatch):
+    original_send = WebSocket.send_text
+    slow = []
+    cancelled = threading.Event()
+    async def send(self, text):
+        frame = json.loads(text)
+        if frame["type"] == "hello" and not slow:
+            slow.append(self)
+        if frame["type"] == "session_updated" and self is slow[0]:
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+        else:
+            await original_send(self, text)
+    monkeypatch.setattr(WebSocket, "send_text", send)
+    app = create_app({"DATA_DIR": tmp_path, "PLUGINS": [], "PORT": 8767,
+                      "SESSION_UPDATE_TIMEOUT": 0.5})
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as stalled, client.websocket_connect("/ws") as fast:
+            stalled.receive_json(); fast.receive_json()
+            for connection in (stalled, fast):
+                connection.send_json({"switch_session": "target"}); connection.receive_json()
+            app.state.notify_session_updated("target")
+            assert fast.receive_json()["type"] == "session_updated"
+            assert not cancelled.is_set(), "fast client waited for slow-client timeout"
+            assert cancelled.wait(timeout=2), "slow send was not cancelled within its timeout"
