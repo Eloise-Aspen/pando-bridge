@@ -1,0 +1,22 @@
+@import "tailwindcss";
+
+/* 来源：static/index.html 当前 :root。第 2 期切换前保持其值与命名一致。 */
+:root {
+  --ui:'Inter',-apple-system,BlinkMacSystemFont,'PingFang SC','MiSans','HarmonyOS Sans SC','Noto Sans CJK SC','Microsoft YaHei',system-ui,sans-serif;
+  --code:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
+  --bg:#FAF9F5; --card:#fff; --surface:#F5F4ED; --track:#F0EEE6;
+  --text:#141413; --ink:#1F1E1D; --text2:#3D3D3A; --dim:#73726C; --faint:#9C9A92; --fainter:#B0AEA4; --hint:#C2C0B6; --icon:#8B8A83;
+  --line:rgba(31,30,29,.1); --line-soft:rgba(31,30,29,.06); --line-strong:rgba(31,30,29,.14);
+  --accent:#D97757; --accent-press:#C6613F; --accent-bg:rgba(217,119,87,.1); --accent-bd:rgba(217,119,87,.22);
+  --online:#5B9A5B; --warn:#D6A417; --danger:#B53333; --danger-text:#B15A32; --link:#2C84DB;
+  --tag-proj:#2360A8; --tag-pref:#B15A32; --tag-life:#436426; --tag-read:#6B52A8;
+  --e0-border:rgba(31,30,29,.07); --e1-shadow:0 1px 3px rgba(31,30,29,.05);
+  --e2-shadow:0 4px 14px rgba(31,30,29,.06); --e2-shadow-hover:0 8px 22px rgba(31,30,29,.09);
+  --safe-bottom:env(safe-area-inset-bottom,0px);
+}
+
+@theme inline {
+  --color-bg:var(--bg); --color-card:var(--card); --color-surface:var(--surface);
+  --color-text:var(--text); --color-ink:var(--ink); --color-accent:var(--accent);
+  --color-danger:var(--danger); --font-ui:var(--ui); --font-code:var(--code);
+}

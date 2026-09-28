@@ -1726,7 +1726,7 @@ def create_app(config) -> FastAPI:
         帧发送统一走 send_frame():WS 活着直接发并入缓冲,断了只入缓冲。
         缓冲有界(500 帧 / 2MB),超限丢头留尾——重连回放时用户看到最近内容。"""
 
-        __slots__ = ("proc", "session_id", "ws", "buffer", "_buf_bytes",
+        __slots__ = ("proc", "session_id", "ws", "buffer", "_buf_bytes", "turn_id", "seq",
                      "grace_task", "stopped", "finished")
 
         def __init__(self, proc, session_id: str, ws: WebSocket):
@@ -1735,6 +1735,8 @@ def create_app(config) -> FastAPI:
             self.ws: WebSocket | None = ws
             self.buffer: list[str] = []   # JSON 字符串帧列表
             self._buf_bytes: int = 0
+            self.turn_id: str = uuid.uuid4().hex
+            self.seq: int = 0
             self.grace_task: asyncio.Task | None = None
             self.stopped: bool = False     # 用户请求了 stop
             self.finished: bool = False    # run_claude 已结束(正常/停止/错误)
@@ -1748,6 +1750,15 @@ def create_app(config) -> FastAPI:
 
         async def send_frame(self, frame_json: str):
             """统一帧发送:WS 活着直接发并入缓冲,WS 为 None 只入缓冲。"""
+            # 轮次元数据在入缓冲前写入，重连直接回放原 JSON，不能重新编号。
+            # session 等控制帧仍保持旧格式，供尚未刷新的客户端识别。
+            frame = json.loads(frame_json)
+            if frame.get("type") not in {"session", "session_expired", "status", "session_switched",
+                                         "hello", "forged", "session_updated", "turn_start"}:
+                self.seq += 1
+                frame["turn_id"] = self.turn_id
+                frame["seq"] = self.seq
+                frame_json = json.dumps(frame, ensure_ascii=False)
             # 入缓冲(无论 WS 状态,重连回放需要)
             self.buffer.append(frame_json)
             self._buf_bytes += len(frame_json.encode("utf-8"))
@@ -1848,13 +1859,19 @@ def create_app(config) -> FastAPI:
             # 通知钩子：让插件（push 插件）把「在等你批」推到设备上，人锁屏离场也能被叫回来
             _notify_permission_request(body.get("tool_name", ""), request_id)
             ws = permission_broker.ws_for_token(body.get("token"))
-            await ws.send_text(json.dumps({
+            permission_frame = json.dumps({
                 "type": "permission_request",
                 "request_id": request_id,
                 "tool": body.get("tool_name", ""),
                 "input": body.get("input", {}),
                 "tool_use_id": body.get("tool_use_id", ""),
-            }, ensure_ascii=False))
+            }, ensure_ascii=False)
+            # 权限回调在独立 HTTP 请求里执行；有活跃轮时走同一个编号/缓冲入口。
+            active_turn = _ws_to_turn.get(ws)
+            if active_turn is not None and not active_turn.finished:
+                await active_turn.send_frame(permission_frame)
+            else:
+                await ws.send_text(permission_frame)
 
         result = await permission_broker.request(body.get("token"), _push)
         # 请求已解决（allow/deny/timeout），清理工具名映射（_reader 可能已 pop 过，无害）
@@ -1988,6 +2005,9 @@ def create_app(config) -> FastAPI:
             if session_id:
                 inflight_turns[session_id] = turn
             _ws_to_turn[ws] = turn
+            await ws.send_text(json.dumps({
+                "type": "turn_start", "turn_id": turn.turn_id, "session_id": session_id,
+            }, ensure_ascii=False))
 
         new_session_id = session_id
         full_text = ""
@@ -2699,6 +2719,7 @@ def create_app(config) -> FastAPI:
                     # 重连对账:前端带 session_id 问「有在途轮次吗」(feat-reconnect-resume)
                     if isinstance(peek, dict) and peek.get("type") == "check_inflight":
                         sid = peek.get("session_id")
+                        check_id = peek.get("check_id")
                         turn = inflight_turns.get(sid) if sid else None
                         if turn is not None and not turn.finished:
                             # 命中:认领轮次,回放缓冲帧,绑定新 WS 继续直播
@@ -2711,6 +2732,8 @@ def create_app(config) -> FastAPI:
                                 await ws.send_text(json.dumps({
                                     "type": "inflight",
                                     "session_id": sid,
+                                    "turn_id": turn.turn_id,
+                                    "check_id": check_id,
                                 }, ensure_ascii=False))
                             except Exception:
                                 pass
@@ -2726,6 +2749,7 @@ def create_app(config) -> FastAPI:
                                 await ws.send_text(json.dumps({
                                     "type": "no_inflight",
                                     "session_id": sid,
+                                    "check_id": check_id,
                                 }, ensure_ascii=False))
                             except Exception:
                                 pass

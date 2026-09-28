@@ -141,10 +141,12 @@ def test_check_inflight_no_turn(tmp_path, monkeypatch):
             hello = wsc.receive_json()
             assert hello["type"] == "hello"
 
-            wsc.send_json({"type": "check_inflight", "session_id": "nonexistent"})
+            wsc.send_json({"type": "check_inflight", "session_id": "nonexistent", "check_id": 7})
             m = wsc.receive_json()
             assert m["type"] == "no_inflight"
             assert m["session_id"] == "nonexistent"
+            assert m["check_id"] == 7
+            assert "turn_id" not in m and "seq" not in m
 
 
 def test_turn_frames_buffered_and_sent(tmp_path, monkeypatch):
@@ -181,6 +183,14 @@ def test_turn_frames_buffered_and_sent(tmp_path, monkeypatch):
             result = next(f for f in frames if f["type"] == "result")
             assert result["text"] == "Hello"
             assert result.get("stopped") is None or result.get("stopped") is False
+            start = next(f for f in frames if f["type"] == "turn_start")
+            assert start["turn_id"] == result["turn_id"]
+            assert "seq" not in start
+            assert all("turn_id" not in f and "seq" not in f
+                       for f in frames if f["type"] in {"hello", "session"})
+            numbered = [f for f in frames if "seq" in f]
+            assert [f["seq"] for f in numbered] == list(range(1, len(numbered) + 1))
+            assert all(f["turn_id"] == start["turn_id"] for f in numbered)
 
 
 def test_grace_config_injected(tmp_path):
@@ -188,3 +198,52 @@ def test_grace_config_injected(tmp_path):
     app = create_app(_config(tmp_path, grace_seconds=42))
     # 验证值被正确读取——通过 app 的 create 不报错即证明注入路径通
     assert app is not None
+
+
+def test_reconnect_replays_original_sequence_and_check_id(tmp_path, monkeypatch):
+    """断线回放不得重新编号，inflight 同时带轮号及原样 check_id。"""
+    long_text = "A" * 45
+    lines = [
+        json.dumps({"type": "system", "subtype": "init", "session_id": "sess-replay", "model": "test"}).encode(),
+        json.dumps({"type": "stream_event", "event": {"type": "content_block_delta",
+                    "delta": {"type": "text_delta", "text": long_text}}}).encode(),
+    ]
+    proc = _FakeProc(lines)
+
+    async def fake_exec(*args, **kwargs):
+        return proc
+
+    monkeypatch.setattr(server_mod.asyncio, "create_subprocess_exec", fake_exec)
+    app = create_app(_config(tmp_path))
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as first:
+            first.receive_json()  # hello
+            first.send_json({"text": "test"})
+            frames = []
+            for _ in range(10):
+                frame = first.receive_json()
+                frames.append(frame)
+                if frame["type"] == "text":
+                    break
+            original = next(frame for frame in frames if frame["type"] == "text")
+            turn_id = next(frame for frame in frames if frame["type"] == "turn_start")["turn_id"]
+            assert original["turn_id"] == turn_id
+            assert original["seq"] == 1
+
+            # TestClient 关闭首条 WS 会同时取消其协程；用第二连接认领活跃轮
+            # 仍可验证真实缓冲回放路径，断线端到端另留给测试服验收。
+            with client.websocket_connect("/ws") as second:
+                second.receive_json()  # hello
+                second.send_json({"type": "check_inflight", "session_id": "sess-replay", "check_id": 23})
+                inflight = second.receive_json()
+                assert inflight["type"] == "inflight"
+                assert inflight["turn_id"] == turn_id
+                assert inflight["check_id"] == 23
+                replay = []
+                for _ in range(10):
+                    frame = second.receive_json()
+                    replay.append(frame)
+                    if frame["type"] == "text":
+                        break
+                assert next(frame for frame in replay if frame["type"] == "text") == original
+            proc.release()
