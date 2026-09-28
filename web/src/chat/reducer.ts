@@ -59,6 +59,7 @@ export type ChatState = {
   draft: string
   attachments: string[]
   needsRefresh: boolean
+  historyReloadSessionId: string | null
   hasMemory: boolean
 }
 
@@ -67,7 +68,8 @@ export const initialChatState: ChatState = {
   endedTurnIds: [], text: '', thinking: '', tools: [], messages: [], systems: [],
   pendingRecall: null, permissions: [], stopped: false, latestCheckId: null,
   awaitingCheck: false, forgeMode: null, chainTail: null, preferences: {},
-  draft: '', attachments: [], needsRefresh: false, hasMemory: false,
+  draft: '', attachments: [], needsRefresh: false, historyReloadSessionId: null,
+  hasMemory: false,
 }
 
 function resetRound(state: ChatState): ChatState {
@@ -99,7 +101,8 @@ export function chatReducer(state: ChatState, event: ChatEvent): ChatState {
   if (event.type === 'stop') return { ...state, stopped: true }
   if (event.type === 'stop_timeout') return finishTurn({ ...resetRound(state), busy: false }, state.activeTurnId ?? undefined)
   if (event.type === 'switch_session') return { ...resetRound(state), sessionId: event.sessionId,
-    view: 'chat', busy: false, messages: [], activeTurnId: null, lastSeq: 0 }
+    view: 'chat', busy: false, messages: [], activeTurnId: null, lastSeq: 0,
+    historyReloadSessionId: null }
   if (event.type === 'new_chat') return { ...initialChatState, preferences: state.preferences }
   if (event.type === 'reconnect_open') return { ...state, latestCheckId: event.checkId, awaitingCheck: true }
   if (event.type === 'refresh') return { ...initialChatState, sessionId: event.sessionId,
@@ -108,8 +111,12 @@ export function chatReducer(state: ChatState, event: ChatEvent): ChatState {
   if (event.type === 'forge_timeout') return state.forgeMode === 'clean'
     ? { ...initialChatState, preferences: state.preferences }
     : { ...state, forgeMode: null }
-  if (event.type === 'history_loaded') return { ...state,
-    messages: [...state.messages, ...event.messages.map(value => `history:${value}`)] }
+  if (event.type === 'history_loaded') {
+    // 会话切换后迟到的旧请求不得把 A 的历史写到 B；外壳只传回请求时的 sessionId。
+    if (event.sessionId !== state.sessionId) return state
+    return { ...state, historyReloadSessionId: null,
+      messages: [...state.messages, ...event.messages.map(value => `history:${value}`)] }
+  }
   if (event.type === 'route') return { ...state, view: event.view }
   if (event.type === 'draft') return { ...state, draft: event.text }
   if (event.type === 'attachment') return { ...state, attachments: [...state.attachments, event.name] }
@@ -122,7 +129,13 @@ export function chatReducer(state: ChatState, event: ChatEvent): ChatState {
   if (frame.type === 'inflight' || frame.type === 'no_inflight') {
     if (!state.awaitingCheck || (frame.check_id !== undefined && frame.check_id !== state.latestCheckId)) return state
     const base = { ...state, awaitingCheck: false, latestCheckId: null }
-    if (frame.type === 'no_inflight') return finishTurn({ ...resetRound(base), busy: false }, state.activeTurnId ?? undefined)
+    if (frame.type === 'no_inflight') {
+      // 断线期间服务端已收尾：本地有未完成输出时，让外壳向当前会话补拉历史。
+      const reload = state.busy && !!state.sessionId
+      return finishTurn({ ...resetRound(base), busy: false,
+        historyReloadSessionId: reload ? state.sessionId : state.historyReloadSessionId },
+      state.activeTurnId ?? undefined)
+    }
     if (frame.turn_id && frame.turn_id !== state.activeTurnId) {
       return { ...resetRound(base), busy: true, activeTurnId: frame.turn_id, lastSeq: 0 }
     }

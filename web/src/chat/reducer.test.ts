@@ -44,14 +44,14 @@ const cases: Case[] = [
   { name: 'RC-01 修正 D-01 result 后迟到 text 丢弃', events: [started(), tagged('result', 1, { text: '完成' }), tagged('text', 2, { text: '尾' })], check: s => expect(s.messages).toEqual(['assistant:完成']) },
   { name: 'RC-02 修正 D-01 重复 result 不重画', events: [started(), tagged('result', 1, { text: '完成' }), tagged('result', 2, { text: '完成' })], check: s => expect(s.messages).toEqual(['assistant:完成']) },
   { name: 'RC-03 修正 D-02 error 后迟到帧丢弃', events: [started(), tagged('error', 1, { message: '错' }), tagged('text', 2, { text: '尾' })], check: s => { expect(s.text).toBe(''); expect(s.systems).toHaveLength(1) } },
-  { name: 'RC-04 修正 D-01 停止兜底后迟到结果丢弃', events: [started(), tagged('text', 1, { text: '半' }), { type: 'stop_timeout' }, tagged('result', 2, { text: '全文' })], check: s => expect(s.messages).toEqual([]) },
+  { name: 'RC-04 修正 D-01（停止兜底视为轮次结束）迟到结果丢弃', events: [started(), tagged('text', 1, { text: '半' }), { type: 'stop_timeout' }, tagged('result', 2, { text: '全文' })], check: s => expect(s.messages).toEqual([]) },
   { name: 'RC-05 修正 D-03 未刷新重连回放去重', events: [started(), tagged('tool_use', 1, { tool: 'Read' }), { type: 'reconnect_open', checkId: 2 }, f({ type: 'inflight', turn_id: 'T', check_id: 2 }), tagged('tool_use', 1, { tool: 'Read' })], check: s => expect(s.tools).toEqual(['Read']) },
   { name: 'RC-06 复刻现状 刷新后 inflight 回放重建', events: [{ type: 'refresh', sessionId: 'S' }, { type: 'reconnect_open', checkId: 3 }, f({ type: 'inflight', turn_id: 'T', check_id: 3 }), tagged('text', 1, { text: '重建' })], check: s => expect(s.text).toBe('重建') },
-  { name: 'RC-07 复刻现状 离线完结 no_inflight 解忙', events: [{ type: 'reconnect_open', checkId: 4 }, f({ type: 'no_inflight', check_id: 4 })], start: base({ busy: true, text: '半' }), check: s => { expect(s.busy).toBe(false); expect(s.text).toBe('') } },
+  { name: 'RC-07 复刻现状（D-04 已修）离线完结补拉历史', events: [{ type: 'reconnect_open', checkId: 4 }, f({ type: 'no_inflight', check_id: 4 })], start: base({ sessionId: 'S', busy: true, text: '半' }), check: s => { expect(s.busy).toBe(false); expect(s.text).toBe(''); expect(s.historyReloadSessionId).toBe('S') } },
   { name: 'RC-08 修正 D-01 旧 no_inflight 不清新发送', events: [{ type: 'reconnect_open', checkId: 5 }, send, f({ type: 'no_inflight', check_id: 5 })], check: s => expect(s.busy).toBe(true) },
   { name: 'RC-09 复刻现状 forge pending 仍收普通帧', events: [{ type: 'forge_start', mode: 'carryover' }, started(), tagged('text', 1, { text: '输出' })], check: s => { expect(s.forgeMode).toBe('carryover'); expect(s.text).toBe('输出') } },
   { name: 'RC-10 复刻现状 forged 后旧 result 由链尾恢复', events: [started(), tagged('result', 1, { text: '尾', session_id: 'A' })], start: base({ sessionId: 'A', chainTail: 'B' }), check: s => expect(s.sessionId).toBe('B') },
-  { name: 'RC-11 复刻现状 快速切会话仍可能混入旧历史', events: [{ type: 'switch_session', sessionId: 'A' }, { type: 'switch_session', sessionId: 'B' }, { type: 'history_loaded', sessionId: 'A', messages: ['旧'] }], check: s => { expect(s.sessionId).toBe('B'); expect(s.messages).toEqual(['history:旧']) } },
+  { name: 'RC-11 复刻现状（D-05 已修）快速切会话丢弃旧历史', events: [{ type: 'switch_session', sessionId: 'A' }, { type: 'switch_session', sessionId: 'B' }, { type: 'history_loaded', sessionId: 'A', messages: ['旧'] }, { type: 'history_loaded', sessionId: 'B', messages: ['新'] }], check: s => { expect(s.sessionId).toBe('B'); expect(s.messages).toEqual(['history:新']) } },
 ]
 
 describe('聊天状态盘点 37 条', () => {

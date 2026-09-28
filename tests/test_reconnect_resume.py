@@ -6,6 +6,7 @@
 
 import asyncio
 import json
+import threading
 
 from fastapi.testclient import TestClient
 
@@ -247,3 +248,77 @@ def test_reconnect_replays_original_sequence_and_check_id(tmp_path, monkeypatch)
                         break
                 assert next(frame for frame in replay if frame["type"] == "text") == original
             proc.release()
+
+
+def test_permission_request_is_numbered_but_not_replayed(tmp_path, monkeypatch):
+    """审批框只实时发送：它占用序号，重连缓冲不重弹已处理的请求。"""
+    lines = [
+        json.dumps({"type": "system", "subtype": "init", "session_id": "sess-perm", "model": "test"}).encode(),
+        json.dumps({"type": "stream_event", "event": {"type": "content_block_delta",
+                    "delta": {"type": "text_delta", "text": "A" * 45}}}).encode(),
+    ]
+    result_line = json.dumps({"type": "result", "total_cost_usd": 0.0,
+                              "duration_ms": 1,
+                              "usage": {"input_tokens": 1, "output_tokens": 1}}).encode()
+    proc = _FakeProc(lines, post_lines=[result_line])
+    captured = {}
+
+    async def fake_exec(*argv, **kwargs):
+        captured["argv"] = argv
+        return proc
+
+    monkeypatch.setattr(server_mod.asyncio, "create_subprocess_exec", fake_exec)
+    cfg = _config(tmp_path)
+    cfg.update(PERMISSION_PASSTHROUGH=True, PERMISSION_TIMEOUT=5)
+    app = create_app(cfg)
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as first:
+            first.receive_json()  # hello
+            first.send_json({"text": "test"})
+            seen = []
+            for _ in range(10):
+                frame = first.receive_json()
+                seen.append(frame)
+                if frame["type"] == "text":
+                    break
+            turn_id = next(frame for frame in seen if frame["type"] == "turn_start")["turn_id"]
+            text_frame = next(frame for frame in seen if frame["type"] == "text")
+            assert text_frame["seq"] == 1
+
+            argv = captured["argv"]
+            mcp_cfg = json.loads(argv[argv.index("--mcp-config") + 1])
+            token = mcp_cfg["mcpServers"]["pando_permission"]["env"]["PANDO_PERMISSION_TOKEN"]
+            posted = {}
+
+            def request_permission():
+                posted["response"] = client.post("/internal/permission", json={
+                    "token": token, "tool_name": "Read", "input": {}, "tool_use_id": "tool-1",
+                }).json()
+
+            thread = threading.Thread(target=request_permission)
+            thread.start()
+            permission = first.receive_json()
+            assert permission["type"] == "permission_request"
+            assert permission["turn_id"] == turn_id
+            assert permission["seq"] == 2
+            first.send_json({"type": "permission_response",
+                             "request_id": permission["request_id"], "allow": True})
+            thread.join(timeout=10)
+            assert not thread.is_alive()
+            assert posted["response"]["decision"] == "allow"
+
+            with client.websocket_connect("/ws") as second:
+                second.receive_json()  # hello
+                second.send_json({"type": "check_inflight", "session_id": "sess-perm", "check_id": 9})
+                inflight = second.receive_json()
+                assert inflight["type"] == "inflight"
+                assert inflight["turn_id"] == turn_id
+                replay = [second.receive_json(), second.receive_json()]
+                assert [frame["type"] for frame in replay] == ["session", "text"]
+                assert replay[1] == text_frame
+                assert all(frame["type"] != "permission_request" for frame in replay)
+                proc.release()
+                finished = second.receive_json()
+                assert finished["type"] == "result"
+                assert finished["turn_id"] == turn_id
+                assert finished["seq"] == 3

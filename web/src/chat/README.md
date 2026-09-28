@@ -12,4 +12,6 @@
 | B.11 无 `turn_id` 的旧帧继续处理 | `acceptTurnFrame()` 首行 | `acceptFrame()` 首行 |
 | A.4 只认最新 `check_id` | `_latestCheckId` 与 `inflight`/`no_inflight` 分支 | `latestCheckId` 与 `inflight`/`no_inflight` 分支 |
 
-`reducer.test.ts` 将盘点报告的 WS 11 条、LS 8 条、FG 7 条、RC 11 条逐条命名并标类别。LS 用例只测刷新后的初始状态，实际 localStorage 读写属于后续外壳。`RC-11` 保留现状的历史请求竞态；本期没有裁决修它。
+`reducer.test.ts` 将盘点报告的 WS 11 条、LS 8 条、FG 7 条、RC 11 条逐条命名并标类别。LS 用例只测刷新后的初始状态，实际 localStorage 读写属于后续外壳。D-05 已修，reducer 的 RC-11 按修复后行为丢弃旧会话历史；D-04 已修，RC-07 以 `historyReloadSessionId` 告知外壳补拉历史。
+
+停止兜底视为轮次结束，迟到 result 丢弃；完整内容以刷新或重进会话后的历史为准。

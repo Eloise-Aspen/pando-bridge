@@ -1723,7 +1723,7 @@ def create_app(config) -> FastAPI:
     class Turn:
         """在途轮次对象:proc + 绑定的 WS（可为 None）+ 帧缓冲 + 宽限期计时器。
 
-        帧发送统一走 send_frame():WS 活着直接发并入缓冲,断了只入缓冲。
+        帧发送统一走 send_frame()；普通帧入缓冲，权限请求仅实时发送。
         缓冲有界(500 帧 / 2MB),超限丢头留尾——重连回放时用户看到最近内容。"""
 
         __slots__ = ("proc", "session_id", "ws", "buffer", "_buf_bytes", "turn_id", "seq",
@@ -1748,8 +1748,8 @@ def create_app(config) -> FastAPI:
                 dropped = self.buffer.pop(0)
                 self._buf_bytes -= len(dropped.encode("utf-8"))
 
-        async def send_frame(self, frame_json: str):
-            """统一帧发送:WS 活着直接发并入缓冲,WS 为 None 只入缓冲。"""
+        async def send_frame(self, frame_json: str, *, replay: bool = True):
+            """统一帧发送；权限请求只实时发送并占 seq，不进入重连缓冲。"""
             # 轮次元数据在入缓冲前写入，重连直接回放原 JSON，不能重新编号。
             # session 等控制帧仍保持旧格式，供尚未刷新的客户端识别。
             frame = json.loads(frame_json)
@@ -1759,10 +1759,11 @@ def create_app(config) -> FastAPI:
                 frame["turn_id"] = self.turn_id
                 frame["seq"] = self.seq
                 frame_json = json.dumps(frame, ensure_ascii=False)
-            # 入缓冲(无论 WS 状态,重连回放需要)
-            self.buffer.append(frame_json)
-            self._buf_bytes += len(frame_json.encode("utf-8"))
-            self._trim_buffer()
+            # 普通帧保留原编号供重连回放；已处理或断连默拒的权限框不能重弹。
+            if replay:
+                self.buffer.append(frame_json)
+                self._buf_bytes += len(frame_json.encode("utf-8"))
+                self._trim_buffer()
             # 尝试发送
             if self.ws is not None:
                 try:
@@ -1866,10 +1867,10 @@ def create_app(config) -> FastAPI:
                 "input": body.get("input", {}),
                 "tool_use_id": body.get("tool_use_id", ""),
             }, ensure_ascii=False)
-            # 权限回调在独立 HTTP 请求里执行；有活跃轮时走同一个编号/缓冲入口。
+            # 权限回调在独立 HTTP 请求里执行；有活跃轮时编号，但不进回放缓冲。
             active_turn = _ws_to_turn.get(ws)
             if active_turn is not None and not active_turn.finished:
-                await active_turn.send_frame(permission_frame)
+                await active_turn.send_frame(permission_frame, replay=False)
             else:
                 await ws.send_text(permission_frame)
 
