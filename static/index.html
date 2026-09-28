@@ -2185,6 +2185,7 @@ function send(){
   if(!text && !ready.length) return;
   // 用户已经主动开了新一轮，旧连接发出的 check_inflight 回执从此作废。
   _awaitingInflightCheck=false;
+  _latestCheckId=null;
   if(inp){ inp.value=''; inp.style.height='auto'; }   // 先清发起处输入(HOME→CHAT 切换会重指 $input)
   maybeTimeDivider();
   addUser(text, ready.map(a=>a.name));
@@ -2202,6 +2203,7 @@ function send(){
 function retryMsg(text, atts){
   if(busy||!ws||ws.readyState!==1||!text) return;
   resetRoundState();
+  _awaitingInflightCheck=false; _latestCheckId=null;
   const payload={text, model:currentModel||undefined, effort:currentEffort};
   if(!currentSessionId && currentCwdKey) payload.cwd_key=currentCwdKey;
   _pandoEmit('send_payload',payload);
@@ -2219,7 +2221,7 @@ function _startStopFallback(){
   _clearStopFallback();
   _stopFallbackTimer=setTimeout(()=>{
     // 3 秒无回执:本地复位,不再等服务端
-    freezeLiveChip(roundThinking, roundTools, liveDur()); resetRoundState(); setBusy(false);
+    freezeLiveChip(roundThinking, roundTools, liveDur()); resetRoundState(); setBusy(false); finishTurn(activeTurnId);
   }, 3000);
 }
 function _clearStopFallback(){ if(_stopFallbackTimer){ clearTimeout(_stopFallbackTimer); _stopFallbackTimer=null; } }
@@ -2242,6 +2244,24 @@ function clientTimezone(){
 }
 // 重连对账窗口：true 仅表示 check_inflight 已发出、回执尚未到达。
 let _awaitingInflightCheck=false;
+let activeTurnId=null, lastTurnSeq=0, _latestCheckId=null, _nextCheckId=0;
+const endedTurnIds=[];
+function finishTurn(id){
+  if(id && !endedTurnIds.includes(id)){ endedTurnIds.push(id); if(endedTurnIds.length>20) endedTurnIds.shift(); }
+  if(id && activeTurnId===id){ activeTurnId=null; lastTurnSeq=0; }
+}
+function acceptTurnFrame(m){
+  if(!m.turn_id) return true; // 旧服务端帧仍照原逻辑处理
+  if(endedTurnIds.includes(m.turn_id) || (activeTurnId && activeTurnId!==m.turn_id)){
+    console.debug('[Pando] dropped stale turn frame',m.type,m.turn_id); return false;
+  }
+  if(m.seq!=null && m.seq<=lastTurnSeq){
+    console.debug('[Pando] dropped replayed turn frame',m.type,m.turn_id,m.seq); return false;
+  }
+  if(!activeTurnId){ activeTurnId=m.turn_id; lastTurnSeq=0; }
+  if(m.seq!=null) lastTurnSeq=m.seq;
+  return true;
+}
 function connect(){
   const proto=location.protocol==='https:'?'wss':'ws';
   ws=new WebSocket(`${proto}://${location.host}/ws`);
@@ -2253,7 +2273,8 @@ function connect(){
       ws.send(JSON.stringify({switch_session:currentSessionId}));
       // 重连对账:无条件问服务端有无在途轮次——PWA 后台杀页后重载会丢内存状态,
       // 无条件向服务端对账；无在途时会回 no_inflight，开销可忽略。
-      ws.send(JSON.stringify({type:'check_inflight',session_id:currentSessionId}));
+      _latestCheckId=++_nextCheckId;
+      ws.send(JSON.stringify({type:'check_inflight',session_id:currentSessionId,check_id:_latestCheckId}));
       _awaitingInflightCheck=true;
     }
   };
@@ -2266,9 +2287,16 @@ function connect(){
   ws.onerror=()=>setStatus(false);
   ws.onmessage=ev=>{
     let m; try{ m=JSON.parse(ev.data); }catch{ return; }
+    if(m.type!=='turn_start' && m.type!=='inflight' && m.type!=='no_inflight' && !acceptTurnFrame(m)) return;
     switch(m.type){
+      case 'turn_start':
+        if(endedTurnIds.includes(m.turn_id)) break;
+        activeTurnId=m.turn_id; lastTurnSeq=0; break;
       case 'hello': _hasMemory=!!m.has_memory; _syncArchivePref(); if($('s-automem')) $('s-automem').classList.toggle('disabled',!_hasMemory); break;
       case 'session': setSessionId(m.session_id); break;
+      case 'session_switched': setSessionId(m.session_id); break;
+      case 'session_expired': break;
+      case 'status': break;
       case 'session_updated':
         if(view==='chat' && (m.session_id===currentSessionId || m.viewed_session_id===currentSessionId)){
           reconcileSessionUpdates(m.session_id);
@@ -2301,17 +2329,28 @@ function connect(){
         if(m.context) updateCtx(m.context);
         if(m.session_id) setSessionId(m.session_id);
         _pandoEmit('message_result',m);
-        resetRoundState(); setBusy(false); break;
-      case 'error': freezeLiveChip(roundThinking, roundTools, liveDur()); addSystem('⚠ '+(m.message||'error')+(m.detail?'\n'+m.detail:'')); setBusy(false); break;
+        resetRoundState(); setBusy(false); finishTurn(m.turn_id); break;
+      case 'error':
+        _clearStopFallback(); freezeLiveChip(roundThinking, roundTools, liveDur());
+        addSystem('⚠ '+(m.message||'error')+(m.detail?'\n'+m.detail:''));
+        _pendingRecall=null; resetRoundState(); setBusy(false); finishTurn(m.turn_id); break;
       // 重连对账:有在途轮次,进入忙碌态准备接收回放帧(feat-reconnect-resume)
-      case 'inflight': _awaitingInflightCheck=false; setBusy(true); ensureLiveChip(); break;
+      case 'inflight':
+        if(!_awaitingInflightCheck || (m.check_id!=null && m.check_id!==_latestCheckId)) break;
+        _awaitingInflightCheck=false; _latestCheckId=null;
+        if(m.turn_id && m.turn_id!==activeTurnId){
+          const oldRow=currentAssistantRow;
+          dropLiveChip(); if(oldRow && oldRow.isConnected) oldRow.remove();
+          resetRoundState(); activeTurnId=m.turn_id; lastTurnSeq=0;
+        }
+        setBusy(true); ensureLiveChip(); break;
       // 重连对账回执:无在途轮次,前端复位(feat-reconnect-resume)
       case 'no_inflight': {
         // 只接受仍在等待的对账回执；用户已发新消息时，旧 no_inflight 不得清掉新轮。
-        if(_awaitingInflightCheck!==true) break;
-        _awaitingInflightCheck=false;
+        if(_awaitingInflightCheck!==true || (m.check_id!=null && m.check_id!==_latestCheckId)) break;
+        _awaitingInflightCheck=false; _latestCheckId=null;
         const hadPartial=busy===true && !!currentAssistantRow;
-        dropLiveChip(); resetRoundState(); setBusy(false);
+        dropLiveChip(); resetRoundState(); setBusy(false); finishTurn(activeTurnId);
         // 断线期间服务端已经收尾：整段重画，让停在本地的半截回复自动补全。
         if(hadPartial && currentSessionId) loadHistory(currentSessionId);
         break;
