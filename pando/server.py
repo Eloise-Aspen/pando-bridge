@@ -637,6 +637,8 @@ def create_app(config) -> FastAPI:
         MEMORY_SERVICE_URL (默认 "")                      —— 留空则用 NullMemoryProvider
         MEMORY_SERVICE_TIMEOUT (默认 10.0)
         MEMORY_SERVICE_HEADERS (默认 None)                —— 记忆服务鉴权用的固定请求头 dict
+        EXTRA_MCP_SERVERS (默认 {})                         —— 可见轮次额外 stdio MCP 配置
+        EXTRA_ALLOWED_TOOLS (默认 [])                       —— 可见轮次额外免确认工具名
         PLUGINS (默认 [])                                  —— 声明式插件类路径列表
         ARCHIVE_INTERVAL (默认 600)
         STATIC_DIR (默认包内 static/，demo 前端)
@@ -773,6 +775,8 @@ def create_app(config) -> FastAPI:
     # 开启后 run_claude 追加 --permission-prompt-tool + --mcp-config，把 CC 的门控工具授权
     # 请求经内嵌 MCP 小服务回调 → WS modal → 用户决策 → 原路返回（allow/deny）。
     permission_passthrough = bool(_cfg(config, "PERMISSION_PASSTHROUGH", False))
+    extra_mcp_servers = dict(_cfg(config, "EXTRA_MCP_SERVERS", {}) or {})
+    extra_allowed_tools = list(_cfg(config, "EXTRA_ALLOWED_TOOLS", []) or [])
     # MCP 小服务的解释器与脚本路径。**跨平台注意**：CC 若是 Windows claude.exe（WSL 部署常见），
     # 它拉起的 MCP 进程也是 Windows 进程，故这两项须指向 Windows 侧可执行的解释器/脚本路径，
     # 由 config 显式覆盖（禁硬编码，见 CONSTRAINTS）。默认取当前解释器命令名 + 本模块同目录脚本，
@@ -1949,6 +1953,13 @@ def create_app(config) -> FastAPI:
         # allow 组工具免弹窗直接执行；deny 组工具 CC 侧被禁用（收到拒绝后文字继续）；
         # ask 组不进两个列表，由 permission-passthrough 弹窗接管。
         policy_args = tool_policy.to_cli_args()
+        if extra_allowed_tools and not silent:
+            if "--allowedTools" in policy_args:
+                allowed_idx = policy_args.index("--allowedTools") + 1
+                existing = policy_args[allowed_idx].split(",")
+                policy_args[allowed_idx] = ",".join(dict.fromkeys(existing + extra_allowed_tools))
+            else:
+                policy_args += ["--allowedTools", ",".join(dict.fromkeys(extra_allowed_tools))]
         if policy_args:
             cmd += policy_args
 
@@ -1956,10 +1967,11 @@ def create_app(config) -> FastAPI:
         # 用内联 JSON 字符串传 --mcp-config（CC 支持 file 或 string），免临时文件与清理。
         # 版本注记：--permission-prompt-tool 在 CC 2.1.202 已从 --help 隐藏但仍生效（Task 1 实测），
         # CC 升级时需复验本机制。
+        mcp_servers = dict(extra_mcp_servers) if not silent else {}
         if permission_passthrough and not silent:
             tok = permission_broker.token_for(ws)
             if tok:
-                mcp_cfg = json.dumps({"mcpServers": {"pando_permission": {
+                mcp_servers["pando_permission"] = {
                     "command": permission_mcp_python,
                     "args": [permission_mcp_script],
                     "env": {
@@ -1970,15 +1982,14 @@ def create_app(config) -> FastAPI:
                         # 自签 HTTPS 回环回调时跳过证书校验（默认不注入=校验）
                         **({"PANDO_PERMISSION_INSECURE_TLS": "1"} if permission_insecure_tls else {}),
                     },
-                }}}, ensure_ascii=False)
-                # 顺序要紧：--mcp-config 是可变参数（<configs...>），会贪婪吞掉后面所有非选项
-                # token——若紧跟其后的是 message（位置参数），message 会被误当成第二个 config 路径
-                # → CC 报 "MCP config file not found"。故把非可变的 --permission-prompt-tool 夹在
-                # --mcp-config 的值与 message 之间，终止其贪婪消费，保护 message。
-                cmd += [
-                    "--mcp-config", mcp_cfg,
-                    "--permission-prompt-tool", "mcp__pando_permission__approve",
-                ]
+                }
+        if mcp_servers:
+            mcp_cfg = json.dumps({"mcpServers": mcp_servers}, ensure_ascii=False)
+            # --mcp-config 会贪婪吞非选项参数；权限透传时由 --permission-prompt-tool
+            # 夹断，其他情况由下方统一的 -- 终止选项解析，保护末尾的 message。
+            cmd += ["--mcp-config", mcp_cfg]
+            if "pando_permission" in mcp_servers:
+                cmd += ["--permission-prompt-tool", "mcp__pando_permission__approve"]
 
         # --disallowedTools 等 flag 是贪婪消费的，如果它是最后一个 flag，
         # 后面的 message 位置参数会被吞进工具名列表。用 -- 显式终止 flag 解析。
