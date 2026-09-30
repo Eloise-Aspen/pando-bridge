@@ -2053,22 +2053,21 @@ function openDiffSheet(diff){
 }
 function closeDiffSheet(){ $('diff-ov').classList.remove('open'); }
 
-function addUsage(row,meta){
-  const parts=[]; if(meta.duration_ms) parts.push((meta.duration_ms/1000).toFixed(1)+'s');
-  if(meta.cost_usd) parts.push('$'+Number(meta.cost_usd).toFixed(4));
-  const u=meta.usage||{}; if(u.input_tokens||u.output_tokens) parts.push(`↓${u.input_tokens||0} ↑${u.output_tokens||0}`);
-  if(!parts.length) return; const el=document.createElement('div'); el.className='a-usage'; el.textContent=parts.join('  '); row.appendChild(el);
-}
 function addStopped(row){ const el=document.createElement('div'); el.className='a-usage'; el.textContent='已停止'; row.appendChild(el); }
-// 回复结尾数字:仅成本 + 缓存命中率(原型实况;时长/token 计数留给上下文用量,不在此重复),
-// 中间用 middot 分隔(此前用两个空格拼接,视觉挤成一团——用户实测反馈)
+// CLI 的美元成本已变成会话累计，回复结尾改显示本轮输入、输出和缓存命中率。
+// 本轮读入总量与上下文弹窗的末次调用占用不同；中间用 middot 分隔。
 function usageParts(meta){
   if(!meta) return '';
-  const parts=[]; if(meta.cost_usd) parts.push('$'+Number(meta.cost_usd).toFixed(4));
+  const parts=[];
   const u=meta.usage||{};
-  const cacheRead=u.cache_read_input_tokens??u.cache_read??0, cacheCreate=u.cache_creation_input_tokens??u.cache_create??0;
-  const used=(u.input_tokens||0)+cacheRead+cacheCreate;
-  const cachePct = (u.cache_hit_pct!=null) ? Math.round(u.cache_hit_pct) : (used?Math.round(cacheRead/used*100):null);
+  const readValue=u.cache_read_input_tokens??u.cache_read;
+  const createValue=u.cache_creation_input_tokens??u.cache_create;
+  const hasInput=u.input_tokens!=null||readValue!=null||createValue!=null;
+  const cacheRead=Number(readValue??0);
+  const used=Number(u.input_tokens??0)+cacheRead+Number(createValue??0);
+  if(hasInput) parts.push(`输入 ${fmtTok(used)}`);
+  if(u.output_tokens!=null) parts.push(`输出 ${fmtTok(Number(u.output_tokens))}`);
+  const cachePct = (u.cache_hit_pct!=null) ? Math.round(u.cache_hit_pct) : (readValue!=null&&used?Math.round(cacheRead/used*100):null);
   if(cachePct!=null) parts.push(`缓存 ${cachePct}%`);
   return parts.join(' · ');
 }
