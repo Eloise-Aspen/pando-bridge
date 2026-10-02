@@ -77,6 +77,8 @@ cd pando-bridge
 pip install -e .
 ```
 
+想跑测试的话装 `pip install -e ".[dev]"`，见下文[开发](#开发)。
+
 仓库带了一份 [`run.example.py`](run.example.py)，复制成 `run.py` 改一行 `CLAUDE_CWD`
 就能跑（`cp run.example.py run.py`，Windows 用 `copy`）。它长这样（`CLAUDE_CWD` 必须是
 一个已经存在的目录，建议指向你想让 Claude 工作的项目目录；不配 `MEMORY_SERVICE_URL`
@@ -529,6 +531,8 @@ git clone https://github.com/Eloise-Aspen/pando-bridge.git
 cd pando-bridge
 pip install -e .
 ```
+
+To run tests, install `pip install -e ".[dev]"`; see [Development](#development) below.
 
 The repo ships a [`run.example.py`](run.example.py) — copy it to `run.py` and change the
 one `CLAUDE_CWD` line to run (`cp run.example.py run.py`, or `copy` on Windows). It looks
