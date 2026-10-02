@@ -17,6 +17,7 @@ import sqlite3
 import time
 import uuid
 from dataclasses import asdict
+from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
@@ -819,7 +820,13 @@ def create_app(config) -> FastAPI:
     from .providers.null import NullMemoryProvider
     _has_memory = not isinstance(memory, NullMemoryProvider)
 
-    app = FastAPI(title=app_title, version=app_version)
+    @asynccontextmanager
+    async def _lifespan(app):
+        await startup()
+        yield
+        await shutdown_auto_carryover()
+
+    app = FastAPI(title=app_title, version=app_version, lifespan=_lifespan)
     # 仅挂在应用对象上的进程内状态（不暴露 HTTP）：便于运维/单测确认重启后时间戳为空时
     # fail-safe 地不换窗；集合与字典仍由上面的唯一实现维护。
     app.state.auto_carryover_pending = auto_carryover_pending
@@ -1384,7 +1391,6 @@ def create_app(config) -> FastAPI:
     # App lifecycle
     # -----------------------------------------------------------------------
 
-    @app.on_event("startup")
     async def startup():
         nonlocal auto_carryover_task
         client_clock.log_banner()
@@ -1425,7 +1431,6 @@ def create_app(config) -> FastAPI:
         except Exception:
             pass
 
-    @app.on_event("shutdown")
     async def shutdown_auto_carryover():
         if auto_carryover_task is None:
             return
