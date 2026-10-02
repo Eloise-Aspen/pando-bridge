@@ -1452,7 +1452,6 @@ def create_app(config) -> FastAPI:
             "status": "ok",
             "service": service_name,
             "version": app_version,
-            "hostname": socket.gethostname(),
             "server_time": now_iso(),
             "started_at": server_started_at.isoformat(),
             "claude_cli": "found" if claude_ok else "missing",
