@@ -147,6 +147,7 @@ def test_health_lists_workspaces(tmp_path):
         body = client.get("/health").json()
     assert body["workspaces"] == [{"key": "chat", "label": "客厅"},
                                   {"key": "dev", "label": "工位"}]
+    assert "hostname" not in body
     # 绝对路径绝不下发前端
     assert "C:/ws/dev" not in json.dumps(body)
 
