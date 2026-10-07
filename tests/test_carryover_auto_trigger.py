@@ -82,6 +82,8 @@ class _Spy:
         # 只有开新会话才从预置序列里取下一个
         if "--resume" in argv:
             sid = argv[argv.index("--resume") + 1]
+        elif "--session-id" in argv:
+            sid = argv[argv.index("--session-id") + 1]
         else:
             sid = self._session_ids.pop(0) if self._session_ids else "sess-fallback"
         return _FakeProc([
@@ -404,13 +406,13 @@ def test_auto_trigger_skipped_while_forge_in_flight(tmp_path, monkeypatch, caplo
     app = create_app(_config(tmp_path, AUTO_CARRYOVER_SOFT_TOKENS=1_000_000,
                              AUTO_CARRYOVER_HARD_TOKENS=1_000_000))
 
-    real = carryover.refine_detailed
+    real = carryover.render_tail
 
     def slow(*a, **k):
         time.sleep(0.8)          # 跑在 asyncio.to_thread 里，不挡事件循环
         return real(*a, **k)
 
-    monkeypatch.setattr(carryover, "refine_detailed", slow)
+    monkeypatch.setattr(carryover, "render_tail", slow)
 
     with caplog.at_level(logging.INFO, logger="pando"):
         with TestClient(app) as client:
@@ -535,7 +537,7 @@ def test_idle_forges_after_disconnect_without_ws_frame(tmp_path, monkeypatch, ca
     assert switched["session_id"] != "sess-old"
     assert "active_connection=False" in caplog.text
     assert "context_used=5002" in caplog.text
-    assert "carryover L0 reinjected" in caplog.text
+    assert "carryover first turn prepared" in caplog.text
 
 
 def test_disconnected_idle_waits_for_inflight_then_forges(tmp_path, monkeypatch, caplog):

@@ -11,6 +11,7 @@
 import asyncio
 import json
 import logging
+import sqlite3
 import time
 import uuid
 
@@ -165,11 +166,11 @@ def test_forge_carries_over(tmp_path, spy):
 
     # 新 JSONL 与源文件同目录，源文件仍在
     proj = carryover.transcript_path(tmp_path / "projects", str(tmp_path / "cwd"), new_id)
-    assert proj.is_file()
+    assert not proj.exists()
     assert carryover.transcript_path(
         tmp_path / "projects", str(tmp_path / "cwd"), "sess-old").is_file()
-    lines = [json.loads(l) for l in proj.read_text(encoding="utf-8").splitlines() if l.strip()]
-    assert lines and all(f["sessionId"] == new_id for f in lines)
+    with sqlite3.connect(tmp_path / "data" / "chat.db") as conn:
+        assert conn.execute("SELECT tail_text FROM carryover_first_turn WHERE session_id=?", (new_id,)).fetchone()
 
 
 def test_next_turn_resumes_new_session(tmp_path, spy):
@@ -188,7 +189,7 @@ def test_next_turn_resumes_new_session(tmp_path, spy):
 
     new_id = forged["session_id"]
     argv = s.calls[-1]["argv"]
-    assert "--resume" in argv and argv[argv.index("--resume") + 1] == new_id
+    assert "--resume" not in argv and argv[argv.index("--session-id") + 1] == new_id
     # 工作目录必须与源会话一致，否则 CLI 找不到这份 transcript
     assert s.calls[-1]["cwd"] == str(tmp_path / "cwd")
 
@@ -258,14 +259,15 @@ def test_boundary_notice_injected_once(tmp_path, spy):
             wsc.send_json({"text": "换窗后第二句"})
             _drain_to(wsc, "result")
 
-    first, second = s.messages[-2], s.messages[-1]
+    argv = s.calls[-2]["argv"]
+    first, second = argv[argv.index("--system-prompt") + 1], s.messages[-1]
     assert "刚完成换窗" in first
     assert "不确定就说不知道" in first
-    assert "换窗后第一句" in first
+    assert "换窗后第一句" in s.messages[-2]
     assert "刚完成换窗" not in second
     assert "换窗后第二句" in second
     # 装配顺序：边界声明在时间注入/正文之前（裁决 5 的 L0 修正案）
-    assert first.index("[系统提示") < first.index("[当前时间")
+    assert first.index("# 上一窗") < first.index("[系统提示")
 
 
 def test_no_notice_when_degraded(tmp_path, spy):
@@ -303,12 +305,13 @@ def test_tail_turns_config_respected(tmp_path, spy):
 
     proj = carryover.transcript_path(
         tmp_path / "projects", str(tmp_path / "cwd"), forged["session_id"])
-    dumped = proj.read_text(encoding="utf-8")
+    argv = s.calls[-1]["argv"]
+    dumped = argv[argv.index("--system-prompt") + 1]
     assert "用户第 0 问" in dumped                    # 首回合
     assert "用户第 6 问" in dumped and "用户第 7 问" in dumped
     assert "用户第 3 问" not in dumped
     # 附注里的轮数跟着 config 走，不硬编码
-    assert "最近约 2 轮" in s.messages[-1]
+    assert "最近约 2 轮" in dumped
 
 
 def test_max_chars_config_respected(tmp_path, spy):
@@ -326,7 +329,8 @@ def test_max_chars_config_respected(tmp_path, spy):
 
     proj = carryover.transcript_path(
         tmp_path / "projects", str(tmp_path / "cwd"), forged["session_id"])
-    dumped = proj.read_text(encoding="utf-8")
+    with sqlite3.connect(tmp_path / "data" / "chat.db") as conn:
+        dumped = conn.execute("SELECT tail_text FROM carryover_first_turn WHERE session_id=?", (forged["session_id"],)).fetchone()[0]
     assert "用户第 0 问" in dumped
     assert "用户第 7 问" in dumped
     assert "用户第 4 问" not in dumped
@@ -352,19 +356,18 @@ def test_carryover_reinjects_l0(tmp_path, spy):
             forged = _drain_to(wsc, "forged")
             assert forged["carryover"] is True
             wsc.send_json({"text": "换窗后第一句"})
-            recall = _drain_to(wsc, "memory_recall")   # L0 注入证据帧
             _drain_to(wsc, "result")
 
-    assert "context injected" in recall["context"]
-    first = s.messages[-1]
+    argv = s.calls[-1]["argv"]
+    first = argv[argv.index("--system-prompt") + 1]
     from tests.fixtures.hook_plugins import LayerInjectPlugin as P
     assert P.L0 in first
     # 装配顺序：身份层 → 边界声明 → 时间/正文
-    assert first.index(P.L0) < first.index("[系统提示") < first.index("[当前时间")
-    assert "换窗后第一句" in first
+    assert first.index(P.L0) < first.index("# 上一窗") < first.index("[系统提示")
+    assert "换窗后第一句" in s.messages[-1]
     # --resume 与 --system-prompt 互斥：绝不能同时出现
     argv = s.calls[-1]["argv"]
-    assert "--resume" in argv and "--system-prompt" not in argv
+    assert "--resume" not in argv and "--system-prompt" in argv
 
 
 def test_carryover_l0_injected_only_once(tmp_path, spy):
@@ -384,7 +387,7 @@ def test_carryover_l0_injected_only_once(tmp_path, spy):
             _drain_to(wsc, "result")
 
     from tests.fixtures.hook_plugins import LayerInjectPlugin as P
-    assert P.L0 in s.messages[-2]
+    assert P.L0 in s.calls[-2]["argv"][s.calls[-2]["argv"].index("--system-prompt") + 1]
     assert P.L0 not in s.messages[-1]      # 第二条只剩 L2 召回，不再重建身份层
 
 
@@ -431,8 +434,8 @@ def test_double_forge_same_connection_ignored(tmp_path, spy):
 
     files = _count_transcripts(tmp_path)
     assert "sess-old.jsonl" in files
-    assert len(files) == 2, f"应只多出一份新 JSONL，实际 {files}"
-    assert first["session_id"] + ".jsonl" in files
+    assert len(files) == 1, f"chat 不应生成新 JSONL，实际 {files}"
+    assert first["session_id"] + ".jsonl" not in files
 
 
 def test_concurrent_forge_across_connections_gated(tmp_path, spy, monkeypatch, caplog):
@@ -442,13 +445,13 @@ def test_concurrent_forge_across_connections_gated(tmp_path, spy, monkeypatch, c
     spy(["sess-shared"])
     app = create_app(_config(tmp_path))
 
-    real = carryover.refine_detailed
+    real = carryover.render_tail
 
     def slow(*a, **k):
         time.sleep(0.6)          # 跑在 asyncio.to_thread 里，不挡事件循环
         return real(*a, **k)
 
-    monkeypatch.setattr(carryover, "refine_detailed", slow)
+    monkeypatch.setattr(carryover, "render_tail", slow)
 
     with caplog.at_level(logging.INFO, logger="pando"):
         with TestClient(app) as client:
@@ -471,8 +474,7 @@ def test_concurrent_forge_across_connections_gated(tmp_path, spy, monkeypatch, c
     assert forged["carryover"] is True
     assert "forge already in flight, ignored" in caplog.text
     files = _count_transcripts(tmp_path)
-    assert files == sorted(["sess-shared.jsonl", forged["session_id"] + ".jsonl"]), \
-        f"并发 forge 只该产出一份新 JSONL，实际 {files}"
+    assert files == ["sess-shared.jsonl"], f"chat 不应生成新 JSONL，实际 {files}"
 
 
 def test_forge_gate_released_after_completion(tmp_path, spy, caplog):
@@ -519,7 +521,7 @@ def test_forge_gate_released_on_error(tmp_path, spy, monkeypatch):
     app = create_app(_config(tmp_path))
 
     boom = {"n": 0}
-    real = carryover.refine_detailed
+    real = carryover.render_tail
 
     def flaky(*a, **k):
         boom["n"] += 1
@@ -527,7 +529,7 @@ def test_forge_gate_released_on_error(tmp_path, spy, monkeypatch):
             raise RuntimeError("boom")
         return real(*a, **k)
 
-    monkeypatch.setattr(carryover, "refine_detailed", flaky)
+    monkeypatch.setattr(carryover, "render_tail", flaky)
 
     with TestClient(app) as client:
         with client.websocket_connect("/ws") as wsc:

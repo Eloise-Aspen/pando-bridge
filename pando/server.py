@@ -746,8 +746,12 @@ def create_app(config) -> FastAPI:
     # 裁决 2 原以为 L0+L1 在 transcript 首轮 user 消息正文里，精炼头能零成本延续身份层。
     # 真机实证不成立——bridge 的 L0+L1 走 `--system-prompt` CLI 参数，是运行时入参，
     # 根本不落 JSONL（实测首轮 user 帧只有「[当前时间…] 正文」，全文件无任何 system 帧）。
-    # 且 `--resume` 与 `--system-prompt` 互斥，接续会话拿不到身份层 → 走插件冷启动仪式。
-    # 修正案：接续会话的第一条真实消息重建一次 L0+L1，以文本前缀拼进消息最前。
+    # 旧注释写的「--resume 与 --system-prompt 互斥」不准确。2026-10-08 实证：CLI 把会话
+    # 首次请求用的系统提示存进 transcript（attachment.type=prompt_snapshot），此后
+    # --resume 一律沿用这份快照，再传 --system-prompt 被静默忽略。精炼拼出的 JSONL 没有
+    # 快照，首次 resume 就存下 Claude Code 默认的写代码提示，整窗人格丢失。
+    # 故 chat 改走持久的「首轮待建」登记 + --session-id 首轮（见 run_claude）；
+    # 本集合只剩非 chat 换窗使用，保留原文字前缀路径。
     carryover_l0_pending: set[str] = set()
     # forge 在途闸（日志实证：同一时刻对同一中性源会话跑了两次 carryover，
     # 各生成一份新 JSONL，先生成的后继当场变孤儿）。
@@ -971,6 +975,12 @@ def create_app(config) -> FastAPI:
                 key TEXT PRIMARY KEY,
                 value TEXT NOT NULL,
                 updated_at TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS carryover_first_turn (
+                session_id TEXT PRIMARY KEY,
+                tail_text TEXT NOT NULL,
+                notice TEXT NOT NULL,
+                created_at TEXT NOT NULL
             );
         """)
         # 旧库兼容：last_archived_id / cwd_key 都是历史加列(已存在则 ALTER 抛错,吞掉即可);
@@ -1914,6 +1924,112 @@ def create_app(config) -> FastAPI:
         except asyncio.TimeoutError:
             turn.proc.kill()
 
+    # ------------------------------------------------------------------
+    # 夺舍报警（fix-carryover-persona-prompt 裁决 6）
+    # CLI 把会话首次请求的系统提示存成 transcript 里的 prompt_snapshot，之后 resume
+    # 一律沿用它。chat 会话每轮成功后**只读**最后一份快照，核对客厅提示是否在里面。
+    # 两个集合都是「同一会话只报一次」的去重闸，进程级、不落库（重启后再报一次无害）。
+    # ------------------------------------------------------------------
+    persona_missing_reported: set[str] = set()
+    persona_unverified_reported: set[str] = set()
+    _PERSONA_MISSING_NOTICE = "人格提示没有生效，建议干净重开"
+
+    def _last_prompt_snapshot(sid: str, cwd: str) -> str | None:
+        """读会话 transcript 里最后一条 prompt_snapshot 的系统提示全文；没有/读不了/
+        格式认不出 → None。只读，不碰 CLI 的文件格式。"""
+        path = carryover_engine.transcript_path(claude_projects_dir, cwd or "", sid)
+        snapshot = None
+        try:
+            with path.open(encoding="utf-8") as stream:
+                for line in stream:
+                    # 快速跳过：绝大多数行不是快照，免得每轮把整份 transcript 逐行 json 解析
+                    if "prompt_snapshot" not in line:
+                        continue
+                    try:
+                        event = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if not isinstance(event, dict) or event.get("type") != "attachment":
+                        continue
+                    attachment = event.get("attachment")
+                    if not (isinstance(attachment, dict)
+                            and attachment.get("type") == "prompt_snapshot"):
+                        continue
+                    prompt = attachment.get("systemPrompt")
+                    if isinstance(prompt, str):
+                        snapshot = prompt
+                    elif isinstance(prompt, list) and all(isinstance(p, str) for p in prompt):
+                        snapshot = "\n".join(prompt)
+                    else:
+                        snapshot = None      # 最后一条认不出 → 按「无法核验」处理
+        except (OSError, UnicodeError):
+            return None
+        return snapshot
+
+    def _check_persona_prompt(sid: str | None, cwd: str) -> str | None:
+        """chat 会话一轮成功后核验人格提示；需要提示用户时返回要发的帧（JSON 文本）。
+        客厅提示为空（公开仓默认）直接跳过。
+
+        报警帧用现有的 error 帧，且**不带 turn_id、在 result 帧之后**发：前端此时已
+        收尾本轮，error 帧只追加一行「⚠ …」系统提示，不会打断任何在途轮次
+        （带 turn_id 的话会被前端当成已结束轮次的迟到帧丢掉）。"""
+        if not chat_mode_hint or not sid or not _is_chat_session(sid):
+            return None
+        if sid in persona_missing_reported:
+            return None
+        snapshot = _last_prompt_snapshot(sid, cwd)
+        if snapshot is None:
+            if sid not in persona_unverified_reported:
+                persona_unverified_reported.add(sid)
+                log.warning("persona prompt unverifiable (no prompt_snapshot found, "
+                            "CLI format may have changed): session=%s", sid)
+            return None
+        if chat_mode_hint[:40] in snapshot:
+            return None
+        persona_missing_reported.add(sid)
+        log.error("persona prompt missing: session=%s", sid)
+        return json.dumps({"type": "error", "message": _PERSONA_MISSING_NOTICE},
+                          ensure_ascii=False)
+
+    # ------------------------------------------------------------------
+    # chat 换窗「首轮待建」登记（裁决 3/4）：持久在 chat.db，换窗写入、首轮成功后删除。
+    # ------------------------------------------------------------------
+    def _pending_first_turn(sid: str | None):
+        """返回 (tail_text, notice) 或 None。"""
+        if not sid:
+            return None
+        conn = _chat_conn()
+        try:
+            return conn.execute(
+                "SELECT tail_text, notice FROM carryover_first_turn WHERE session_id = ?",
+                (sid,),
+            ).fetchone()
+        finally:
+            conn.close()
+
+    def _drop_first_turn(sid: str) -> None:
+        conn = _chat_conn()
+        try:
+            conn.execute("DELETE FROM carryover_first_turn WHERE session_id = ?", (sid,))
+            conn.commit()
+        finally:
+            conn.close()
+
+    async def _build_first_turn_system_prompt(sid: str, message: str, pending) -> str:
+        """首轮系统提示（裁决 4）：L0+L1（与全新会话同一钩子）→ 客厅提示 →
+        上一窗尾部 → 边界声明。超 carryover_max_chars 时按既有规则截短尾部（裁决 7）。"""
+        tail_text, notice = pending
+        layers = await _run_on_user_message_hooks(asyncio.get_running_loop(), sid, message, True)
+        header = f"\n\n# 上一窗最后的对话（换窗前约 {carryover_tail_turns} 轮，原文）\n"
+        prefix = (layers or "") + chat_mode_hint + header
+        suffix = "\n\n" + notice
+        tail_text = carryover_engine.trim_tail(
+            tail_text, carryover_max_chars - len(prefix) - len(suffix),
+        )
+        prompt = prefix + tail_text + suffix
+        log.info("carryover first turn prepared: session=%s chars=%d", sid, len(prompt))
+        return prompt
+
     async def run_claude(
         message: str,
         session_id: str | None,
@@ -1940,7 +2056,26 @@ def create_app(config) -> FastAPI:
             # 子进程管道模式必须用这个 CLI flag 才能拿到非空的 thinking 文本
             "--thinking-display", "summarized",
         ]
-        if session_id:
+        # chat 换窗后的首轮（裁决 4）：登记表里有这个 id → 用预定 id 开真正的新会话并带
+        # 人格系统提示，CLI 会把它存成该会话的 prompt_snapshot，此后 resume 一直沿用。
+        # 所有调用方（用户消息、主动消息、存档轮……）都经这里，首次调用自动走对。
+        pending = await asyncio.to_thread(_pending_first_turn, session_id)
+        if pending and await asyncio.to_thread(
+            lambda: carryover_engine.transcript_path(
+                claude_projects_dir, run_cwd or "", session_id).exists()
+        ):
+            # 上次首轮已让 CLI 建好会话文件（快照随之落定）却没走到成功删登记
+            # （中途被停止/报错）。此时再传 --session-id 会被 CLI 拒绝（already in use），
+            # 登记就成了死结——会话已存在，按已有会话 resume。
+            log.warning("carryover first turn already created by CLI, resuming: session=%s",
+                        session_id)
+            await asyncio.to_thread(_drop_first_turn, session_id)
+            pending = None
+        first_turn = bool(pending)
+        if first_turn:
+            system_prompt = await _build_first_turn_system_prompt(session_id, message, pending)
+            cmd += ["--session-id", session_id, "--system-prompt", system_prompt]
+        elif session_id:
             cmd += ["--resume", session_id]
         elif system_prompt:
             cmd += ["--system-prompt", system_prompt]
@@ -2030,6 +2165,7 @@ def create_app(config) -> FastAPI:
         thinking_text = ""
         tools_used = []          # 本轮工具调用累积,存入 result_meta 供历史重画工具 chip
         result_meta = {}
+        result_success = False
         # 上下文占用用「最后一个 assistant 事件的 message.usage」快照(不是 result 的账单聚合)——
         # result.usage 把本轮所有工具往返的 token 累加,当"上下文占用"看会虚高且不随压缩回落;
         # 最后一次 API 调用的 usage 才是"此刻上下文里装了多少"。覆盖式更新,最后一条胜出。
@@ -2160,6 +2296,7 @@ def create_app(config) -> FastAPI:
                                 }, ensure_ascii=False))
 
                     elif etype == "result":
+                        result_success = not event.get("is_error", False)
                         # 权威文本校对(feat-stream-output):delta 累积 vs assistant 完整文本,
                         # 有权威版本时以权威为准(落库/归档准确性);delta 累积可能因网络/截断差异
                         if _auth_full_text:
@@ -2279,7 +2416,7 @@ def create_app(config) -> FastAPI:
                 stderr_bytes = await proc.stderr.read()
                 err = stderr_bytes.decode("utf-8", errors="replace").strip()
 
-                if session_id and not _retry and "No conversation found" in err:
+                if session_id and not first_turn and not _retry and "No conversation found" in err:
                     log.warning("session %s expired, retrying as new session", session_id)
                     if not silent:
                         try:
@@ -2325,6 +2462,18 @@ def create_app(config) -> FastAPI:
                 except Exception:
                     pass
 
+            # 成功收尾：首轮登记销号（失败不删，下次仍走首轮路径），再做夺舍核验。
+            # 这两步刻意同步执行、不让出事件循环：调用方紧接着要落库本轮消息，
+            # 中间让出会给「result 后立刻断连」留下丢消息的窗口（测试实证）。
+            if proc.returncode == 0 and result_success:
+                if first_turn:
+                    _drop_first_turn(session_id)
+                alarm = _check_persona_prompt(new_session_id, run_cwd)
+                if alarm and not silent:
+                    try:
+                        await ws.send_text(alarm)
+                    except Exception:
+                        pass
             return new_session_id, full_text, result_meta
         finally:
             # 用户可见轮次结束(正常/停止/异常)一律注销登记,避免残留导致下一轮误判停止或误杀
@@ -2444,6 +2593,33 @@ def create_app(config) -> FastAPI:
                 return None, None
             src = carryover_engine.transcript_path(
                 claude_projects_dir, run_cwd, src_session_id)
+            if _is_chat_session(src_session_id):
+                # chat 换窗（fix-carryover-persona-prompt 裁决 1–3）：不再拼 JSONL。
+                # 拼出来的文件没有 prompt_snapshot，CLI 首次 resume 会存下默认的写代码
+                # 提示、整窗跑偏。改为预定 id + 登记「首轮待建」，由 run_claude 首轮用
+                # --session-id + 人格系统提示开真正的新会话。助手称呼取界面偏好里的
+                # assistantName（公开仓默认为空 → 中性的「助手」）。
+                label = str(_setting("assistantName") or "").strip() or "助手"
+                tail_text, stats = carryover_engine.render_tail(
+                    src, tail_turns=carryover_tail_turns, max_chars=carryover_max_chars,
+                    assistant_label=label,
+                )
+                if tail_text is None:
+                    log.info("carryover degraded: %s", stats.as_log_fields())
+                    return None, None
+                new_id = str(uuid.uuid4())
+                stats.new_session = new_id
+                conn = _chat_conn()
+                try:
+                    conn.execute(
+                        "INSERT INTO carryover_first_turn (session_id, tail_text, notice, created_at) "
+                        "VALUES (?, ?, ?, ?)", (new_id, tail_text, _carryover_notice(), now_iso()),
+                    )
+                    conn.commit()
+                finally:
+                    conn.close()
+                log.info("carryover first turn registered: %s", stats.as_log_fields())
+                return new_id, asdict(stats)
             new_id, stats = carryover_engine.refine_detailed(
                 src, src.parent,
                 tail_turns=carryover_tail_turns,
@@ -2549,7 +2725,7 @@ def create_app(config) -> FastAPI:
         if old_session_id in forge_in_flight:
             log.info("forge already in flight, ignored (session=%s)", old_session_id)
             return {"ignored": True}
-        if old_session_id in carryover_l0_pending:
+        if old_session_id in carryover_l0_pending or _pending_first_turn(old_session_id):
             log.info("forge ignored: session %s untouched since last forge", old_session_id)
             return {"ignored": True}
         if not clean and session_successor(old_session_id):
@@ -2581,8 +2757,9 @@ def create_app(config) -> FastAPI:
             if carried_id:
                 save_session(carried_id, model or "", old_cwd_key,
                              parent_session_id=old_session_id)
-                carryover_notice_pending[carried_id] = _carryover_notice()
-                carryover_l0_pending.add(carried_id)
+                if not _is_chat_session(old_session_id):
+                    carryover_notice_pending[carried_id] = _carryover_notice()
+                    carryover_l0_pending.add(carried_id)
                 session_last_user_ts[carried_id] = time.monotonic()
                 message = "已换窗，上下文已接续"
             else:
@@ -2924,9 +3101,10 @@ def create_app(config) -> FastAPI:
                     if mode == "chat" and chat_mode_hint:
                         system_prompt = (system_prompt or "") + chat_mode_hint
 
-                # 精炼续窗的接续会话：重建一次 L0+L1，走文本前缀而非 --system-prompt
-                # （后者与 --resume 互斥，且其内容从不落 transcript——2026-08-20 真机推翻
-                # 裁决 2 的「精炼头自带身份层」假设）。只做一次，消费即销号。
+                # 非 chat 精炼续窗的接续会话：重建一次 L0+L1，走文本前缀（resume 时 CLI
+                # 沿用会话已存的系统提示快照、忽略新传的 --system-prompt）。只做一次，
+                # 消费即销号。chat 会话不进这条路：换窗后首轮由 run_claude 以
+                # --session-id + 人格系统提示开新会话（fix-carryover-persona-prompt）。
                 carryover_l0 = ""
                 if session_id and session_id in carryover_l0_pending:
                     carryover_l0_pending.discard(session_id)
