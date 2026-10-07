@@ -74,7 +74,13 @@ class _Spy:
         self._session_ids = list(session_ids)
 
     async def __call__(self, *args, **kwargs):
-        self.calls.append({"argv": list(args), "cwd": kwargs.get("cwd")})
+        argv = list(args)
+        # 首轮提示走 --system-prompt-file（补裁 8），文件在本轮结束后即被删除，故在 spawn 时读下内容
+        prompt = None
+        if "--system-prompt-file" in argv:
+            with open(argv[argv.index("--system-prompt-file") + 1], encoding="utf-8") as fh:
+                prompt = fh.read()
+        self.calls.append({"argv": argv, "cwd": kwargs.get("cwd"), "prompt_file_text": prompt})
         sid = self._session_ids.pop(0) if self._session_ids else "sess-fallback"
         return _FakeProc([
             _enc({"type": "system", "subtype": "init", "session_id": sid, "model": "m"}),
@@ -259,8 +265,7 @@ def test_boundary_notice_injected_once(tmp_path, spy):
             wsc.send_json({"text": "换窗后第二句"})
             _drain_to(wsc, "result")
 
-    argv = s.calls[-2]["argv"]
-    first, second = argv[argv.index("--system-prompt") + 1], s.messages[-1]
+    first, second = s.calls[-2]["prompt_file_text"], s.messages[-1]
     assert "刚完成换窗" in first
     assert "不确定就说不知道" in first
     assert "换窗后第一句" in s.messages[-2]
@@ -305,8 +310,7 @@ def test_tail_turns_config_respected(tmp_path, spy):
 
     proj = carryover.transcript_path(
         tmp_path / "projects", str(tmp_path / "cwd"), forged["session_id"])
-    argv = s.calls[-1]["argv"]
-    dumped = argv[argv.index("--system-prompt") + 1]
+    dumped = s.calls[-1]["prompt_file_text"]
     assert "用户第 0 问" in dumped                    # 首回合
     assert "用户第 6 问" in dumped and "用户第 7 问" in dumped
     assert "用户第 3 问" not in dumped
@@ -358,16 +362,15 @@ def test_carryover_reinjects_l0(tmp_path, spy):
             wsc.send_json({"text": "换窗后第一句"})
             _drain_to(wsc, "result")
 
-    argv = s.calls[-1]["argv"]
-    first = argv[argv.index("--system-prompt") + 1]
+    first = s.calls[-1]["prompt_file_text"]
     from tests.fixtures.hook_plugins import LayerInjectPlugin as P
     assert P.L0 in first
     # 装配顺序：身份层 → 边界声明 → 时间/正文
     assert first.index(P.L0) < first.index("# 上一窗") < first.index("[系统提示")
     assert "换窗后第一句" in s.messages[-1]
-    # --resume 与 --system-prompt 互斥：绝不能同时出现
+    # 首轮是 --session-id 新会话、提示走文件，绝不 resume
     argv = s.calls[-1]["argv"]
-    assert "--resume" not in argv and "--system-prompt" in argv
+    assert "--resume" not in argv and "--system-prompt-file" in argv
 
 
 def test_carryover_l0_injected_only_once(tmp_path, spy):
@@ -387,7 +390,7 @@ def test_carryover_l0_injected_only_once(tmp_path, spy):
             _drain_to(wsc, "result")
 
     from tests.fixtures.hook_plugins import LayerInjectPlugin as P
-    assert P.L0 in s.calls[-2]["argv"][s.calls[-2]["argv"].index("--system-prompt") + 1]
+    assert P.L0 in s.calls[-2]["prompt_file_text"]
     assert P.L0 not in s.messages[-1]      # 第二条只剩 L2 召回，不再重建身份层
 
 

@@ -14,6 +14,7 @@ import re
 import shutil
 import socket
 import sqlite3
+import tempfile
 import time
 import uuid
 from dataclasses import asdict
@@ -2015,6 +2016,27 @@ def create_app(config) -> FastAPI:
         finally:
             conn.close()
 
+    def _write_prompt_file(prompt: str) -> str:
+        """首轮系统提示落到系统临时目录（UTF-8），返回路径，供 --system-prompt-file。"""
+        fd, path = tempfile.mkstemp(prefix="pando-first-turn-", suffix=".txt")
+        with os.fdopen(fd, "w", encoding="utf-8", newline="") as fh:
+            fh.write(prompt)
+        return path
+
+    def _remove_prompt_file(path: str) -> None:
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
+        except OSError as e:
+            log.warning("first-turn prompt file cleanup failed: %s (%s)", path, e)
+
+    async def _remove_prompt_file_after_exit(proc, path: str) -> None:
+        try:
+            await proc.wait()
+        finally:
+            _remove_prompt_file(path)
+
     async def _build_first_turn_system_prompt(sid: str, message: str, pending) -> str:
         """首轮系统提示（裁决 4）：L0+L1（与全新会话同一钩子）→ 客厅提示 →
         上一窗尾部 → 边界声明。超 carryover_max_chars 时按既有规则截短尾部（裁决 7）。"""
@@ -2072,9 +2094,14 @@ def create_app(config) -> FastAPI:
             await asyncio.to_thread(_drop_first_turn, session_id)
             pending = None
         first_turn = bool(pending)
+        prompt_file: str | None = None
         if first_turn:
             system_prompt = await _build_first_turn_system_prompt(session_id, message, pending)
-            cmd += ["--session-id", session_id, "--system-prompt", system_prompt]
+            # 补裁 8：首轮提示走临时文件。Windows 单条命令行上限 32,767 字符，人格约 11k
+            # 加上一窗尾部常常超长（CreateProcess 直接报 WinError 206）。CLI 在会话开头就把
+            # 提示存成快照，进程结束后文件即可删除（成功失败都删，见下方 spawn 处）。
+            prompt_file = _write_prompt_file(system_prompt)
+            cmd += ["--session-id", session_id, "--system-prompt-file", prompt_file]
         elif session_id:
             cmd += ["--resume", session_id]
         elif system_prompt:
@@ -2138,15 +2165,24 @@ def create_app(config) -> FastAPI:
         log.info("spawn: %s (session=%s, model=%s, effort=%s, cwd=%s)", message[:80],
                  session_id or "new", model or "default", effort or "default", run_cwd)
 
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            stdin=asyncio.subprocess.DEVNULL,
-            cwd=run_cwd,
-            # 抬高单行上限：CC 读附件时 tool_result 的 base64 会是超长单行（见常量说明）
-            limit=_STREAM_LINE_LIMIT,
-        )
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                stdin=asyncio.subprocess.DEVNULL,
+                cwd=run_cwd,
+                # 抬高单行上限：CC 读附件时 tool_result 的 base64 会是超长单行（见常量说明）
+                limit=_STREAM_LINE_LIMIT,
+            )
+        except BaseException:
+            if prompt_file:
+                _remove_prompt_file(prompt_file)
+            raise
+        if prompt_file:
+            # 不论本函数从哪条路退出（正常/停止/报错/断连后进程仍在跑），都等 CLI 进程
+            # 结束再删提示文件；正常路径在下方 finally 里已同步删掉，这里只兜底。
+            asyncio.create_task(_remove_prompt_file_after_exit(proc, prompt_file))
 
         # 只登记用户可见轮次:静默存档轮不给「停止」入口,避免和可见轮的 proc 互相覆盖
         turn: Turn | None = None
@@ -2476,6 +2512,9 @@ def create_app(config) -> FastAPI:
                         pass
             return new_session_id, full_text, result_meta
         finally:
+            # 首轮提示文件：进程已结束就立刻删（测试与正常路径可确定性地看到文件消失）
+            if prompt_file and proc.returncode is not None:
+                _remove_prompt_file(prompt_file)
             # 用户可见轮次结束(正常/停止/异常)一律注销登记,避免残留导致下一轮误判停止或误杀
             if not silent and turn is not None:
                 turn.finished = True

@@ -6,7 +6,8 @@
 
 这里的假 CLI 尽量照真 CLI 的行为来：
 - `--session-id X`：X 的 transcript 已存在 → 报「already in use」退出 1（真 CLI 实测如此）；
-  否则新建 transcript，写一条 prompt_snapshot（内容 = 本次 --system-prompt，没传就是默认提示）
+  否则新建 transcript，写一条 prompt_snapshot（内容 = 本次 --system-prompt-file 的文件内容
+  或 --system-prompt，都没传就是默认提示）
 - `--resume X`：transcript 不存在 → 「No conversation found」退出 1；存在则只追加对话帧，
   快照不变
 - 不带 id：开新会话，规则同 --session-id
@@ -18,7 +19,10 @@ import asyncio
 import json
 import logging
 import sqlite3
+import tempfile
+import time
 import uuid
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -113,7 +117,14 @@ class FakeCLI:
     async def __call__(self, *args, **kwargs):
         argv = list(args)
         cwd = kwargs.get("cwd")
-        self.calls.append({"argv": argv, "cwd": cwd})
+        # 首轮提示走文件（补裁 8）：spawn 当下读出内容并记下路径，事后断言文件已删
+        prompt_path = _arg(argv, "--system-prompt-file")
+        file_prompt = None
+        if prompt_path:
+            with open(prompt_path, encoding="utf-8") as fh:
+                file_prompt = fh.read()
+        self.calls.append({"argv": argv, "cwd": cwd,
+                           "prompt": file_prompt, "prompt_path": prompt_path})
         message = argv[-1]
         if self.fail_next:
             self.fail_next -= 1
@@ -134,7 +145,8 @@ class FakeCLI:
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text("", encoding="utf-8")
             if self.write_snapshot:
-                prompt = self.snapshot_override or _arg(argv, "--system-prompt") or DEFAULT_PROMPT
+                prompt = (self.snapshot_override or file_prompt
+                          or _arg(argv, "--system-prompt") or DEFAULT_PROMPT)
                 with path.open("a", encoding="utf-8") as fh:
                     fh.write(json.dumps({"type": "attachment", "attachment": {
                         "type": "prompt_snapshot", "systemPrompt": [prompt, "环境段"]}},
@@ -148,6 +160,12 @@ class FakeCLI:
             _enc({"type": "result", "total_cost_usd": 0.0, "duration_ms": 1,
                   "usage": {"input_tokens": 1, "output_tokens": 1}}),
         ])
+
+    def prompt(self, i=-1):
+        return self.calls[i]["prompt"]
+
+    def prompt_files(self):
+        return [c["prompt_path"] for c in self.calls if c["prompt_path"]]
 
     def argv(self, i=-1):
         return self.calls[i]["argv"]
@@ -229,10 +247,11 @@ def test_chat_forge_first_turn_uses_session_id_and_persona_prompt(tmp_path, cli)
 
     assert first["session_id"] == new_id and second["session_id"] == new_id
     argv1, argv2 = fake.argv(-2), fake.argv(-1)
-    # 首轮：--session-id <新 id> + --system-prompt，不 resume
+    # 首轮：--session-id <新 id> + --system-prompt-file（补裁 8），不 resume
     assert _arg(argv1, "--session-id") == new_id
     assert "--resume" not in argv1
-    prompt = _arg(argv1, "--system-prompt")
+    assert "--system-prompt" not in argv1                 # 长提示不上命令行
+    prompt = fake.prompt(-2)
     # 依次：L0 → 客厅提示 → 尾部标题与原文 → 边界声明
     i_l0 = prompt.index(L.L0)
     i_hint = prompt.index(HINT)
@@ -243,12 +262,17 @@ def test_chat_forge_first_turn_uses_session_id_and_persona_prompt(tmp_path, cli)
     assert i_l0 < i_hint < i_head < i_tail < i_note
     assert "助手：回复#3" in prompt          # 公开仓默认无 assistantName → 中性称呼
     assert "内心戏" not in prompt            # 思考内容不带
+    # 提示文件建在系统临时目录、UTF-8，本轮结束即删除
+    pf = Path(_arg(argv1, "--system-prompt-file"))
+    assert pf.parent.resolve() == Path(tempfile.gettempdir()).resolve()
+    assert not pf.exists()
     # 首轮消息本身不再背 L0 和边界声明（已进系统提示），仍有 L2 召回
     assert L.L0 not in argv1[-1] and "刚完成换窗" not in argv1[-1]
     assert "换窗后第一句" in argv1[-1]
     # 第二轮：--resume <新 id>，不再带系统提示
     assert _arg(argv2, "--resume") == new_id
-    assert "--system-prompt" not in argv2 and "--session-id" not in argv2
+    assert "--system-prompt" not in argv2 and "--system-prompt-file" not in argv2
+    assert "--session-id" not in argv2
     assert L.L0 not in argv2[-1] and "刚完成换窗" not in argv2[-1]
     # 首轮成功后登记销号；CLI 自己建了新会话的 transcript
     assert new_id not in _registry(tmp_path)
@@ -274,9 +298,37 @@ def test_first_turn_failure_keeps_registry_and_retries_first_turn(tmp_path, cli)
 
     assert ok["session_id"] == new_id
     retry = fake.argv(-1)
-    assert _arg(retry, "--session-id") == new_id and "--system-prompt" in retry
+    assert _arg(retry, "--session-id") == new_id and "--system-prompt-file" in retry
+    # 失败那次与成功那次的提示文件都已删除
+    assert len(fake.prompt_files()) == 2
+    assert not any(Path(f).exists() for f in fake.prompt_files())
     assert "--resume" not in retry
     assert new_id not in _registry(tmp_path)
+
+
+def test_prompt_file_removed_when_spawn_itself_fails(tmp_path, cli, monkeypatch):
+    """CLI 根本没起来（如可执行文件缺失）也要删提示文件，且登记保留。"""
+    fake = cli()
+    app = create_app(_config(tmp_path))
+    seen = []
+    with TestClient(app) as client:
+        with client.websocket_connect("/ws") as wsc:
+            _, forged = _chat_then_forge(wsc)
+            new_id = forged["session_id"]
+
+            async def boom(*args, **kwargs):
+                seen.append(_arg(list(args), "--system-prompt-file"))
+                raise FileNotFoundError("claude missing")
+
+            monkeypatch.setattr(server_mod.asyncio, "create_subprocess_exec", boom)
+            wsc.send_json({"text": "换窗后第一句"})
+            # spawn 抛错时服务端只记日志、不再回帧，这里轮询等它走完，不去收帧（会阻塞）
+            for _ in range(100):
+                if seen and not Path(seen[0]).exists():
+                    break
+                time.sleep(0.05)
+    assert seen and seen[0] and not Path(seen[0]).exists()
+    assert new_id in _registry(tmp_path)
 
 
 def test_first_turn_after_restart_between_forge_and_first_message(tmp_path, cli):
@@ -300,7 +352,7 @@ def test_first_turn_after_restart_between_forge_and_first_message(tmp_path, cli)
     assert result["session_id"] == new_id
     argv = fake.argv(-1)
     assert _arg(argv, "--session-id") == new_id and "--resume" not in argv
-    prompt = _arg(argv, "--system-prompt")
+    prompt = fake.prompt(-1)
     assert prompt.index(L.L0) < prompt.index(HINT) < prompt.index("# 上一窗") \
         < prompt.index("[系统提示：刚完成换窗")
     assert new_id not in _registry(tmp_path)
@@ -359,6 +411,7 @@ def test_non_chat_forge_unchanged(tmp_path, cli):
     # 照旧 resume，不带 --session-id / --system-prompt
     assert _arg(first, "--resume") == new_id
     assert "--session-id" not in first and "--system-prompt" not in first
+    assert "--system-prompt-file" not in first
     assert fake.calls[-2]["cwd"] == str(work)
     # 照旧文字前缀：L0 → 边界声明 → 时间/正文，只在第一条
     msg = first[-1]
@@ -523,7 +576,7 @@ def test_first_turn_prompt_trimmed_to_budget(tmp_path, cli):
             assert forged["carryover"] is True
             wsc.send_json({"text": "换窗后第一句"})
             _drain_to(wsc, "result")
-    prompt = _arg(fake.argv(-1), "--system-prompt")
+    prompt = fake.prompt(-1)
     assert len(prompt) <= 900
     # 人格与声明完整保留，被截的只有尾部
     assert L.L0 in prompt and HINT in prompt and "[系统提示：刚完成换窗" in prompt
