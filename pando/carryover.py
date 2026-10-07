@@ -83,6 +83,9 @@ class _Turn:
     has_assistant_text: bool = False
     chars: int = 0
     is_duty: bool = False
+    # 纯文本渲染用的有序条目（chat 换窗首轮用）：("text", 帧类型, 正文) 或 ("tool", 工具名)。
+    # 与 frames 并行记录，不影响 JSONL 精炼路径。
+    render_items: list = field(default_factory=list)
 
     @property
     def complete(self) -> bool:
@@ -213,6 +216,15 @@ def _build_turns(events, stats: RefineStats):
         current.raw_count += 1
         current.tool_use_ids |= tool_uses
         current.tool_result_ids |= tool_results
+        if cleaned is not None:
+            current.render_items.append(("text", etype, text))
+        content = message.get("content")
+        if isinstance(content, list):
+            # 工具调用只记名字，渲染时折叠成一行；入参与结果一律不带
+            current.render_items.extend(
+                ("tool", b["name"]) for b in content
+                if isinstance(b, dict) and b.get("type") == "tool_use" and b.get("name")
+            )
 
         if cleaned is None:
             continue
@@ -364,3 +376,63 @@ def refine(src_path, dst_dir, tail_turns: int = 12, max_chars: int = 120_000):
     """精炼续窗入口：成功返回新 session_id，任何失败返回 None（调用方据此降级）。"""
     new_session_id, _ = refine_detailed(src_path, dst_dir, tail_turns, max_chars)
     return new_session_id
+
+
+# 纯文本尾部里「一轮」的分隔：每轮以「用户：」行开头，轮与轮之间空一行。
+_USER_LABEL = "用户"
+_TURN_SPLIT_RE = re.compile(r"\n\n(?=" + _USER_LABEL + "：)")
+
+
+def _render_turn(turn: _Turn, assistant_label: str) -> str:
+    """一轮渲染成纯文本：用户/助手各一段，工具调用折叠成「（调用了 X）」，不带思考。"""
+    lines = []
+    for item in turn.render_items:
+        if item[0] == "tool":
+            lines.append(f"（调用了 {item[1]}）")
+        else:
+            _, etype, text = item
+            role = _USER_LABEL if etype == "user" else assistant_label
+            lines.append(f"{role}：{text}")
+    return "\n".join(lines)
+
+
+def render_tail(src_path, tail_turns: int = 12, max_chars: int = 120_000,
+                assistant_label: str = "助手"):
+    """chat 换窗用（fix-carryover-persona-prompt 裁决 2）：复用精炼的选轮逻辑，
+    只返回 (纯文本尾部 | None, RefineStats)，**不写任何文件**——新会话的 transcript
+    由 CLI 在首轮 `--session-id` 时自己创建。失败与 refine_detailed 同口径 fail closed。"""
+    src_path = Path(src_path)
+    stats = RefineStats(source_session=src_path.stem)
+    try:
+        if not src_path.is_file():
+            log.info("carryover: source transcript missing (%s)", src_path.name)
+            return None, stats
+        events = _load(src_path)
+        stats.total_frames = len(events)
+        turns = _build_turns(events, stats)
+        selected = _select(turns, tail_turns, max_chars, stats)
+        if not selected:
+            log.info("carryover: no clean turn selected (%s)", stats.as_log_fields())
+            return None, stats
+        text = "\n\n".join(_render_turn(t, assistant_label) for t in selected)
+        stats.kept_turns = len(selected)
+        stats.kept_frames = sum(len(t.frames) for t in selected)
+        stats.dropped_frames = stats.dialogue_frames - stats.kept_frames
+        stats.chars = len(text)
+        log.info("carryover tail ok: %s", stats.as_log_fields())
+        return text, stats
+    except Exception as exc:                      # noqa: BLE001 —— fail closed 是刻意的
+        log.warning("carryover tail failed, falling back to plain reset: %s", exc)
+        return None, stats
+
+
+def trim_tail(text: str, max_chars: int) -> str:
+    """首轮系统提示超预算时截短尾部（裁决 7），沿用 _select 的既有规则：保留首轮，
+    从第二轮起往后删整轮；只剩一轮仍超时才硬截字符，保证不超预算。"""
+    if len(text) <= max_chars:
+        return text
+    parts = _TURN_SPLIT_RE.split(text)
+    while len("\n\n".join(parts)) > max_chars and len(parts) > 1:
+        parts.pop(1)
+    return "\n\n".join(parts)[:max(0, max_chars)]
+
