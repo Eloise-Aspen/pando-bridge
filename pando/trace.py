@@ -6,9 +6,9 @@ import copy
 import hashlib
 import json
 import logging
+import queue
 import sqlite3
 import threading
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -105,39 +105,108 @@ class TraceStore:
         self.failures = 0
         self.last_write = None
         self._lock = threading.Lock()
-        self._executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="trace") if enabled else None
+        self._queue = queue.Queue()
+        self._closed = False
+        self._conn = None
+        self._thread = threading.Thread(target=self._drain, name="trace", daemon=True) if enabled else None
+        if self._thread:
+            self._thread.start()
 
     def submit(self, operation, *args):
         if not self.enabled:
             return
         try:
-            self._executor.submit(self._write, operation, args)
+            with self._lock:
+                if self._closed:
+                    raise RuntimeError("trace store closed")
+                self._queue.put((operation, args))
         except Exception:
             self._failed()
 
-    def _failed(self):
+    def _failed(self, count=1):
         with self._lock:
-            self.failures += 1
+            self.failures += count
         log.warning("trace write failed (chat unaffected)")
 
     def _write(self, operation, args):
+        # 保留单条调用接口，既有故障注入可照常替换；事务由消费线程统一管理。
+        operation(self._conn, *args)
+
+    def _drain(self):
+        # 队列先取空或达到 200 条就提交。屏障只在此前事务提交后放行。
+        # 长连接只由本线程使用，避免跨线程 SQLite 访问与逐条建表开销。
         try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            with sqlite3.connect(self.path) as conn:
-                conn.executescript(SCHEMA)
-                operation(conn, *args)
-            self.last_write = now()
-        except Exception:
-            self._failed()
+            while True:
+                item = self._queue.get()
+                batch = []
+                while isinstance(item, tuple):
+                    batch.append(item)
+                    if len(batch) == 200:
+                        item = None
+                        break
+                    try:
+                        item = self._queue.get_nowait()
+                    except queue.Empty:
+                        item = None
+                        break
+                if batch:
+                    try:
+                        if self._conn is None:
+                            self.path.parent.mkdir(parents=True, exist_ok=True)
+                            self._conn = sqlite3.connect(self.path)
+                            try:
+                                self._conn.executescript(SCHEMA)
+                            except Exception:
+                                self._disconnect()
+                                raise
+                        for operation, args in batch:
+                            self._write(operation, args)
+                        self._conn.commit()
+                        self.last_write = now()
+                    except Exception:
+                        if self._conn is not None:
+                            try:
+                                self._conn.rollback()
+                            except Exception:
+                                # 坏连接的回滚也可能失败；丢弃后下一批重新初始化，不杀线程。
+                                self._disconnect()
+                        self._failed(len(batch))
+                if isinstance(item, threading.Event):
+                    item.set()
+                elif item is False:
+                    return
+        finally:
+            self._disconnect()
+
+    def _disconnect(self):
+        conn, self._conn = self._conn, None
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                log.warning("trace connection close failed (chat unaffected)")
 
     def flush(self):
         """仅测试/关闭使用，用户可见路径不得调用。"""
-        if self._executor:
-            self._executor.submit(lambda: None).result(timeout=30)
+        if self._thread:
+            barrier = threading.Event()
+            with self._lock:
+                if self._closed:
+                    barrier = None
+                else:
+                    self._queue.put(barrier)
+            if barrier is None:
+                self._thread.join(timeout=30)
+            elif not barrier.wait(30):
+                raise TimeoutError("trace flush timed out")
 
     def close(self):
-        if self._executor:
-            self._executor.shutdown(wait=True)
+        if self._thread:
+            with self._lock:
+                if not self._closed:
+                    self._closed = True
+                    self._queue.put(False)
+            self._thread.join()
 
     def start(self, turn_id, **fields):
         if not self.enabled:

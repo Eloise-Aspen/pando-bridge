@@ -15,6 +15,127 @@ from pando.providers.http import HttpMemoryProvider
 from tests.test_carryover_persona_prompt import FakeCLI, _config, _drain_to
 
 
+def _pause_writer(store):
+    # 首批阻塞时投递完整队列，确保批边界不依赖线程调度偶然性。
+    entered, release = threading.Event(), threading.Event()
+    def pause(conn):
+        entered.set()
+        assert release.wait(5)
+    store.submit(pause)
+    assert entered.wait(5)
+    return release
+
+
+def test_batches_reuse_connection_schema_and_commit_at_200(tmp_path, monkeypatch):
+    import pando.trace as trace_module
+    original = sqlite3.connect
+    connections, schemas, commits = [], [], []
+    class Connection:
+        def __init__(self, *args, **kwargs):
+            self.conn = original(*args, **kwargs)
+            connections.append(self)
+            self.writes = 0
+        def executescript(self, sql):
+            schemas.append(sql)
+            return self.conn.executescript(sql)
+        def execute(self, sql, *args):
+            if sql.startswith("INSERT INTO events"):
+                self.writes += 1
+            return self.conn.execute(sql, *args)
+        def commit(self):
+            commits.append(self.writes)
+            self.writes = 0
+            self.conn.commit()
+        def rollback(self):
+            self.conn.rollback()
+        def close(self):
+            self.conn.close()
+    monkeypatch.setattr(trace_module.sqlite3, "connect", Connection)
+    store = TraceStore(tmp_path / "trace.db")
+    release = _pause_writer(store)
+    for seq in range(451):
+        store.event("one", 1, seq, {"type": "neutral"})
+    release.set()
+    store.flush()
+    store.close()
+    assert len(connections) == len(schemas) == 1
+    assert commits == [0, 200, 200, 51]
+    with original(store.path) as conn:
+        assert conn.execute("SELECT seq FROM events ORDER BY id").fetchall() == [(i,) for i in range(451)]
+
+
+def test_failed_batch_counts_all_rows_and_rolls_back(tmp_path):
+    store = TraceStore(tmp_path / "trace.db")
+    release = _pause_writer(store)
+    for seq in range(16):
+        store.event("one", 1, seq, {})
+    store.submit(lambda conn: (_ for _ in ()).throw(RuntimeError("neutral batch failure")))
+    release.set()
+    store.flush()
+    assert store.failures == 17
+    assert store._read("SELECT seq FROM events") == []
+    store.event("one", 1, 17, {})
+    store.flush()
+    assert store._read("SELECT seq FROM events") == [{"seq": 17}]
+    store.close()
+
+
+def test_close_commits_remaining_queued_events(tmp_path):
+    store = TraceStore(tmp_path / "trace.db")
+    release = _pause_writer(store)
+    for seq in range(213):
+        store.event("one", 1, seq, {})
+    closer = threading.Thread(target=store.close)
+    closer.start()
+    release.set()
+    closer.join(5)
+    assert not closer.is_alive()
+    assert len(store._read("SELECT seq FROM events")) == 213
+    store.close()
+    store.flush()
+
+
+def test_flush_commits_partial_queue_while_store_remains_open(tmp_path):
+    store = TraceStore(tmp_path / "trace.db")
+    for seq in range(7):
+        store.event("one", 1, seq, {})
+    store.flush()
+    assert len(store._read("SELECT seq FROM events")) == 7
+    store.event("one", 1, 7, {})
+    store.close()
+    assert len(store._read("SELECT seq FROM events")) == 8
+
+
+@pytest.mark.parametrize("failure", ["schema", "rollback"])
+def test_broken_connection_reinitializes_next_batch(tmp_path, monkeypatch, failure):
+    import pando.trace as trace_module
+    original = sqlite3.connect
+    calls = []
+    class BrokenConnection:
+        # 首次连接故障连同 close 故障都不能让后台线程退出。
+        def executescript(self, sql):
+            if failure == "schema":
+                raise sqlite3.OperationalError("neutral schema failure")
+        def execute(self, *args):
+            raise sqlite3.OperationalError("neutral write failure")
+        def rollback(self):
+            raise sqlite3.OperationalError("neutral rollback failure")
+        def close(self):
+            raise sqlite3.OperationalError("neutral close failure")
+    def connect(*args, **kwargs):
+        calls.append(True)
+        return BrokenConnection() if len(calls) == 1 else original(*args, **kwargs)
+    monkeypatch.setattr(trace_module.sqlite3, "connect", connect)
+    store = TraceStore(tmp_path / "trace.db")
+    store.event("one", 1, 0, {})
+    store.flush()
+    assert store.failures == 1
+    store.event("one", 1, 1, {})
+    store.flush()
+    assert store._read("SELECT seq FROM events") == [{"seq": 1}]
+    store.close()
+
+
 def test_store_and_read_only_api(tmp_path):
     store = TraceStore(tmp_path / "trace.db")
     store.start("one", session_id=None, inbound={"text": "hello"})
