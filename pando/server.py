@@ -29,6 +29,7 @@ from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import carryover as carryover_engine
+from .trace import TraceStore, current_turn_id, segment, now as trace_now
 from .providers import get_provider
 
 log = logging.getLogger("pando")
@@ -659,6 +660,13 @@ def create_app(config) -> FastAPI:
     # DATA_DIR 默认 ./data（feat-memory-onboarding 关键裁决④）：首跑不配也能起，
     # chat.db 落在当前工作目录的 ./data 下；启动横幅会打印其绝对路径，避免"数据存哪了"的困惑。
     data_dir: Path = Path(_cfg(config, "DATA_DIR", "./data"))
+    trace = TraceStore(_cfg(config, "TRACE_DB", data_dir / "trace.db"), bool(_cfg(config, "TRACE_ENABLED", True)))
+    session_last_turn: dict[str, str] = {}
+    trace_tasks: set[asyncio.Task] = set()
+    def add_trace_part(parts, channel, kind, source, text):
+        # 关闭时不构造任何分段对象；旁路记录故障不能进入聊天控制流。
+        if trace.enabled and parts is not None:
+            parts.append(segment(channel, kind, source, text))
     memory_service_url = _cfg(config, "MEMORY_SERVICE_URL", "") or ""
     memory_service_timeout = _cfg(config, "MEMORY_SERVICE_TIMEOUT", 10.0)
     # 会话补查与通知共用可注入超时；默认沿用既有网络超时，不写部署环境常量。
@@ -830,10 +838,15 @@ def create_app(config) -> FastAPI:
         await startup()
         yield
         await shutdown_auto_carryover()
+        if trace_tasks:
+            await asyncio.gather(*trace_tasks, return_exceptions=True)
+        await asyncio.to_thread(trace.close)
 
     app = FastAPI(title=app_title, version=app_version, lifespan=_lifespan)
     # 仅挂在应用对象上的进程内状态（不暴露 HTTP）：便于运维/单测确认重启后时间戳为空时
     # fail-safe 地不换窗；集合与字典仍由上面的唯一实现维护。
+    trace.mount(app)
+    app.state.trace = trace
     app.state.auto_carryover_pending = auto_carryover_pending
     app.state.session_last_user_ts = session_last_user_ts
     app.state.auto_carryover_context_used = auto_carryover_context_used
@@ -901,16 +914,17 @@ def create_app(config) -> FastAPI:
                 failed_plugins.add(id(plugin))
             return default
 
-    async def _run_on_user_message_hooks(loop, session_id: str | None, text: str, is_new_session: bool) -> str:
+    async def _run_on_user_message_hooks(loop, session_id: str | None, text: str, is_new_session: bool, parts=None, channel="system_prompt") -> str:
         """依次调用所有插件的 on_user_message 钩子（阻塞式钩子丢线程池执行），拼接非空注入文本。"""
         combined = ""
         for plugin in plugin_instances:
-            injected = await loop.run_in_executor(
-                None,
+            injected = await asyncio.to_thread(
                 lambda p=plugin: _call_hook(p, "on_user_message", session_id or "", text, is_new_session, default=""),
             )
             if injected:
                 combined += injected
+                if trace.enabled and parts is not None:
+                    add_trace_part(parts, channel, "plugin_context" if is_new_session else "recall", type(plugin).__name__, injected)
         return combined
 
     def _notify_permission_request(tool_name: str, request_id: str) -> None:
@@ -1141,15 +1155,25 @@ def create_app(config) -> FastAPI:
         return msgs
 
     def save_message(session_id: str, role: str, content: str, metadata: dict | None = None):
-        conn = _chat_conn()
-        now = now_iso()
-        conn.execute(
-            "INSERT INTO messages (session_id, role, content, metadata, created_at) VALUES (?, ?, ?, ?, ?)",
-            (session_id, role, content, json.dumps(metadata or {}, ensure_ascii=False), now),
-        )
-        conn.execute("UPDATE sessions SET updated_at = ? WHERE id = ?", (now, session_id))
-        conn.commit()
-        conn.close()
+        conn = None
+        try:
+            conn = _chat_conn()
+            stamp = now_iso()
+            cursor = conn.execute(
+                "INSERT INTO messages (session_id, role, content, metadata, created_at) VALUES (?, ?, ?, ?, ?)",
+                (session_id, role, content, json.dumps(metadata or {}, ensure_ascii=False), stamp),
+            )
+            conn.execute("UPDATE sessions SET updated_at = ? WHERE id = ?", (stamp, session_id))
+            conn.commit()
+            message_id = cursor.lastrowid
+            trace.saved(current_turn_id.get(), role, message_id)
+            return message_id
+        except Exception as exc:
+            trace.saved(current_turn_id.get(), role, error=str(exc))
+            raise
+        finally:
+            if conn is not None:
+                conn.close()
 
     def _display_title(title: str | None, first_msg: str | None) -> str:
         """标题口径的唯一入口：手动标题（sessions.title 非空）优先，
@@ -1748,13 +1772,13 @@ def create_app(config) -> FastAPI:
         __slots__ = ("proc", "session_id", "ws", "buffer", "_buf_bytes", "turn_id", "seq",
                      "grace_task", "stopped", "finished")
 
-        def __init__(self, proc, session_id: str, ws: WebSocket):
+        def __init__(self, proc, session_id: str, ws: WebSocket, turn_id=None):
             self.proc = proc
             self.session_id = session_id
             self.ws: WebSocket | None = ws
             self.buffer: list[str] = []   # JSON 字符串帧列表
             self._buf_bytes: int = 0
-            self.turn_id: str = uuid.uuid4().hex
+            self.turn_id: str = turn_id or uuid.uuid4().hex
             self.seq: int = 0
             self.grace_task: asyncio.Task | None = None
             self.stopped: bool = False     # 用户请求了 stop
@@ -1914,6 +1938,7 @@ def create_app(config) -> FastAPI:
             except Exception:
                 pass
             return
+        trace.followup(turn.turn_id, "user_stop")
         turn.stopped = True
         stopped_conns.add(ws)
         try:
@@ -2037,11 +2062,13 @@ def create_app(config) -> FastAPI:
         finally:
             _remove_prompt_file(path)
 
-    async def _build_first_turn_system_prompt(sid: str, message: str, pending) -> str:
+    async def _build_first_turn_system_prompt(sid: str, message: str, pending, parts=None) -> str:
         """首轮系统提示（裁决 4）：L0+L1（与全新会话同一钩子）→ 客厅提示 →
         上一窗尾部 → 边界声明。超 carryover_max_chars 时按既有规则截短尾部（裁决 7）。"""
         tail_text, notice = pending
-        layers = await _run_on_user_message_hooks(asyncio.get_running_loop(), sid, message, True)
+        layers = await _run_on_user_message_hooks(asyncio.get_running_loop(), sid, message, True, parts)
+        if parts is not None and chat_mode_hint:
+            add_trace_part(parts, "system_prompt", "chat_mode_hint", "config:CHAT_MODE_HINT", chat_mode_hint)
         header = f"\n\n# 上一窗最后的对话（换窗前约 {carryover_tail_turns} 轮，原文）\n"
         prefix = (layers or "") + chat_mode_hint + header
         suffix = "\n\n" + notice
@@ -2049,6 +2076,17 @@ def create_app(config) -> FastAPI:
             tail_text, carryover_max_chars - len(prefix) - len(suffix),
         )
         prompt = prefix + tail_text + suffix
+        if trace.enabled and parts is not None:
+            try:
+                parent = session_chain(sid)
+                source_sid = parent[-2] if len(parent) > 1 else sid
+            except Exception:
+                # 来源查询仅供记录；失败时明确标未知，不影响已拼好的提示词。
+                source_sid = "unknown"
+                log.warning("trace carryover source lookup failed (chat unaffected)")
+                trace.followup(current_turn_id.get(), "warning", reason="carryover source not observed")
+            add_trace_part(parts, "system_prompt", "carryover_tail", "carryover:" + source_sid, header + tail_text)
+            add_trace_part(parts, "system_prompt", "carryover_notice", "carryover", suffix)
         log.info("carryover first turn prepared: session=%s chars=%d", sid, len(prompt))
         return prompt
 
@@ -2062,9 +2100,22 @@ def create_app(config) -> FastAPI:
         silent: bool = False,
         cwd_key: str = "",
         _retry: bool = False,
+        turn_id: str | None = None,
+        trace_parts=None,
+        parent_turn_id=None,
     ):
         # 本轮子进程的工作目录（feat-bridge-workstation 裁决 2）：从会话绑定的 key 解析，
         # 未绑定/名单外一律落回 claude_cwd —— 调用方传进来的 key 已过 normalize_cwd_key。
+        turn_id = turn_id or uuid.uuid4().hex
+        current_turn_id.set(turn_id if trace.enabled else None)
+        attempt = 2 if _retry else 1
+        trace.start(turn_id, kind="archive" if silent else "chat", session_id=session_id,
+                    parent_turn_id=parent_turn_id, model=model, effort=effort, cwd_key=cwd_key)
+        if not _retry:
+            trace.update(turn_id, started_at=trace_now())
+        parts = list(trace_parts or []) if trace.enabled else []
+        if trace_parts is None:
+            add_trace_part(parts, "user_message", "archive_prompt" if silent else "user_text", "memory_provider" if silent else "inbound", message)
         run_cwd = workspace_cwd(cwd_key)
         cmd = [
             claude_exe,
@@ -2096,13 +2147,16 @@ def create_app(config) -> FastAPI:
         first_turn = bool(pending)
         prompt_file: str | None = None
         if first_turn:
-            system_prompt = await _build_first_turn_system_prompt(session_id, message, pending)
+            parts = [p for p in parts if p["channel"] != "system_prompt"]
+            system_prompt = await _build_first_turn_system_prompt(session_id, message, pending, parts if trace.enabled else None)
             # 补裁 8：首轮提示走临时文件。Windows 单条命令行上限 32,767 字符，人格约 11k
             # 加上一窗尾部常常超长（CreateProcess 直接报 WinError 206）。CLI 在会话开头就把
             # 提示存成快照，进程结束后文件即可删除（成功失败都删，见下方 spawn 处）。
             prompt_file = _write_prompt_file(system_prompt)
             cmd += ["--session-id", session_id, "--system-prompt-file", prompt_file]
         elif session_id:
+            parts = [p for p in parts if p["channel"] != "system_prompt"]
+            add_trace_part(parts, "system_prompt", "resumed_snapshot", "沿用会话首轮快照", "")
             cmd += ["--resume", session_id]
         elif system_prompt:
             cmd += ["--system-prompt", system_prompt]
@@ -2149,6 +2203,10 @@ def create_app(config) -> FastAPI:
                         **({"PANDO_PERMISSION_INSECURE_TLS": "1"} if permission_insecure_tls else {}),
                     },
                 }
+        if mcp_servers and trace.enabled:
+            # 复制嵌套 env，避免修改调用方的静态配置；凭证值只留在执行 argv 内。
+            mcp_servers = {name: {**cfg, "env": {**cfg.get("env", {}), "PANDO_TURN_ID": turn_id}}
+                           for name, cfg in mcp_servers.items()}
         if mcp_servers:
             mcp_cfg = json.dumps({"mcpServers": mcp_servers}, ensure_ascii=False)
             # --mcp-config 会贪婪吞非选项参数；权限透传时由 --permission-prompt-tool
@@ -2161,6 +2219,11 @@ def create_app(config) -> FastAPI:
         # 后面的 message 位置参数会被吞进工具名列表。用 -- 显式终止 flag 解析。
         cmd.append("--")
         cmd.append(message)
+
+        add_trace_part(parts, "system_prompt", "cli_builtin", "cli", "")
+        actual_system = system_prompt if (first_turn or not session_id) else ""
+        trace.parts(turn_id, attempt, parts, actual_system, message)
+        trace.invocation(turn_id, attempt, cmd, run_cwd, system_prompt)
 
         log.info("spawn: %s (session=%s, model=%s, effort=%s, cwd=%s)", message[:80],
                  session_id or "new", model or "default", effort or "default", run_cwd)
@@ -2176,6 +2239,7 @@ def create_app(config) -> FastAPI:
                 limit=_STREAM_LINE_LIMIT,
             )
         except BaseException:
+            trace.update(turn_id, ended_at=trace_now(), status="error")
             if prompt_file:
                 _remove_prompt_file(prompt_file)
             raise
@@ -2188,7 +2252,7 @@ def create_app(config) -> FastAPI:
         turn: Turn | None = None
         if not silent:
             # session_id 可能为 None(新会话),init 事件到来后补注册
-            turn = Turn(proc, session_id or "", ws)
+            turn = Turn(proc, session_id or "", ws, turn_id)
             if session_id:
                 inflight_turns[session_id] = turn
             _ws_to_turn[ws] = turn
@@ -2209,6 +2273,9 @@ def create_app(config) -> FastAPI:
         # 实际使用的模型名以 init 事件为准(用户选「默认」时 model 参数为空,
         # CC 回报的 model 才是真实模型),用量落库时按它分组。
         init_model = model or ""
+        event_seq = 0
+        stderr_tail = ""
+        retrying = False
 
         # 流式增量状态（feat-stream-output）:delta 事件逐段累积,按节流参数聚合后发帧;
         # assistant 事件的完整文本只做校对/落库,不重发——避免用户看到全文闪现两遍。
@@ -2231,6 +2298,8 @@ def create_app(config) -> FastAPI:
                     except json.JSONDecodeError:
                         continue
 
+                    trace.event(turn_id, attempt, event_seq, event)
+                    event_seq += 1
                     etype = event.get("type")
 
                     # stream_event 是包装层：真正的 delta/start/stop 嵌套在 event["event"] 里。
@@ -2245,6 +2314,7 @@ def create_app(config) -> FastAPI:
                     if etype == "system" and event.get("subtype") == "init":
                         new_session_id = event.get("session_id", new_session_id)
                         init_model = event.get("model") or init_model
+                        trace.update(turn_id, returned_session_id=new_session_id, model=init_model)
                         if not silent:
                             # 新会话在此落库绑定工作目录；已有会话走 ON CONFLICT 分支不动 cwd_key
                             save_session(new_session_id, model or "", cwd_key)
@@ -2405,6 +2475,9 @@ def create_app(config) -> FastAPI:
                             result_meta["context"] = context_meta
                         if tools_used:
                             result_meta["tools"] = tools_used
+                        trace.update(turn_id, usage={"usage": event.get("usage"), "modelUsage": event.get("modelUsage"),
+                            "total_cost_usd": event.get("total_cost_usd"), "duration_ms": event.get("duration_ms"),
+                            "context": event.get("context"), "context_derived": context_meta})
 
                         if not silent:
                             # 用量落库:只记用户可见的对话轮次(silent=True 的自动存档轮不计),
@@ -2451,6 +2524,7 @@ def create_app(config) -> FastAPI:
             if proc.returncode and proc.returncode != 0:
                 stderr_bytes = await proc.stderr.read()
                 err = stderr_bytes.decode("utf-8", errors="replace").strip()
+                stderr_tail = err
 
                 if session_id and not first_turn and not _retry and "No conversation found" in err:
                     log.warning("session %s expired, retrying as new session", session_id)
@@ -2473,6 +2547,11 @@ def create_app(config) -> FastAPI:
                         + ("\n\n# 历史对话（会话已重置，以下为上下文恢复）\n" + history_block if history_block else "")
                     ) or None
                     log.info("session_expired: injecting %d msgs history:\n%s", len(history_msgs), history_block[:1000])
+                    retrying = True
+                    trace.followup(turn_id, "expired_retry", attempt=2)
+                    retry_parts = [p for p in parts if p["channel"] != "system_prompt" or p["kind"] not in {"resumed_snapshot", "cli_builtin"}]
+                    if history_block:
+                        add_trace_part(retry_parts, "system_prompt", "expired_history", "chat.db", "\n\n# 历史对话（会话已重置，以下为上下文恢复）\n" + history_block)
                     return await run_claude(
                         message, None, ws,
                         system_prompt=injected_prompt,
@@ -2481,7 +2560,7 @@ def create_app(config) -> FastAPI:
                         silent=silent,
                         # 会话过期重开的新会话沿用同一工作目录（换会话不等于换项目）
                         cwd_key=cwd_key,
-                        _retry=True,
+                        _retry=True, turn_id=turn_id, trace_parts=retry_parts, parent_turn_id=parent_turn_id,
                     )
 
                 log.error("claude exited %d: %s", proc.returncode, err[:300])
@@ -2512,6 +2591,22 @@ def create_app(config) -> FastAPI:
                         pass
             return new_session_id, full_text, result_meta
         finally:
+            if trace.enabled:
+                async def record_exit():
+                    # 已退出进程的 stderr 由旁路任务读取，主路径从不等待 EOF。
+                    tail = stderr_tail
+                    if proc.returncode is not None and not tail:
+                        try:
+                            tail = (await proc.stderr.read()).decode("utf-8", errors="replace")
+                        except Exception:
+                            pass
+                    trace.invocation_end(turn_id, attempt, proc.returncode, tail)
+                task = asyncio.create_task(record_exit())
+                trace_tasks.add(task)
+                task.add_done_callback(trace_tasks.discard)
+            if not retrying:
+                trace.update(turn_id, ended_at=trace_now(),
+                             status="stopped" if turn and turn.stopped else ("expired_retry" if _retry else "ok") if result_success and proc.returncode == 0 else "error")
             # 首轮提示文件：进程已结束就立刻删（测试与正常路径可确定性地看到文件消失）
             if prompt_file and proc.returncode is not None:
                 _remove_prompt_file(prompt_file)
@@ -2555,7 +2650,10 @@ def create_app(config) -> FastAPI:
 
         archive_enabled（feat-auto-archive-toggle）：前端「自动记住上下文」开关的
         会话级偏好。False 时整个存档流程短路跳过，日志注明原因。"""
+        parent_id = session_last_turn.get(session_id)
+        trace.followup(parent_id, "archive_decision", force=force, enabled=archive_enabled)
         if not archive_enabled:
+            trace.followup(parent_id, "archive_skipped", reason="disabled")
             log.info("archive skipped: auto-archive disabled by user (session=%s)", session_id)
             return
         lock = _get_archive_lock(session_id)
@@ -2567,24 +2665,29 @@ def create_app(config) -> FastAPI:
                 for plugin in plugin_instances:
                     _call_hook(plugin, "on_archive", session_id, msgs, force)
 
+                archive_id = uuid.uuid4().hex
+                current_turn_id.set(archive_id if trace.enabled else None)
                 archive_prompt = await asyncio.to_thread(memory.build_archive_prompt, msgs, force)
                 if not archive_prompt:
+                    trace.followup(parent_id, "archive_skipped", reason="no prompt")
                     if force:
                         log.info("forge: no new messages to archive (msgs=%d)", len(msgs))
                     return
 
                 # Claude 在当前对话内写记忆（方案 A）。cwd 取会话绑定的工作目录——
                 # 存档轮是同一会话的 --resume，工作目录必须与可见轮次一致。
+                trace.followup(parent_id, "archive_triggered", archive_turn_id=archive_id)
                 _, claude_raw, _ = await run_claude(
                     archive_prompt, session_id, ws,
                     model=model, effort=effort, silent=True,
-                    cwd_key=get_session_cwd_key(session_id),
+                    cwd_key=get_session_cwd_key(session_id), turn_id=archive_id, parent_turn_id=parent_id,
                 )
 
                 if msgs:
                     set_last_archived_id(session_id, msgs[-1]["id"])
 
                 if not claude_raw:
+                    trace.followup(archive_id, "finalize_archive", skipped=True, reason="empty reply")
                     log.warning("auto_archive: Claude returned empty")
                     return
 
@@ -2593,6 +2696,7 @@ def create_app(config) -> FastAPI:
                 archive_result = await asyncio.to_thread(
                     memory.finalize_archive, claude_raw, session_id)
 
+                trace.followup(archive_id, "finalize_archive", result=archive_result)
                 if archive_result and archive_result.get("stored", 0) > 0:
                     log.info("auto_archive: saved [%s] for session %s",
                              archive_result.get("klass"), session_id)
@@ -2605,7 +2709,10 @@ def create_app(config) -> FastAPI:
                         except Exception:
                             pass
             except Exception as e:
+                trace.followup(parent_id, "archive_error", error=str(e))
                 log.error("auto_archive error: %s", e)
+            finally:
+                current_turn_id.set(parent_id if trace.enabled else None)
 
     def _carryover_notice() -> str:
         """裁决 5 的边界声明。只在携带精炼上下文的新会话第一条真实消息里出现一次。"""
@@ -2685,36 +2792,41 @@ def create_app(config) -> FastAPI:
         - 硬顶优先于软阈值——过了硬顶就别再等空闲了。
         日志只记 session/档位/当时 context_used，不落正文（裁决 9）。
         """
+        def noted(decision, reason):
+            trace.followup(session_last_turn.get(sid), "auto_carryover",
+                           decision="triggered" if decision == "hard" else "pending" if decision == "soft" else "skipped",
+                           reason=reason, context_used=context_used)
+            return decision
         if not sid:
-            return None
+            return noted(None, "no session")
         cfg_now = _all_settings()
         if not cfg_now["auto_carryover_enabled"]:
-            return None
+            return noted(None, "disabled")
         if not _is_chat_session(sid):
-            return None                     # 工位会话：静默不触发
+            return noted(None, "workspace excluded")  # 工位会话：静默不触发
         # Fix E 裁决 1：已被接续的会话不许再换窗——再换就是第二个孩子、列表分叉
         if session_successor(sid):
             log.info("carryover skipped: session already superseded "
                      "(session=%s, context_used=%d)", sid, context_used)
-            return None
+            return noted(None, "superseded")
         if sid in forge_in_flight:
             log.info("carryover auto-trigger skipped: forge in flight "
                      "(session=%s, context_used=%d)", sid, context_used)
-            return None
+            return noted(None, "forge in flight")
         hard = int(cfg_now["auto_carryover_hard_tokens"])
         soft = int(cfg_now["auto_carryover_soft_tokens"])
         if context_used >= hard:
             log.info("carryover auto-trigger (hard): session=%s context_used=%d threshold=%d",
                      sid, context_used, hard)
-            return "hard"
+            return noted("hard", "hard threshold")
         if context_used >= soft:
             auto_carryover_context_used[sid] = context_used
             if sid not in auto_carryover_pending:
                 auto_carryover_pending.add(sid)
                 log.info("carryover auto-trigger (soft): session=%s context_used=%d "
                          "threshold=%d, pending until idle", sid, context_used, soft)
-            return "soft"
-        return None
+            return noted("soft", "soft threshold")
+        return noted(None, "below soft threshold")
 
     def _auto_idle_elapsed_minutes(sid: str) -> float | None:
         """返回 pending 会话的空闲分钟数；未到期或时间戳未知时返回 None。"""
@@ -2758,16 +2870,28 @@ def create_app(config) -> FastAPI:
         这里独占 pending/forge 闸、存档、精炼、新会话落库及 L0 待办的改写；调用方只负责
         更新自己的连接局部变量和（若连接仍在）发送回执。这样断连换窗不会复制第二套状态机。
         """
+        forge_id = uuid.uuid4().hex
+        parent_id = session_last_turn.get(old_session_id)
+        trace.start(forge_id, kind="forge", session_id=old_session_id, parent_turn_id=parent_id, started_at=trace_now())
+        trace.followup(parent_id, "auto_forge" if auto else "manual_forge", forge_turn_id=forge_id, clean=clean)
+        # 换窗判定及短路都记录结果；不改既有控制流与闸门。
+        def forge_skipped(reason):
+            trace.followup(forge_id, "forge_skipped", reason=reason)
+            trace.update(forge_id, ended_at=trace_now(), status="ok")
         if not old_session_id:
+            forge_skipped("no session")
             return {"ignored": False, "session_id": None, "carryover": False,
                     "message": "已存档，新对话已开始", "stats": None}
         if old_session_id in forge_in_flight:
+            forge_skipped("in flight")
             log.info("forge already in flight, ignored (session=%s)", old_session_id)
             return {"ignored": True}
         if old_session_id in carryover_l0_pending or _pending_first_turn(old_session_id):
+            forge_skipped("untouched")
             log.info("forge ignored: session %s untouched since last forge", old_session_id)
             return {"ignored": True}
         if not clean and session_successor(old_session_id):
+            forge_skipped("superseded")
             tail = chain_tail(old_session_id)
             log.info("carryover skipped: session already superseded "
                      "(session=%s, tail=%s, auto=%s)", old_session_id, tail, auto)
@@ -2776,6 +2900,7 @@ def create_app(config) -> FastAPI:
                 auto_carryover_context_used.pop(old_session_id, None)
             return {"ignored": auto, "superseded": True, "session_id": tail}
         if auto and app.state.is_session_inflight(old_session_id):
+            forge_skipped("turn in flight")
             log.info("carryover auto-trigger skipped: turn in flight (session=%s)",
                      old_session_id)
             return {"ignored": True, "retry": True}
@@ -2803,6 +2928,8 @@ def create_app(config) -> FastAPI:
                 message = "已换窗，上下文已接续"
             else:
                 message = "已存档，新对话已开始"
+            trace.update(forge_id, returned_session_id=carried_id, status="ok")
+            trace.followup(forge_id, "forge_result", session_id=carried_id, carryover=bool(carried_id), stats=carried_stats)
             log.info("forge: src=%s new=%s carryover=%s auto=%s clean=%s",
                      old_session_id, carried_id or "-", bool(carried_id), auto, clean)
             return {
@@ -2812,7 +2939,11 @@ def create_app(config) -> FastAPI:
                 "message": message,
                 "stats": carried_stats,
             }
+        except Exception:
+            trace.update(forge_id, status="error")
+            raise
         finally:
+            trace.update(forge_id, ended_at=trace_now())
             forge_in_flight.discard(old_session_id)
 
     async def _auto_carryover_loop():
@@ -2867,6 +2998,7 @@ def create_app(config) -> FastAPI:
         notification_loop = asyncio.get_running_loop()
         connected_sessions[ws] = lambda: session_id
         system_prompt = None
+        cached_system_parts = []
         session_resumed = False  # True 表示恢复已有会话，跳过 L0+L1 重建
         # 本连接当前会话的工作目录 key（feat-bridge-workstation）：新建对话时由前端下发并
         # 过白名单，已有会话一律以库里落定的值为准。空串 = 客厅（CLAUDE_CWD）。
@@ -2940,10 +3072,11 @@ def create_app(config) -> FastAPI:
             try:
                 while True:
                     raw = await ws.receive_text()
+                    arrival = (raw, uuid.uuid4().hex, trace_now())
                     try:
                         peek = json.loads(raw)
                     except (json.JSONDecodeError, AttributeError):
-                        await msg_queue.put(raw)
+                        await msg_queue.put(arrival)
                         continue
                     if isinstance(peek, dict) and peek.get("type") == "stop":
                         await _stop_inflight(ws)  # 停止当前用户可见轮次;无在途则回 stopped 帧
@@ -3006,7 +3139,7 @@ def create_app(config) -> FastAPI:
                             and (str(peek.get("text", "")).strip()
                                  or peek.get("attachments"))):
                         session_last_user_ts[session_id] = time.monotonic()
-                    await msg_queue.put(raw)
+                    await msg_queue.put(arrival)
             except WebSocketDisconnect:
                 await msg_queue.put(None)  # 哨兵:通知主循环连接已断
 
@@ -3018,12 +3151,21 @@ def create_app(config) -> FastAPI:
                 if raw is None:  # 断连哨兵
                     break
 
+                if isinstance(raw, tuple):
+                    raw, message_turn_id, received_at = raw
+                else:
+                    message_turn_id, received_at = uuid.uuid4().hex, trace_now()
+                current_turn_id.set(message_turn_id if trace.enabled else None)
+                inbound = {"text": raw}
+                system_parts, user_parts = list(cached_system_parts) if system_prompt else [], []
                 voice_mode = False
                 mode = "chat"
                 attachments: list = []
                 msg_cwd_key = None   # 本条消息上报的工作目录 key（仅新建对话时采信）
                 try:
                     payload = json.loads(raw)
+                    if trace.enabled:
+                        inbound = {k: v for k, v in payload.items() if k != "type"}
                     if payload.get("type") == "client_timezone":
                         tz_name = payload.get("tz")
                         offset_minutes = payload.get("offset_minutes")
@@ -3124,13 +3266,15 @@ def create_app(config) -> FastAPI:
                 log.info("mode=%s session=%s cwd_key=%s", mode, session_id or "new",
                          session_cwd_key or "default")
 
+                trace.start(message_turn_id, session_id=session_id, received_at=received_at,
+                            model=model, effort=effort, mode=mode, cwd_key=session_cwd_key, voice_mode=voice_mode, inbound=inbound)
                 # 首条消息：构建 L0+L1 会话上下文（system prompt），走 on_user_message 钩子链路
                 if session_id is None and not session_resumed and system_prompt is None:
                     await ws.send_text(json.dumps({
                         "type": "status",
                         "message": "loading memory layers...",
                     }, ensure_ascii=False))
-                    system_prompt = await _run_on_user_message_hooks(loop, session_id, text, True)
+                    system_prompt = await _run_on_user_message_hooks(loop, session_id, text, True, system_parts)
                     if system_prompt:
                         await ws.send_text(json.dumps({
                             "type": "memory_recall",
@@ -3139,6 +3283,8 @@ def create_app(config) -> FastAPI:
 
                     if mode == "chat" and chat_mode_hint:
                         system_prompt = (system_prompt or "") + chat_mode_hint
+                        add_trace_part(system_parts, "system_prompt", "chat_mode_hint", "config:CHAT_MODE_HINT", chat_mode_hint)
+                    cached_system_parts = list(system_parts)
 
                 # 非 chat 精炼续窗的接续会话：重建一次 L0+L1，走文本前缀（resume 时 CLI
                 # 沿用会话已存的系统提示快照、忽略新传的 --system-prompt）。只做一次，
@@ -3151,11 +3297,15 @@ def create_app(config) -> FastAPI:
                         "type": "status",
                         "message": "loading memory layers...",
                     }, ensure_ascii=False))
-                    carryover_l0 = await _run_on_user_message_hooks(loop, session_id, text, True)
+                    carryover_l0 = await _run_on_user_message_hooks(loop, session_id, text, True, user_parts, "user_message")
                     if mode == "chat" and chat_mode_hint:
                         carryover_l0 = (carryover_l0 or "") + chat_mode_hint
+                        add_trace_part(user_parts, "user_message", "chat_mode_hint", "config:CHAT_MODE_HINT", chat_mode_hint)
                     if carryover_l0:
                         carryover_l0 += "\n\n"
+                        if trace.enabled:
+                            user_parts[-1]["text"] += "\n\n"
+                            user_parts[-1]["chars"] += 2
                         await ws.send_text(json.dumps({
                             "type": "memory_recall",
                             "context": f"【context injected】({len(carryover_l0)} chars)",
@@ -3176,10 +3326,14 @@ def create_app(config) -> FastAPI:
                 if carryover_note:
                     log.info("carryover notice injected for session %s", session_id)
 
+                if carryover_note:
+                    add_trace_part(user_parts, "user_message", "carryover_notice", "carryover", carryover_note)
                 if voice_mode and voice_inline_hint:
+                    add_trace_part(user_parts, "user_message", "voice_hint", "config:VOICE_INLINE_HINT", voice_inline_hint)
                     claude_text = voice_inline_hint + time_prefix + text
                 elif session_id and session_last_voice.get(session_id) and voice_exit_hint:
                     # 上一轮是语音模式：提醒模型停止延续情感标签风格
+                    add_trace_part(user_parts, "user_message", "voice_exit_hint", "config:VOICE_EXIT_HINT", voice_exit_hint)
                     claude_text = voice_exit_hint + time_prefix + text
                 else:
                     claude_text = time_prefix + text
@@ -3187,9 +3341,12 @@ def create_app(config) -> FastAPI:
                 # 接续会话的开场装配顺序：身份层(L0+L1) → 边界声明 → 时间/正文。
                 # 先立身份再交底边界，模型读到「你是谁」之后才读「你不知道什么」。
                 claude_text = carryover_l0 + carryover_note + claude_text
+                add_trace_part(user_parts, "user_message", "time_prefix", "client_clock", time_prefix)
+                add_trace_part(user_parts, "user_message", "user_text", "inbound", text)
 
                 # L2：每条消息做情节记忆检索，走 on_user_message 钩子链路
-                recall_ctx = await _run_on_user_message_hooks(loop, session_id, text, False)
+                recall_parts = []
+                recall_ctx = await _run_on_user_message_hooks(loop, session_id, text, False, recall_parts, "user_message")
 
                 if recall_ctx:
                     await ws.send_text(json.dumps({
@@ -3197,6 +3354,9 @@ def create_app(config) -> FastAPI:
                         "context": recall_ctx,
                     }, ensure_ascii=False))
                     enhanced = recall_ctx + "\n" + claude_text
+                    if trace.enabled:
+                        recall_parts[-1]["text"] += "\n"
+                        recall_parts[-1]["chars"] += 1
                 else:
                     enhanced = claude_text
 
@@ -3204,6 +3364,7 @@ def create_app(config) -> FastAPI:
                 attach_note = _build_attachment_note(valid_attachments)
                 if attach_note:
                     enhanced = enhanced + attach_note
+                    add_trace_part(user_parts, "user_message", "attachment_note", "attachments", attach_note)
 
                 await ws.send_text(json.dumps({
                     "type": "status",
@@ -3217,10 +3378,14 @@ def create_app(config) -> FastAPI:
                     system_prompt=system_prompt if session_id is None else None,
                     model=model,
                     effort=effort,
-                    cwd_key=session_cwd_key,
+                    cwd_key=session_cwd_key, turn_id=message_turn_id,
+                    trace_parts=system_parts + recall_parts + user_parts,
                 )
 
+                current_turn_id.set(message_turn_id if trace.enabled else None)
                 effective_sid = new_session_id or session_id
+                if effective_sid:
+                    session_last_turn[effective_sid] = message_turn_id
 
                 # 保存消息（user 先，assistant 后，保证顺序正确）
                 if effective_sid:
@@ -3267,6 +3432,8 @@ def create_app(config) -> FastAPI:
                         decision = _auto_trigger_decision(effective_sid, context_used)
                     # session_id != effective_sid 只可能出现在本轮没拿到新 id 的异常收尾上，
                     # 那时换窗的源对不上号，宁可等下一轮重判
+                    if context is None:
+                        trace.followup(message_turn_id, "auto_carryover", decision="skipped", reason="missing context")
                     if decision == "hard" and session_id == effective_sid:
                         # 硬顶：本轮 result 已发完，立刻换窗，不等空闲
                         await _handle_forge(auto=True)

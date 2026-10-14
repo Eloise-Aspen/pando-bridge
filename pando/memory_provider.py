@@ -1,3 +1,4 @@
+# HTTP 契约允许可选 X-Pando-Turn 请求头，未知此头的服务可忽略，行为向后兼容。
 """MemoryProvider — 可插拔记忆后端接口。
 
 Pando 核心（server.py）零记忆逻辑，只通过这个 Protocol 与记忆系统交互。核心**不含**任何

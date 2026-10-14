@@ -17,6 +17,8 @@ import logging
 
 import requests
 
+from ..trace import current_turn_id
+
 log = logging.getLogger("pando.memory.http")
 
 
@@ -33,9 +35,13 @@ class HttpMemoryProvider:
     def _post(self, path: str, payload: dict) -> dict | None:
         """POST 并返回 JSON dict；任何异常都降级为 None（只 warning）。"""
         try:
+            headers = dict(self.headers)
+            turn_id = current_turn_id.get()
+            if turn_id:
+                headers["X-Pando-Turn"] = turn_id
             resp = requests.post(
                 f"{self.base_url}{path}", json=payload, timeout=self.timeout,
-                headers=self.headers or None,
+                headers=headers or None,
             )
             resp.raise_for_status()
             data = resp.json()
