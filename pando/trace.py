@@ -199,13 +199,14 @@ class TraceStore:
         self.submit(lambda conn: conn.execute("INSERT INTO persist (turn_id,role,message_id,success,error) VALUES (?,?,?,?,?)",
                     (turn_id, role, message_id, int(error is None), error)))
 
-    def _followup(self, conn, turn_id, kind, details):
+    def _followup(self, conn, turn_id, kind, details, at=None):
         conn.execute("INSERT INTO followups (turn_id,at,kind,details) VALUES (?,?,?,?)",
-                     (turn_id, now(), kind, json.dumps(details, ensure_ascii=False)))
+                     (turn_id, at or now(), kind, json.dumps(details, ensure_ascii=False)))
 
     def followup(self, turn_id, kind, **details):
         if self.enabled and turn_id:
-            self.submit(self._followup, turn_id, kind, copy.deepcopy(details))
+            # 投递时捕获发生时刻，不能把队列等待误记成事件发生时间。
+            self.submit(self._followup, turn_id, kind, copy.deepcopy(details), now())
 
     def _read(self, sql, args=()):
         if not self.enabled or not self.path.exists():

@@ -278,3 +278,58 @@ def test_api_never_calls_memory(tmp_path, monkeypatch):
     assert app.state.trace.health()["count"] == 1
     assert counts() == before
     app.state.trace.close()
+
+
+def test_carryover_source_lookup_failure_preserves_prompt(tmp_path):
+    """只有观测新增的来源查询出错时，实际提示仍须逐字保持一致。"""
+    app = create_app(_config(tmp_path, CHAT_MODE_HINT="neutral hint"))
+    endpoint = next(route.endpoint for route in app.routes if route.path == "/ws")
+    cells = dict(zip(endpoint.__code__.co_freevars, endpoint.__closure__))
+    runner = cells["run_claude"].cell_contents
+    runner_cells = dict(zip(runner.__code__.co_freevars, runner.__closure__))
+    builder = runner_cells["_build_first_turn_system_prompt"].cell_contents
+    builder_cells = dict(zip(builder.__code__.co_freevars, builder.__closure__))
+    source_cell = builder_cells["session_chain"]
+    original = source_cell.cell_contents
+    token = current_turn_id.set("neutral-turn")
+    try:
+        pending = ("neutral tail", "neutral notice")
+        expected = asyncio.run(builder("neutral-session", "neutral message", pending))
+        def unavailable(_sid):
+            raise sqlite3.OperationalError("neutral source lookup failure")
+        source_cell.cell_contents = unavailable
+        parts = []
+        app.state.trace.start("neutral-turn")
+        actual = asyncio.run(builder("neutral-session", "neutral message", pending, parts))
+        assert actual == expected
+        assert "".join(part["text"] for part in parts) == actual
+        assert next(part for part in parts if part["kind"] == "carryover_tail")["source"] == "carryover:unknown"
+        app.state.trace.flush()
+        assert any(row["kind"] == "warning" for row in app.state.trace.detail("neutral-turn")["followups"])
+    finally:
+        source_cell.cell_contents = original
+        current_turn_id.reset(token)
+        app.state.trace.close()
+
+
+def test_followup_timestamp_precedes_queue_delay(tmp_path, monkeypatch):
+    import pando.trace as trace_module
+    store = TraceStore(tmp_path / "trace.db")
+    hold, entered = threading.Event(), threading.Event()
+    clock = ["2020-01-01T00:00:00+00:00"]
+    monkeypatch.setattr(trace_module, "now", lambda: clock[0])
+    try:
+        store.start("neutral-turn")
+        def block(conn):
+            entered.set()
+            hold.wait(5)
+        store.submit(block)
+        assert entered.wait(5)
+        store.followup("neutral-turn", "manual_forge")
+        clock[0] = "2020-01-01T00:00:05+00:00"
+        hold.set()
+        store.flush()
+        assert store.detail("neutral-turn")["followups"][0]["at"] == "2020-01-01T00:00:00+00:00"
+    finally:
+        hold.set()
+        store.close()

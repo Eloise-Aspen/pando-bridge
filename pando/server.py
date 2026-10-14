@@ -2077,8 +2077,14 @@ def create_app(config) -> FastAPI:
         )
         prompt = prefix + tail_text + suffix
         if trace.enabled and parts is not None:
-            parent = session_chain(sid)
-            source_sid = parent[-2] if len(parent) > 1 else sid
+            try:
+                parent = session_chain(sid)
+                source_sid = parent[-2] if len(parent) > 1 else sid
+            except Exception:
+                # 来源查询仅供记录；失败时明确标未知，不影响已拼好的提示词。
+                source_sid = "unknown"
+                log.warning("trace carryover source lookup failed (chat unaffected)")
+                trace.followup(current_turn_id.get(), "warning", reason="carryover source not observed")
             add_trace_part(parts, "system_prompt", "carryover_tail", "carryover:" + source_sid, header + tail_text)
             add_trace_part(parts, "system_prompt", "carryover_notice", "carryover", suffix)
         log.info("carryover first turn prepared: session=%s chars=%d", sid, len(prompt))
