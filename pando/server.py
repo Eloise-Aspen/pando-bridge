@@ -644,6 +644,7 @@ def create_app(config) -> FastAPI:
         EXTRA_ALLOWED_TOOLS (默认 [])                       —— 可见轮次额外免确认工具名
         PLUGINS (默认 [])                                  —— 声明式插件类路径列表
         ARCHIVE_INTERVAL (默认 600)
+        BACKGROUND_REQUIRES_CLIENT (默认 False)            —— 无客户端连接时暂停自动工作
         STATIC_DIR (默认包内 static/，demo 前端)
         CORS_ORIGINS (默认 ["*"])
         APP_TITLE (默认 "Pando"), APP_VERSION (默认与 pando.__version__ 一致)
@@ -684,6 +685,8 @@ def create_app(config) -> FastAPI:
     _MEMORY_PLUGIN_PATH = "pando.plugins.memory.MemoryPlugin"
     if memory_service_url and _MEMORY_PLUGIN_PATH not in plugin_paths:
         plugin_paths.append(_MEMORY_PLUGIN_PATH)
+    from .activity import ClientActivity
+    background_activity = ClientActivity(bool(_cfg(config, "BACKGROUND_REQUIRES_CLIENT", False)))
     archive_interval = _cfg(config, "ARCHIVE_INTERVAL", 10 * 60)
     static_dir = Path(_cfg(config, "STATIC_DIR", _PACKAGE_STATIC_DIR))
     # 前端插件目录（feat-frontend-plugin-arch）：调用方指向自己的插件包目录后，
@@ -846,6 +849,7 @@ def create_app(config) -> FastAPI:
     # 仅挂在应用对象上的进程内状态（不暴露 HTTP）：便于运维/单测确认重启后时间戳为空时
     # fail-safe 地不换窗；集合与字典仍由上面的唯一实现维护。
     trace.mount(app)
+    app.state.background_activity = background_activity
     app.state.trace = trace
     app.state.auto_carryover_pending = auto_carryover_pending
     app.state.session_last_user_ts = session_last_user_ts
@@ -1527,7 +1531,8 @@ def create_app(config) -> FastAPI:
             ]
 
         for plugin in plugin_instances:
-            models = normalize_models(_call_hook(plugin, "provide_models", default=None))
+            models = normalize_models(await asyncio.to_thread(
+                _call_hook, plugin, "provide_models", default=None))
             if models:
                 return _out(models)
         models = normalize_models(_cfg(config, "MODELS", None))
@@ -2228,6 +2233,10 @@ def create_app(config) -> FastAPI:
         log.info("spawn: %s (session=%s, model=%s, effort=%s, cwd=%s)", message[:80],
                  session_id or "new", model or "default", effort or "default", run_cwd)
 
+        if silent and not background_activity.allowed:
+            if prompt_file:
+                _remove_prompt_file(prompt_file)
+            raise RuntimeError("automatic request paused: no connected client")
         try:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
@@ -2650,6 +2659,8 @@ def create_app(config) -> FastAPI:
 
         archive_enabled（feat-auto-archive-toggle）：前端「自动记住上下文」开关的
         会话级偏好。False 时整个存档流程短路跳过，日志注明原因。"""
+        if not background_activity.allowed:
+            return
         parent_id = session_last_turn.get(session_id)
         trace.followup(parent_id, "archive_decision", force=force, enabled=archive_enabled)
         if not archive_enabled:
@@ -2677,6 +2688,8 @@ def create_app(config) -> FastAPI:
                 # Claude 在当前对话内写记忆（方案 A）。cwd 取会话绑定的工作目录——
                 # 存档轮是同一会话的 --resume，工作目录必须与可见轮次一致。
                 trace.followup(parent_id, "archive_triggered", archive_turn_id=archive_id)
+                if not background_activity.allowed:
+                    return  # 等待记忆服务期间断连，不推进存档游标。
                 _, claude_raw, _ = await run_claude(
                     archive_prompt, session_id, ws,
                     model=model, effort=effort, silent=True,
@@ -2905,13 +2918,19 @@ def create_app(config) -> FastAPI:
                      old_session_id)
             return {"ignored": True, "retry": True}
 
-        auto_carryover_pending.discard(old_session_id)
-        auto_carryover_context_used.pop(old_session_id, None)
+        if auto and not background_activity.allowed:
+            forge_skipped("no connected client")
+            return {"ignored": True, "retry": True}
         forge_in_flight.add(old_session_id)
         try:
             old_cwd_key = get_session_cwd_key(old_session_id)
             await _try_archive(old_session_id, ws, model=model, effort=effort,
                                force=True, archive_enabled=archive_enabled)
+            if auto and not background_activity.allowed:
+                forge_skipped("client disconnected during archive")
+                return {"ignored": True, "retry": True}
+            auto_carryover_pending.discard(old_session_id)
+            auto_carryover_context_used.pop(old_session_id, None)
             carried_id = None
             carried_stats = None
             if carryover_enabled and not clean:
@@ -2949,7 +2968,8 @@ def create_app(config) -> FastAPI:
     async def _auto_carryover_loop():
         """进程级空闲扫描：有连接投主循环，无连接直接走同一个持久状态执行器。"""
         while True:
-            await asyncio.sleep(AUTO_CARRYOVER_TICK_SECONDS)
+            await background_activity.wait_until_allowed()
+            await background_activity.wait_for_check(AUTO_CARRYOVER_TICK_SECONDS)
             for sid in list(auto_carryover_pending):
                 idle_minutes = _auto_idle_elapsed_minutes(sid)
                 if idle_minutes is None or sid in auto_carryover_queued:
@@ -2997,6 +3017,7 @@ def create_app(config) -> FastAPI:
         session_id = None
         notification_loop = asyncio.get_running_loop()
         connected_sessions[ws] = lambda: session_id
+        background_activity.connected(ws)
         system_prompt = None
         cached_system_parts = []
         session_resumed = False  # True 表示恢复已有会话，跳过 L0+L1 重建
@@ -3008,12 +3029,19 @@ def create_app(config) -> FastAPI:
         # 仅开关打开时注册；关闭时 token_by_ws 缺失 → run_claude 不追加 CLI 参数，行为如现状。
         if permission_passthrough:
             permission_broker.register(uuid.uuid4().hex, ws)
-        await ws.send_text(json.dumps({
-            "type": "hello",
-            "message": "bridge connected",
-            "server_time": now_iso(),
-            "has_memory": _has_memory,
-        }, ensure_ascii=False))
+        try:
+            await ws.send_text(json.dumps({
+                "type": "hello",
+                "message": "bridge connected",
+                "server_time": now_iso(),
+                "has_memory": _has_memory,
+            }, ensure_ascii=False))
+        except BaseException:
+            # reader 尚未建立时握手发送也可能失败，不能遗留一个永远在线的连接。
+            connected_sessions.pop(ws, None)
+            background_activity.disconnected(ws)
+            permission_broker.unregister(ws)
+            raise
 
         model = None
         effort = None
@@ -3141,7 +3169,13 @@ def create_app(config) -> FastAPI:
                         session_last_user_ts[session_id] = time.monotonic()
                     await msg_queue.put(arrival)
             except WebSocketDisconnect:
-                await msg_queue.put(None)  # 哨兵:通知主循环连接已断
+                pass
+            except Exception as exc:
+                log.warning("websocket reader stopped: %s", type(exc).__name__)
+            finally:
+                # 主循环可能仍在等待一轮推理；收帧失败当下就关闭自动工作的门槛。
+                background_activity.disconnected(ws)
+                await msg_queue.put(None)
 
         reader_task = asyncio.create_task(_reader())
 
@@ -3476,6 +3510,7 @@ def create_app(config) -> FastAPI:
                 pass
             stopped_conns.discard(ws)
             connected_sessions.pop(ws, None)
+            background_activity.disconnected(ws)
             # 权限透传:挂起的授权请求全部默拒并清表,注销 token(完成标准 2:断连清队默拒)
             permission_broker.deny_all(ws)
             permission_broker.unregister(ws)

@@ -2266,6 +2266,7 @@ function connect(){
   ws=new WebSocket(`${proto}://${location.host}/ws`);
   ws.onopen=()=>{
     setStatus(true);
+    loadModels(); // 连接后再取一次，支持仅在客户端在线时刷新的模型源。
     _lastReportedTzOffset=clientTimezone().offset_minutes;
     ws.send(JSON.stringify({type:'client_timezone',...clientTimezone()}));
     if(currentSessionId){
