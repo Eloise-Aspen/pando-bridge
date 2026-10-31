@@ -402,12 +402,14 @@ def test_include_partial_messages_flag(tmp_path, monkeypatch):
     app = create_app(_config(tmp_path))
     with TestClient(app) as client:
         with client.websocket_connect("/ws") as wsc:
-            wsc.send_json({"text": "hi"})
+            wsc.send_json({"text": "hi", "model": "ccs-route--vendor/model[1M]"})
             for _ in range(50):
                 m = wsc.receive_json()
                 if m.get("type") == "result":
                     break
 
+    args = captured_cmd["args"]
+    assert args[args.index("--model") + 1] == "ccs-route--vendor/model[1M]"
     assert "--include-partial-messages" in captured_cmd.get("args", []), (
         f"CLI 命令应包含 --include-partial-messages: {captured_cmd.get('args')}"
     )

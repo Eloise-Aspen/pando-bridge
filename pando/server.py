@@ -642,6 +642,7 @@ def create_app(config) -> FastAPI:
         MEMORY_SERVICE_HEADERS (默认 None)                —— 记忆服务鉴权用的固定请求头 dict
         EXTRA_MCP_SERVERS (默认 {})                         —— 可见轮次额外 stdio MCP 配置
         EXTRA_ALLOWED_TOOLS (默认 [])                       —— 可见轮次额外免确认工具名
+        ANTHROPIC_METADATA_ENABLED (默认 True)             —— 是否查询 Anthropic 订阅额度
         PLUGINS (默认 [])                                  —— 声明式插件类路径列表
         ARCHIVE_INTERVAL (默认 600)
         BACKGROUND_REQUIRES_CLIENT (默认 False)            —— 无客户端连接时暂停自动工作
@@ -1597,6 +1598,9 @@ def create_app(config) -> FastAPI:
         """官方 5h 窗 / 周限额利用率(静默降级):无凭证 / 端点 401-403 / 超时 /
         响应形状变化一律回 {available:false},绝不抛 500、绝不影响聊天。
         OAuth token 只在服务端内存内流转,不进本响应、不进日志。"""
+        # 代理/API key 部署可关闭订阅 metadata；短路必须在缓存、凭证和外网之前。
+        if not _cfg(config, "ANTHROPIC_METADATA_ENABLED", True):
+            return {"available": False}
         now = time.monotonic()
         # 命中未过期缓存直接回,不碰官方端点
         if _quota_cache["data"] is not None and (now - _quota_cache["ts"]) < _QUOTA_TTL:

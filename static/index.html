@@ -772,6 +772,8 @@ const modelLabel = id => (MODELS.find(m=>m[0]===id)||['',id])[1] || id;
 // (模型下线/改名),回落到当前默认 Sonnet;自定义模型(用户手输)不在列表里也属正常,
 // 故只在**列表就位之后**做一次,且只兜「曾经内置、如今消失」的那批(见 _reconcileModels)。
 const FALLBACK_MODEL_ID = 'claude-sonnet-5';
+let _modelsLoaded=false;
+const _availableModelFallback = () => MODELS.some(m=>m[0]===FALLBACK_MODEL_ID) ? FALLBACK_MODEL_ID : MODELS[0][0];
 // effort 档位（对齐 CLI --effort）：'' = 默认(不传 flag，回落 CLI 默认档，与现状零回归)。
 // 空态时输入区按钮只显模型；选了档才追加「· <档>」。持久化到 localStorage.defaultEffort。
 const EFFORTS = [['','默认'],['low','Low'],['medium','Medium'],['high','High'],['xhigh','XHigh'],['max','Max']];
@@ -800,6 +802,8 @@ function adoptSessionPrefs(sid){
   // 会拿尚未与服务端对账的默认值盖章,syncUiPrefs 拿到服务端值后要允许改写(见那边注释)
   _prefsStamped = (m===null);
   if(m===null){ m=_defModel(); localStorage.setItem(_mKey(sid), m); }
+  // 服务端候选就位后，历史会话也必须迁移到仍可路由的模型。
+  if(_modelsLoaded && !MODELS.some(x=>x[0]===m)){ m=_availableModelFallback(); localStorage.setItem(_mKey(sid), m); }
   if(e===null){ e=_defEffort(); localStorage.setItem(_eKey(sid), e); }
   currentModel=m; currentEffort=EFFORTS.some(x=>x[0]===e)?e:'';
   syncModelBtn();
@@ -1007,6 +1011,7 @@ async function loadModels(){
   const pairs=list.filter(m=>m&&typeof m.id==='string'&&m.id).map(m=>[m.id, (m.label||m.id), !!m.primary]);
   if(!pairs.length) return;
   MODELS=pairs;
+  _modelsLoaded=true;
   _reconcileModels();
   syncModelBtn();
   // 弹层可能已经渲染过(甚至正开着):重渲一次让新候选立刻可见,不改开合状态
@@ -1021,14 +1026,15 @@ async function loadModels(){
 // 调用——列表还是内置兜底时不动,免得误伤。
 function _reconcileModels(){
   const known=id=>MODELS.some(m=>m[0]===id);
+  const fallback=_availableModelFallback();
   const def=localStorage.getItem('defaultModel');
   // 回落同步写服务端:服务端按裁决 6 不校验模型 id,陈旧值的纠正归前端这一层负责
-  if(def && !known(def)) savePref('defaultModel', FALLBACK_MODEL_ID, 0);
+  if(def && !known(def)) savePref('defaultModel', fallback, 0);
   if(currentSessionId){
     const cur=localStorage.getItem(_mKey(currentSessionId));
-    if(cur && !known(cur)){ localStorage.setItem(_mKey(currentSessionId), FALLBACK_MODEL_ID); currentModel=FALLBACK_MODEL_ID; }
+    if(cur && !known(cur)){ localStorage.setItem(_mKey(currentSessionId), fallback); currentModel=fallback; }
   }
-  if(currentModel && !known(currentModel)) currentModel=localStorage.getItem('defaultModel')||FALLBACK_MODEL_ID;
+  if(currentModel && !known(currentModel)) currentModel=localStorage.getItem('defaultModel')||fallback;
 }
 /* ===== 菜单分层(feat-model-list-live Task 5 / 补裁 5)=====
    服务端算好 primary(每族取最新一代),前端只渲染:主线直接列出,其余收进「更多模型」

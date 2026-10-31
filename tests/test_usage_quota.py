@@ -81,3 +81,14 @@ def test_quota_route_degrades_without_creds(tmp_path, monkeypatch):
         resp = client.get("/usage/quota")
         assert resp.status_code == 200
         assert resp.json() == {"available": False}
+
+
+def test_disabled_metadata_never_reads_credentials_or_requests(tmp_path, monkeypatch):
+    def forbidden(*args, **kwargs):
+        raise AssertionError("subscription metadata forbidden")
+    monkeypatch.setattr(S, "_read_oauth_token", forbidden)
+    monkeypatch.setattr(S, "_fetch_oauth_usage", forbidden)
+    config = {**_config(tmp_path), "ANTHROPIC_METADATA_ENABLED": False}
+    with TestClient(create_app(config)) as client:
+        for _ in range(2):
+            assert client.get("/usage/quota").json() == {"available": False}
